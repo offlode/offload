@@ -70,10 +70,11 @@ function destroySession(token: string): void {
   storage.deleteSession(token);
 }
 
-// Clean up expired sessions and idempotency keys every hour
+// Clean up expired sessions, idempotency keys, and reset tokens every hour
 setInterval(() => {
   storage.deleteExpiredSessions();
   storage.deleteExpiredIdempotencyKeys();
+  storage.cleanExpiredResetTokens();
 }, 60 * 60 * 1000);
 
 // ════════════════════════════════════════════════════════════════
@@ -1081,7 +1082,7 @@ function requireAuth(allowedRoles?: string[]) {
     if (!user) {
       return res.status(401).json({ error: "Invalid user" });
     }
-    if (allowedRoles && !allowedRoles.includes(user.role)) {
+    if (allowedRoles && user.role !== "admin" && !allowedRoles.includes(user.role)) {
       return res.status(403).json({ error: "Insufficient permissions" });
     }
     (req as any).currentUser = user;
@@ -1200,6 +1201,7 @@ const RATE_LIMITS: Record<string, { maxRequests: number; windowMs: number }> = {
   "POST:/api/messages": { maxRequests: 30, windowMs: 60000 },
   "POST:/api/pricing/calculate": { maxRequests: 60, windowMs: 60000 },
   "POST:/api/disputes": { maxRequests: 5, windowMs: 60000 },
+  "POST:/api/auth/forgot-password": { maxRequests: 3, windowMs: 900000 },
 };
 
 function checkRateLimit(method: string, path: string, ip: string): boolean {
@@ -1279,6 +1281,26 @@ export async function registerRoutes(
       minOrderAmount: 0,
       expiresAt: null,
     });
+  }
+
+  // Seed super admin: chaimfischer2@gmail.com
+  const adminEmail = "chaimfischer2@gmail.com";
+  const existingAdmin = storage.getUserByEmail(adminEmail);
+  if (!existingAdmin) {
+    const randomPw = randomBytes(32).toString("hex");
+    storage.createUser({
+      username: adminEmail,
+      password: hashPassword(randomPw),
+      name: "Chaim Fischer",
+      email: adminEmail,
+      phone: null,
+      role: "admin",
+      memberSince: new Date().toISOString().split("T")[0],
+      loyaltyPoints: 0,
+      loyaltyTier: "bronze",
+      referralCode: "ADMIN-" + Date.now().toString(36).toUpperCase(),
+    });
+    console.log(`[Seed] Created super admin: ${adminEmail}`);
   }
 
   // ── Security headers + CORS for website ──
@@ -1472,6 +1494,80 @@ export async function registerRoutes(
   app.get("/api/auth/me", requireAuth(), (req, res) => {
     const user = (req as any).currentUser;
     res.json({ user: { ...user, password: undefined } });
+  });
+
+  // ── FORGOT PASSWORD ──
+  app.post("/api/auth/forgot-password", (req, res) => {
+    const { email } = req.body;
+    const safeMsg = "If an account with that email exists, a password reset link has been sent.";
+    if (!email) return res.status(200).json({ message: safeMsg });
+
+    const user = storage.getUserByEmail(email);
+    if (user) {
+      const token = randomBytes(32).toString("hex");
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
+      storage.createPasswordResetToken(user.id, token, expiresAt);
+
+      // Send email via Resend
+      const resetLink = `https://offloadusa.com/#/reset-password?token=${token}`;
+      const apiKey = process.env.RESEND_API_KEY || "re_WRb6SKUJ_GCVu86o6Ju8qJPa39usgsKfz";
+      const resend = new Resend(apiKey);
+      resend.emails.send({
+        from: "Offload <notifications@offloadusa.com>",
+        to: email,
+        subject: "Reset your Offload password",
+        html: `<div style="font-family:Inter,sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#1A1A1A;color:#fff;border-radius:12px;">
+          <h2 style="color:#5B4BC4;margin-bottom:16px;">Reset Your Password</h2>
+          <p style="color:#ccc;line-height:1.6;">We received a request to reset the password for your Offload account. Click the button below to set a new password:</p>
+          <div style="text-align:center;margin:32px 0;">
+            <a href="${resetLink}" style="display:inline-block;padding:14px 32px;background:#5B4BC4;color:#fff;text-decoration:none;border-radius:999px;font-weight:600;font-size:16px;">Reset Password</a>
+          </div>
+          <p style="color:#888;font-size:13px;line-height:1.5;">This link expires in 1 hour. If you didn't request a password reset, you can safely ignore this email.</p>
+          <hr style="border:none;border-top:1px solid #333;margin:24px 0;" />
+          <p style="color:#666;font-size:12px;">Offload &mdash; Laundry, delivered.</p>
+        </div>`,
+      }).then(() => {
+        console.log(`[Email] Password reset sent to ${email} via Resend`);
+      }).catch((err: any) => {
+        console.error(`[Email] Failed to send password reset to ${email}:`, err);
+      });
+    }
+
+    res.status(200).json({ message: safeMsg });
+  });
+
+  // ── RESET PASSWORD ──
+  app.post("/api/auth/reset-password", (req, res) => {
+    const { token, password } = req.body;
+    if (!token || !password) {
+      return res.status(400).json({ error: "Token and password are required" });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ error: "Password must be at least 6 characters" });
+    }
+
+    const resetToken = storage.getPasswordResetToken(token);
+    if (!resetToken) {
+      return res.status(400).json({ error: "Invalid or expired reset token" });
+    }
+    if (resetToken.usedAt) {
+      return res.status(400).json({ error: "This reset link has already been used" });
+    }
+    if (new Date(resetToken.expiresAt) < new Date()) {
+      return res.status(400).json({ error: "This reset link has expired. Please request a new one." });
+    }
+
+    // Update password
+    const hashedPw = hashPassword(password);
+    storage.updateUser(resetToken.userId, { password: hashedPw });
+
+    // Mark token as used
+    storage.markPasswordResetTokenUsed(token);
+
+    // Invalidate all existing sessions for this user
+    storage.deleteSessionsByUser(resetToken.userId);
+
+    res.status(200).json({ message: "Password has been reset successfully. You can now log in." });
   });
 
   // ─────────────────────────────────────────────────────────

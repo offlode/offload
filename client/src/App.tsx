@@ -36,6 +36,8 @@ import AdminFraud from "@/pages/admin/fraud";
 import LoginPage from "@/pages/login";
 import RegisterPage from "@/pages/register";
 import RoleSelectPage from "@/pages/role-select";
+import ForgotPasswordPage from "@/pages/forgot-password";
+import ResetPasswordPage from "@/pages/reset-password";
 import StaffLayout from "@/pages/staff/layout";
 import StaffOrdersPage from "@/pages/staff/orders";
 import StaffActivePage from "@/pages/staff/active";
@@ -63,14 +65,13 @@ function RequireAuth({ children, allowedRoles }: { children: React.ReactNode; al
     return <Redirect to="/login" />;
   }
 
-  if (allowedRoles && user && !allowedRoles.includes(user.role)) {
-    // Redirect to appropriate home
+  if (allowedRoles && user && user.role !== "admin" && !allowedRoles.includes(user.role)) {
+    // Redirect to appropriate home (admin bypasses all role checks)
     switch (user.role) {
       case "customer": return <Redirect to="/" />;
       case "driver": return <Redirect to="/driver" />;
       case "laundromat": return <Redirect to="/staff" />;
       case "manager": return <Redirect to="/manager" />;
-      case "admin": return <Redirect to="/admin" />;
       default: return <Redirect to="/" />;
     }
   }
@@ -85,6 +86,8 @@ function AppRouter() {
       <Route path="/login" component={LoginPage} />
       <Route path="/register" component={RegisterPage} />
       <Route path="/role-select" component={RoleSelectPage} />
+      <Route path="/forgot-password" component={ForgotPasswordPage} />
+      <Route path="/reset-password" component={ResetPasswordPage} />
 
       {/* Customer routes */}
       <Route path="/">
@@ -224,7 +227,7 @@ function AppRouter() {
 function AppContent() {
   const [location] = useLocation();
   const { user } = useAuth();
-  const isAuth = location === "/login" || location === "/register" || location === "/role-select";
+  const isAuth = location === "/login" || location === "/register" || location === "/role-select" || location === "/forgot-password" || location.startsWith("/reset-password");
   const isAdmin = location.startsWith("/admin");
   const isStaff = location.startsWith("/staff");
   const isDriver = location.startsWith("/driver");

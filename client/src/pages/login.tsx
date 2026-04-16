@@ -131,7 +131,7 @@ export default function LoginPage() {
               data-testid="link-forgot-password"
               type="button"
               className="text-sm text-primary hover:text-primary/80 transition-colors"
-              onClick={() => toast({ title: "Password reset", description: "A reset link has been sent to your email address." })}
+              onClick={() => navigate("/forgot-password")}
             >
               Forgot Password?
             </button>
