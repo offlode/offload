@@ -132,6 +132,7 @@ export interface IStorage {
   // Message helpers
   getMessagesBySender(senderId: number): schema.Message[];
   getConversationsForUser(userId: number): schema.Message[];
+  getMessage(id: number): schema.Message | undefined;
   markMessageRead(id: number): schema.Message | undefined;
   // Driver Location History
   createDriverLocationHistory(data: schema.InsertDriverLocationHistory): schema.DriverLocationHistory;
@@ -447,6 +448,10 @@ class DatabaseStorage implements IStorage {
       or(eq(schema.messages.senderId, userId))
     ).orderBy(desc(schema.messages.timestamp)).all();
   }
+  getMessage(id: number) {
+    return db.select().from(schema.messages).where(eq(schema.messages.id, id)).get();
+  }
+
   markMessageRead(id: number) {
     return db.update(schema.messages).set({ readAt: new Date().toISOString() }).where(eq(schema.messages.id, id)).returning().get();
   }

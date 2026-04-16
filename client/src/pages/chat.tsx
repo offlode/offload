@@ -371,7 +371,7 @@ export default function ChatPage() {
           <div className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             <span className="text-xs text-muted-foreground">
-              {activeOrderId ? "Real-time messaging" : "AI Assistant + Order chats"}
+              {activeOrderId ? "Real-time messaging" : "Virtual Assistant + Order chats"}
             </span>
           </div>
         </div>
@@ -390,7 +390,7 @@ export default function ChatPage() {
       {/* Conversation List View */}
       {showConversations && !activeOrderId ? (
         <div className="flex-1 overflow-y-auto">
-          {/* AI Assistant entry */}
+          {/* Virtual Assistant entry */}
           <button
             onClick={() => {
               setActiveOrderId(null);
@@ -403,7 +403,7 @@ export default function ChatPage() {
               <Bot className="w-5 h-5 text-primary" />
             </div>
             <div className="flex-1">
-              <p className="text-sm font-semibold">AI Assistant</p>
+              <p className="text-sm font-semibold">Virtual Assistant</p>
               <p className="text-xs text-muted-foreground">Track orders, pricing help, and more</p>
             </div>
           </button>
@@ -433,10 +433,10 @@ export default function ChatPage() {
               <div className="text-left bg-card border border-border rounded-xl p-3 mx-2">
                 <div className="flex items-center gap-2 mb-2">
                   <Bot className="w-4 h-4 text-primary" />
-                  <span className="text-xs font-medium text-foreground">AI Assistant</span>
+                  <span className="text-xs font-medium text-foreground">Virtual Assistant</span>
                   <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
                 </div>
-                <p className="text-xs text-muted-foreground">I can help you track orders, get price quotes, or answer questions about our service. Tap the AI Assistant above to start a chat.</p>
+                <p className="text-xs text-muted-foreground">I can help you track orders, get price quotes, or answer questions about our service. Tap the Virtual Assistant above to start a chat.</p>
               </div>
             </div>
           )}
@@ -541,7 +541,7 @@ export default function ChatPage() {
                     setInputValue(e.target.value);
                     handleTypingInput();
                   }}
-                  placeholder={activeOrderId ? "Type a message..." : "Message Offload AI..."}
+                  placeholder={activeOrderId ? "Type a message..." : "Message Offload Support..."}
                   className="pr-4 rounded-full bg-muted border-0 focus-visible:ring-1 focus-visible:ring-primary/50"
                   disabled={sendMessageMutation.isPending || aiLoading}
                   autoComplete="off"

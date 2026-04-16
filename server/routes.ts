@@ -2,6 +2,7 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { createHash, randomBytes } from "crypto";
 import { Resend } from "resend";
+import Stripe from "stripe";
 import type { Server as SocketIOServer } from "socket.io";
 import { storage } from "./storage";
 import { isR2Enabled, uploadToR2, getPresignedDownloadUrl, getPresignedUploadUrl } from "./r2";
@@ -805,7 +806,7 @@ function generateAIResponse(intent: ChatIntent, userId: number, message: string)
 
     default: {
       return {
-        response: "Hi! I'm Offload's AI assistant. I can help you with:\n\n• **Order status** — track your active orders\n• **Pricing** — get a quote\n• **Cancellations** — cancel or reschedule\n• **Loyalty points** — check your rewards\n• **Subscriptions** — manage your plan\n• **Issues** — file a complaint\n\nWhat can I help you with today?",
+        response: "Hi! I'm Offload's virtual assistant. I can help you with:\n\n• **Order status** — track your active orders\n• **Pricing** — get a quote\n• **Cancellations** — cancel or reschedule\n• **Loyalty points** — check your rewards\n• **Subscriptions** — manage your plan\n• **Issues** — file a complaint\n\nWhat can I help you with today?",
         resolved: false,
         escalate: false,
       };
@@ -4282,8 +4283,16 @@ export async function registerRoutes(
   });
 
   app.get("/api/chat/sessions/:userId/:sessionId", requireAuth(), (req, res) => {
+    // Ownership check: user can only view their own chat sessions
+    if (Number(req.params.userId) !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const session = storage.getChatSession(Number(req.params.sessionId));
     if (!session) return res.status(404).json({ error: "Session not found" });
+    // Verify session belongs to the requested user
+    if (session.userId !== Number(req.params.userId) && !["admin", "manager"].includes(currentUser.role)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     res.json({
       ...session,
       messages: (() => { try { return session.messagesJson ? JSON.parse(session.messagesJson) : []; } catch (_) { return []; } })(),
@@ -5247,8 +5256,9 @@ export async function registerRoutes(
   const VENDOR_SHARE = 0.65;
   const DRIVER_SHARE = 0.35;
   const hasStripe = !!process.env.STRIPE_SECRET_KEY;
+  const stripe = hasStripe ? new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2024-12-18.acacia" as any }) : null;
 
-  app.post("/api/payments/create-intent", requireAuth(), (req, res) => {
+  app.post("/api/payments/create-intent", requireAuth(), async (req, res) => {
     const { orderId, amount } = req.body;
     if (!orderId || !amount) return res.status(400).json({ error: "orderId and amount required" });
     if (amount <= 0) return res.status(400).json({ error: "Amount must be positive" });
@@ -5256,18 +5266,40 @@ export async function registerRoutes(
     const order = storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    const demoIntentId = `pi_demo_${Date.now()}_${randomBytes(4).toString("hex")}`;
+    let intentId: string;
+    let clientSecret: string | null = null;
+
+    if (stripe) {
+      // Real Stripe payment intent
+      try {
+        const intent = await stripe.paymentIntents.create({
+          amount: Math.round(amount), // amount in cents
+          currency: "usd",
+          metadata: { orderId: String(orderId), orderNumber: order.orderNumber || "" },
+        });
+        intentId = intent.id;
+        clientSecret = intent.client_secret;
+      } catch (err: any) {
+        console.error("[Stripe] Payment intent creation failed:", err.message);
+        return res.status(500).json({ error: "Payment processing failed" });
+      }
+    } else {
+      // Demo mode fallback
+      intentId = `pi_demo_${Date.now()}_${randomBytes(4).toString("hex")}`;
+      clientSecret = `demo_secret_${intentId}`;
+    }
+
     const txn = storage.createPaymentTransaction({
       orderId: Number(orderId), type: "charge", amount, currency: "usd",
-      status: "pending", stripePaymentIntentId: demoIntentId,
+      status: "pending", stripePaymentIntentId: intentId,
       recipientType: "platform",
       platformFee: Math.round(amount * PLATFORM_FEE_RATE * 100) / 100,
       metadata: JSON.stringify({ demo: !hasStripe }), createdAt: now(),
     });
 
     res.json({
-      paymentIntentId: demoIntentId, transactionId: txn.id,
-      clientSecret: hasStripe ? null : `demo_secret_${demoIntentId}`,
+      paymentIntentId: intentId, transactionId: txn.id,
+      clientSecret,
       amount, status: "pending", demoMode: !hasStripe,
     });
   });
@@ -5293,7 +5325,7 @@ export async function registerRoutes(
     res.json({ status: "completed", orderId: order.id, demoMode: !hasStripe });
   });
 
-  app.post("/api/payments/refund", requireAuth(), (req, res) => {
+  app.post("/api/payments/refund", requireAuth(), async (req, res) => {
     const { orderId, amount, reason } = req.body;
     if (!orderId) return res.status(400).json({ error: "orderId required" });
     const order = storage.getOrder(Number(orderId));
@@ -5306,14 +5338,35 @@ export async function registerRoutes(
 
     const refundAmount = amount || order.total || 0;
     const ts_ = now();
+
+    // Real Stripe refund if payment was via Stripe
+    let stripeRefundId: string | null = null;
+    if (stripe) {
+      const chargeTxn = storage.getPaymentTransactionsByOrder(Number(orderId))
+        .find(t => t.type === "charge" && t.stripePaymentIntentId && !t.stripePaymentIntentId.startsWith("pi_demo_"));
+      if (chargeTxn?.stripePaymentIntentId) {
+        try {
+          const refund = await stripe.refunds.create({
+            payment_intent: chargeTxn.stripePaymentIntentId,
+            amount: Math.round(refundAmount),
+            reason: (reason === "duplicate" || reason === "fraudulent" || reason === "requested_by_customer") ? reason : "requested_by_customer",
+          });
+          stripeRefundId = refund.id;
+        } catch (err: any) {
+          console.error("[Stripe] Refund failed:", err.message);
+          return res.status(500).json({ error: "Refund processing failed" });
+        }
+      }
+    }
+
     const txn = storage.createPaymentTransaction({
       orderId: Number(orderId), type: "refund", amount: refundAmount,
       currency: "usd", status: "completed", recipientType: "platform",
-      metadata: JSON.stringify({ reason, demo: !hasStripe }),
+      metadata: JSON.stringify({ reason, stripeRefundId, demo: !hasStripe }),
       createdAt: ts_, completedAt: ts_,
     });
     storage.updateOrder(order.id, { paymentStatus: "refunded" });
-    res.json({ refundId: txn.id, amount: refundAmount, status: "completed", demoMode: !hasStripe });
+    res.json({ refundId: txn.id, stripeRefundId, amount: refundAmount, status: "completed", demoMode: !hasStripe });
   });
 
   app.get("/api/payments/order/:id", requireAuth(), (req, res) => {
@@ -6110,6 +6163,16 @@ export async function registerRoutes(
 
   // ── Mark message as read ──
   app.patch("/api/messages/:id/read", requireAuth(), (req, res) => {
+    // First get the message to check ownership
+    const existing = storage.getMessage(Number(req.params.id));
+    if (!existing) return res.status(404).json({ error: "Message not found" });
+    // Verify the current user is a participant in this order
+    if (existing.orderId) {
+      const order = storage.getOrder(existing.orderId);
+      if (order && order.customerId !== currentUser.id && order.driverId !== currentUser.id && order.vendorId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+    }
     const message = storage.markMessageRead(Number(req.params.id));
     if (!message) return res.status(404).json({ error: "Message not found" });
 
@@ -6551,32 +6614,37 @@ export async function registerRoutes(
     }
 
     try {
-      // Verify webhook signature using raw body buffer for correct HMAC
-      const crypto = require("crypto");
-      const payload = (req as any).rawBody ? (req as any).rawBody.toString() : (typeof req.body === "string" ? req.body : JSON.stringify(req.body));
-      const sigParts = (sig as string).split(",").reduce((acc: any, part: string) => {
-        const [k, v] = part.split("=");
-        acc[k] = v;
-        return acc;
-      }, {} as Record<string, string>);
-      const timestamp = sigParts["t"];
-      const expectedSig = sigParts["v1"];
-      if (!timestamp || !expectedSig) {
-        return res.status(400).json({ error: "Invalid stripe-signature format" });
+      // Use Stripe SDK constructEvent for proper signature verification with raw body
+      const rawBody = (req as any).rawBody ? (req as any).rawBody.toString() : (typeof req.body === "string" ? req.body : JSON.stringify(req.body));
+      let event: any;
+      if (stripe) {
+        // Use official Stripe SDK verification
+        event = stripe.webhooks.constructEvent(rawBody, sig as string, webhookSecret);
+      } else {
+        // Fallback manual HMAC verification for environments without Stripe SDK
+        const crypto = require("crypto");
+        const sigParts = (sig as string).split(",").reduce((acc: any, part: string) => {
+          const [k, v] = part.split("=");
+          acc[k] = v;
+          return acc;
+        }, {} as Record<string, string>);
+        const timestamp = sigParts["t"];
+        const expectedSig = sigParts["v1"];
+        if (!timestamp || !expectedSig) {
+          return res.status(400).json({ error: "Invalid stripe-signature format" });
+        }
+        const signedPayload = `${timestamp}.${rawBody}`;
+        const computedSig = crypto.createHmac("sha256", webhookSecret).update(signedPayload).digest("hex");
+        if (computedSig !== expectedSig) {
+          console.warn("[Stripe Webhook] REJECTED — signature mismatch");
+          return res.status(400).json({ error: "Webhook signature verification failed" });
+        }
+        const ageSeconds = Math.floor(Date.now() / 1000) - Number(timestamp);
+        if (Math.abs(ageSeconds) > 300) {
+          return res.status(400).json({ error: "Webhook timestamp too old" });
+        }
+        event = JSON.parse(rawBody);
       }
-      const signedPayload = `${timestamp}.${payload}`;
-      const computedSig = crypto.createHmac("sha256", webhookSecret).update(signedPayload).digest("hex");
-      if (computedSig !== expectedSig) {
-        console.warn("[Stripe Webhook] REJECTED — signature mismatch");
-        return res.status(400).json({ error: "Webhook signature verification failed" });
-      }
-      // Check timestamp freshness (reject events older than 5 minutes)
-      const ageSeconds = Math.floor(Date.now() / 1000) - Number(timestamp);
-      if (Math.abs(ageSeconds) > 300) {
-        return res.status(400).json({ error: "Webhook timestamp too old" });
-      }
-
-      const event = req.body;
 
       switch (event.type) {
         case "payment_intent.succeeded": {

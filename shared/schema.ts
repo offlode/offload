@@ -307,7 +307,7 @@ export const messages = sqliteTable("messages", {
   senderId: integer("sender_id").notNull(),
   senderRole: text("sender_role").notNull(),
   content: text("content").notNull(),
-  messageType: text("message_type").default("text"), // text | image | system | ai_response
+  messageType: text("message_type").default("text"), // text | image | system | auto_response
   isAiGenerated: integer("is_ai_generated").default(0),
   readAt: text("read_at"),
   timestamp: text("timestamp").notNull(),
