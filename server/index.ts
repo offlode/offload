@@ -21,7 +21,7 @@ const httpServer = createServer(app);
 
 // ── Socket.io Setup ──
 const io = new SocketIOServer(httpServer, {
-  cors: { origin: "*" },
+  cors: { origin: process.env.CORS_ORIGINS?.split(",") || ["http://localhost:5000", "https://offloadusa.com"], credentials: true },
   path: "/ws",
 });
 
@@ -128,7 +128,9 @@ app.use((req, res, next) => {
   const ERROR_LOG: Array<{ts: string; status: number; method: string; path: string; message: string; stack?: string}> = [];
   const MAX_ERRORS = 500;
 
-  app.get("/api/admin/errors", (_req: Request, res: Response) => {
+  app.get("/api/admin/errors", (req: Request, res: Response) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: "Authentication required" });
     res.json({ count: ERROR_LOG.length, errors: ERROR_LOG.slice(-100).reverse() });
   });
 

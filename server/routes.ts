@@ -129,7 +129,7 @@ setInterval(() => {
 function generateOrderNumber(): string {
   const prefix = "OFF";
   const ts = Date.now().toString(36).toUpperCase();
-  const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
+  const rand = randomBytes(3).toString("hex").toUpperCase().substring(0, 4);
   return `${prefix}-${ts}-${rand}`;
 }
 
@@ -296,7 +296,7 @@ function calculateQuotePrice(input: {
 function generateQuoteNumber(): string {
   const prefix = "QT";
   const ts = Date.now().toString(36).toUpperCase();
-  const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
+  const rand = randomBytes(3).toString("hex").toUpperCase().substring(0, 4);
   return `${prefix}-${ts}-${rand}`;
 }
 
@@ -509,7 +509,7 @@ function getOrderOwnershipAllowed(order: any, user: any, driverRecord?: any, ven
   if (role === "admin" || role === "manager") return true;
   if (role === "customer" && order.customerId === user.id) return true;
   if (role === "driver" && driverRecord && order.driverId === driverRecord.id) return true;
-  if (role === "laundromat" && vendorRecord && order.vendorId === vendorRecord.id) return true;
+  if (["laundromat","vendor"].includes(role) && vendorRecord && order.vendorId === vendorRecord.id) return true;
   if (role === "support") return true;
   return false;
 }
@@ -519,12 +519,15 @@ function getOrderOwnershipAllowed(order: any, user: any, driverRecord?: any, ven
 // ════════════════════════════════════════════════════════════════
 
 function calculatePayouts(order: Order) {
-  const vendorPayout = Math.round((order.subtotal || 0) * 0.65 * 100) / 100; // 65% to vendor
+  const vendor = order.vendorId ? storage.getVendor(order.vendorId) : null;
+  const payoutRate = (vendor as any)?.payoutRate || 0.65;
+  const vendorPayout = Math.round((order.subtotal || 0) * payoutRate * 100) / 100;
   const driverPayout = 8.50 * 2; // $8.50 per trip (pickup + delivery = 2 trips)
   return { vendorPayout, driverPayout };
 }
 
 function processPaymentCapture(order: Order) {
+  if (order.paymentStatus === "captured") return;
   // In a real system, this would call Stripe/payment gateway
   // For now, we simulate the capture
   storage.updateOrder(order.id, {
@@ -1071,10 +1074,6 @@ function requireAuth(allowedRoles?: string[]) {
     const authHeader = req.headers.authorization;
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
-    // Fallback: also check x-user-id for backward compatibility during migration
-    // This will be removed in a future release
-    const legacyUserId = req.headers["x-user-id"];
-
     let userId: number | null = null;
 
     if (token) {
@@ -1083,9 +1082,6 @@ function requireAuth(allowedRoles?: string[]) {
         return res.status(401).json({ error: "Session expired or invalid" });
       }
       userId = session.userId;
-    } else if (legacyUserId && process.env.NODE_ENV !== "production") {
-      // Only allow x-user-id in non-production for migration period
-      userId = Number(legacyUserId);
     }
 
     if (!userId) {
@@ -1268,6 +1264,21 @@ export async function registerRoutes(
   // Set Socket.io reference for emit helpers
   setIO(io);
 
+  // Seed WELCOME20 promo code if it doesn't exist
+  const welcome = storage.getPromoCode("WELCOME20");
+  if (!welcome) {
+    storage.createPromoCode({
+      code: "WELCOME20",
+      type: "percentage",
+      value: 20,
+      maxUses: 10000,
+      usedCount: 0,
+      isActive: 1,
+      minOrderAmount: 0,
+      expiresAt: null,
+    });
+  }
+
   // ── Security headers + CORS for website ──
   app.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -1359,8 +1370,8 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.post("/api/auth/register", (req, res) => {
-    const { name, email, phone, password, role, referralCode } = req.body;
-    if (!name || !email || !password || !role) {
+    const { name, email, phone, password, referralCode } = req.body;
+    if (!name || !email || !password) {
       return res.status(400).json({ error: "Missing required fields" });
     }
     const existingUser = storage.getUserByEmail(email);
@@ -1386,25 +1397,13 @@ export async function registerRoutes(
       name,
       email,
       phone: phone || null,
-      role,
+      role: "customer",
       memberSince: new Date().toISOString().split("T")[0],
       loyaltyPoints: referrerId ? 100 : 0, // 100 bonus points if referred
       loyaltyTier: "bronze",
       referralCode: newReferralCode,
       referredBy: referrerId,
     });
-
-    // If registering as driver, create driver record
-    if (role === "driver") {
-      storage.createDriver({
-        userId: user.id,
-        name,
-        phone: phone || "",
-        status: "available",
-        rating: 5.0,
-        completedTrips: 0,
-      });
-    }
 
     // If referred, create referral record
     if (referrerId) {
@@ -1489,10 +1488,17 @@ export async function registerRoutes(
 
   app.patch("/api/users/:id", requireAuth(), (req, res) => {
     const currentUserU = (req as any).currentUser;
-    if (currentUserU.role !== "admin" && currentUserU.role !== "manager" && currentUserU.id !== Number(req.params.id)) {
+    const targetId = Number(req.params.id);
+    if (targetId !== currentUserU.id && !["admin","manager"].includes(currentUserU.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const updated = storage.updateUser(Number(req.params.id), req.body);
+    const SELF_FIELDS = ["name","email","phone","profileImage","notificationPreferences"];
+    const updateData: any = {};
+    for (const k of SELF_FIELDS) { if (req.body[k] !== undefined) updateData[k] = req.body[k]; }
+    if (["admin","manager"].includes(currentUserU.role)) {
+      if (req.body.role) updateData.role = req.body.role;
+    }
+    const updated = storage.updateUser(targetId, updateData);
     if (!updated) return res.status(404).json({ error: "User not found" });
     res.json({ ...updated, password: undefined });
   });
@@ -1517,13 +1523,13 @@ export async function registerRoutes(
     res.json(storage.getVendors());
   });
 
-  app.get("/api/vendors/:id", requireAuth(["admin", "manager", "laundromat"]), (req, res) => {
+  app.get("/api/vendors/:id", requireAuth(["admin", "manager", "laundromat", "vendor"]), (req, res) => {
     const v = storage.getVendor(Number(req.params.id));
     if (!v) return res.status(404).json({ error: "Vendor not found" });
     res.json(v);
   });
 
-  app.get("/api/vendors/:id/stats", requireAuth(["admin", "manager", "laundromat"]), (req, res) => {
+  app.get("/api/vendors/:id/stats", requireAuth(["admin", "manager", "laundromat", "vendor"]), (req, res) => {
     res.json(storage.getVendorStats(Number(req.params.id)));
   });
 
@@ -1532,7 +1538,7 @@ export async function registerRoutes(
     res.status(201).json(vendor);
   });
 
-  app.patch("/api/vendors/:id", requireAuth(["admin", "manager"]), (req, res) => {
+  app.patch("/api/vendors/:id", requireAuth(["admin", "manager", "laundromat", "vendor"]), (req, res) => {
     const updated = storage.updateVendor(Number(req.params.id), req.body);
     if (!updated) return res.status(404).json({ error: "Vendor not found" });
     res.json(updated);
@@ -1565,7 +1571,7 @@ export async function registerRoutes(
   app.post("/api/drivers", requireAuth(["admin", "manager"]), (req, res) => {
     const driverUser = storage.createUser({
       username: req.body.name.toLowerCase().replace(/\s/g, "_") + "_driver",
-      password: "driver123",
+      password: hashPassword("driver123"),
       name: req.body.name,
       email: req.body.email || `${req.body.name.toLowerCase().replace(/\s/g, ".")}@offload.com`,
       phone: req.body.phone,
@@ -2047,7 +2053,7 @@ export async function registerRoutes(
     }
 
     // Vendor sees only their assigned orders
-    if (userRole === "laundromat") {
+    if (["laundromat","vendor"].includes(userRole)) {
       const vendorProfile = storage.getVendorByUserId?.(user.id);
       if (vendorProfile) return res.json(storage.getOrdersByVendor(vendorProfile.id));
       return res.json([]);
@@ -2122,15 +2128,17 @@ export async function registerRoutes(
   // ── CREATE ORDER (the main flow) ──
   app.post("/api/orders", requireAuth(), (req, res) => {
     try {
+      const currentUser = (req as any).currentUser;
+      const customerId = currentUser.id;
       const {
-        customerId, pickupAddressId, pickupAddress, deliveryType, deliverySpeed,
+        pickupAddressId, pickupAddress, deliveryType, deliverySpeed,
         scheduledPickup, pickupTimeWindow, bags, preferences, certifiedOnly,
         customerNotes, addressNotes, paymentMethodId, serviceType, promoCode,
         loyaltyPointsToRedeem, pricingTierId, tierName, selectedAddOns,
       } = req.body;
 
-      if (!customerId || !pickupAddressId || !pickupAddress) {
-        return res.status(400).json({ error: "Missing required fields: customerId, pickupAddressId, pickupAddress" });
+      if (!pickupAddressId || !pickupAddress) {
+        return res.status(400).json({ error: "Missing required fields: pickupAddressId, pickupAddress" });
       }
 
       let parsedBags: any[];
@@ -2434,7 +2442,7 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Access denied" });
       }
     }
-    if (currentUser.role === "laundromat") {
+    if (["laundromat","vendor"].includes(currentUser.role)) {
       // Vendor can only see orders assigned to their vendor profile
       const vendorProfile = (storage as any).getVendorByUserId?.(currentUser.id);
       if (!vendorProfile || order.vendorId !== vendorProfile.id) {
@@ -2709,7 +2717,7 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Access denied" });
       }
     }
-    if (currentUser.role === "laundromat") {
+    if (["laundromat","vendor"].includes(currentUser.role)) {
       const vendorProfile = (storage as any).getVendorByUserId?.(currentUser.id);
       if (!vendorProfile || order.vendorId !== vendorProfile.id) {
         return res.status(403).json({ error: "Access denied" });
@@ -2741,7 +2749,7 @@ export async function registerRoutes(
 
     // Prevent customers from modifying sensitive fields
     if (currentUser.role === "customer") {
-      const forbidden = ["vendorId", "driverId", "total", "paymentStatus", "paymentIntentId"];
+      const forbidden = ["vendorId", "driverId", "total", "paymentStatus", "paymentIntentId", "subtotal", "tax", "finalPrice", "discount", "deliveryFee", "tip", "overageCharge", "customerId", "loyaltyPointsUsed", "loyaltyPointsEarned"];
       for (const key of forbidden) {
         if (key in req.body) {
           return res.status(403).json({ error: `Customers cannot modify '${key}'` });
@@ -2806,12 +2814,12 @@ export async function registerRoutes(
 
 
   // ── WS5: Vendor order actions (accept/reject/complete) ──
-  app.post("/api/orders/:id/vendor-action", requireAuth(["laundromat", "admin", "manager"]), (req, res) => {
+  app.post("/api/orders/:id/vendor-action", requireAuth(["laundromat", "vendor", "admin", "manager"]), (req, res) => {
     const order = storage.getOrder(Number(req.params.id));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const currentUser = (req as any).currentUser;
-    if (currentUser.role === "laundromat") {
+    if (["laundromat","vendor"].includes(currentUser.role)) {
       const vendorProfile = (storage as any).getVendorByUserId?.(currentUser.id);
       if (!vendorProfile || order.vendorId !== vendorProfile.id) {
         return res.status(403).json({ error: "Access denied" });
@@ -2956,7 +2964,7 @@ export async function registerRoutes(
   //  STAFF QUALITY STATS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/staff/quality-stats", (req, res) => {
+  app.get("/api/staff/quality-stats", requireAuth(), (req, res) => {
     const vendorId = Number(req.query.vendorId);
     if (!vendorId) return res.status(400).json({ error: "vendorId required" });
 
@@ -3036,7 +3044,7 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   // Staff records intake weight
-  app.post("/api/orders/:id/intake", requireAuth(["laundromat", "admin"]), (req, res) => {
+  app.post("/api/orders/:id/intake", requireAuth(["laundromat", "vendor", "admin"]), (req, res) => {
     const order = storage.getOrder(Number(req.params.id));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -3063,7 +3071,7 @@ export async function registerRoutes(
   });
 
   // Staff records output weight (after wash)
-  app.post("/api/orders/:id/output-weight", requireAuth(["laundromat", "admin"]), (req, res) => {
+  app.post("/api/orders/:id/output-weight", requireAuth(["laundromat", "vendor", "admin"]), (req, res) => {
     const order = storage.getOrder(Number(req.params.id));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -3119,7 +3127,7 @@ export async function registerRoutes(
   });
 
   // Driver records dirty weight at pickup
-  app.post("/api/orders/:id/record-dirty-weight", requireAuth(["driver", "laundromat", "admin"]), (req, res) => {
+  app.post("/api/orders/:id/record-dirty-weight", requireAuth(["driver", "laundromat", "vendor", "admin"]), (req, res) => {
     const order = storage.getOrder(Number(req.params.id));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -3142,7 +3150,7 @@ export async function registerRoutes(
   });
 
   // Staff records clean weight after wash — auto-calculates overage and final price
-  app.post("/api/orders/:id/record-clean-weight", requireAuth(["laundromat", "admin"]), (req, res) => {
+  app.post("/api/orders/:id/record-clean-weight", requireAuth(["laundromat", "vendor", "admin"]), (req, res) => {
     const order = storage.getOrder(Number(req.params.id));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -3172,7 +3180,7 @@ export async function registerRoutes(
       const orderAddOnsList = storage.getOrderAddOns(order.id);
       const addOnsTotal = orderAddOnsList.reduce((sum, oa) => sum + oa.total, 0);
 
-      const finalPrice = Math.round((tierFlatPrice + overageCharge + addOnsTotal - (order.discount || 0)) * 100) / 100;
+      const finalPrice = Math.round((tierFlatPrice + overageCharge + addOnsTotal - (order.discount || 0) + (order.tax || 0) + (order.deliveryFee || 0)) * 100) / 100;
       updateData.finalPrice = Math.max(0, finalPrice);
 
       if (overageWeight > 0) {
@@ -3322,7 +3330,7 @@ export async function registerRoutes(
     res.json(storage.getConsentsByOrder(Number(req.params.id)));
   });
 
-  app.post("/api/orders/:id/consents", requireAuth(["laundromat", "admin"]), (req, res) => {
+  app.post("/api/orders/:id/consents", requireAuth(["laundromat", "vendor", "admin"]), (req, res) => {
     const ts_ = now();
     const autoApproveAt = new Date(Date.now() + CONSENT_TIMEOUT_HOURS * 3600000).toISOString();
 
@@ -4659,7 +4667,7 @@ export async function registerRoutes(
     // Monthly trend (simulated for demo since we don't have months of data)
     const months = ["Aug", "Sep", "Oct", "Nov", "Dec", "Jan"];
     const monthlyTrend = months.map((month, i) => {
-      const factor = 0.6 + (i * 0.1) + (Math.random() * 0.15);
+      const factor = 0.6 + (i * 0.1) + 0.075;
       const revenue = Math.round(totalRevenue * factor * 4);
       return {
         month,
@@ -4690,7 +4698,7 @@ export async function registerRoutes(
       const users = storage.getUsersByRole(role);
       return res.json(users.map(u => ({ ...u, password: undefined })));
     }
-    const allRoles = ["customer", "driver", "laundromat", "manager", "admin"];
+    const allRoles = ["customer", "driver", "laundromat", "vendor", "manager", "admin"];
     const allUsers = allRoles.flatMap(r => storage.getUsersByRole(r));
     res.json(allUsers.map(u => ({ ...u, password: undefined })));
   });
@@ -4829,7 +4837,7 @@ export async function registerRoutes(
       pickupAddress: o.pickupAddress || "Miami, FL",
       deliveryAddress: o.deliveryAddress || "Miami, FL",
       earnings: perTrip,
-      tip: Math.random() > 0.3 ? Math.round(Math.random() * 5 * 100) / 100 : 0,
+      tip: o.tip || 0,
       timestamp: o.deliveredAt || o.createdAt || new Date().toISOString(),
       status: "completed",
     }));
@@ -4994,7 +5002,7 @@ export async function registerRoutes(
         updateData.overageWeight = Math.round(overage * 100) / 100;
         updateData.overageCharge = Math.round(overage * overageRate * 100) / 100;
         const addOnsTotal = storage.getOrderAddOns(order.id).reduce((sum, a) => sum + a.total, 0);
-        updateData.finalPrice = Math.round(((order.tierFlatPrice || 0) + updateData.overageCharge + addOnsTotal - (order.discount || 0)) * 100) / 100;
+        updateData.finalPrice = Math.round(((order.tierFlatPrice || 0) + updateData.overageCharge + addOnsTotal - (order.discount || 0) + (order.tax || 0) + (order.deliveryFee || 0)) * 100) / 100;
       }
     }
 
@@ -5026,7 +5034,7 @@ export async function registerRoutes(
     const order = storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    const demoIntentId = `pi_demo_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const demoIntentId = `pi_demo_${Date.now()}_${randomBytes(4).toString("hex")}`;
     const txn = storage.createPaymentTransaction({
       orderId: Number(orderId), type: "charge", amount, currency: "usd",
       status: "pending", stripePaymentIntentId: demoIntentId,
@@ -5103,7 +5111,7 @@ export async function registerRoutes(
     const existing = storage.getStripeAccount(Number(userId));
     if (existing) return res.json({ accountId: existing.stripeAccountId, status: existing.status, onboardingUrl: null, existing: true });
 
-    const demoAccountId = `acct_demo_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const demoAccountId = `acct_demo_${Date.now()}_${randomBytes(3).toString("hex")}`;
     const account = storage.createStripeAccount({
       userId: Number(userId), userType, stripeAccountId: demoAccountId,
       status: hasStripe ? "pending" : "active",
@@ -5292,7 +5300,7 @@ export async function registerRoutes(
     if (!orderForPhotos) return res.status(404).json({ error: "Order not found" });
     const cu = (req as any).currentUser;
     const drPhoto = cu.role === "driver" ? storage.getDriverByUserId(cu.id) : null;
-    const vnPhoto = cu.role === "laundromat" ? (storage as any).getVendorByUserId?.(cu.id) ?? (orderForPhotos.vendorId ? storage.getVendor(orderForPhotos.vendorId) : null) : null;
+    const vnPhoto = ["laundromat","vendor"].includes(cu.role) ? (storage as any).getVendorByUserId?.(cu.id) ?? (orderForPhotos.vendorId ? storage.getVendor(orderForPhotos.vendorId) : null) : null;
     if (!getOrderOwnershipAllowed(orderForPhotos, cu, drPhoto, vnPhoto)) {
       return res.status(403).json({ error: "Access denied" });
     }
@@ -5313,7 +5321,7 @@ export async function registerRoutes(
     if (!orderSingle) return res.status(404).json({ error: "Order not found" });
     const cuS = (req as any).currentUser;
     const drS = cuS.role === "driver" ? storage.getDriverByUserId(cuS.id) : null;
-    const vnS = cuS.role === "laundromat" ? (storage as any).getVendorByUserId?.(cuS.id) ?? (orderSingle.vendorId ? storage.getVendor(orderSingle.vendorId) : null) : null;
+    const vnS = ["laundromat","vendor"].includes(cuS.role) ? (storage as any).getVendorByUserId?.(cuS.id) ?? (orderSingle.vendorId ? storage.getVendor(orderSingle.vendorId) : null) : null;
     if (!getOrderOwnershipAllowed(orderSingle, cuS, drS, vnS)) {
       return res.status(403).json({ error: "Access denied" });
     }
@@ -5328,7 +5336,7 @@ export async function registerRoutes(
     if (!orderT) return res.status(404).json({ error: "Order not found" });
     const cuT = (req as any).currentUser;
     const drT = cuT.role === "driver" ? storage.getDriverByUserId(cuT.id) : null;
-    const vnT = cuT.role === "laundromat" ? (storage as any).getVendorByUserId?.(cuT.id) ?? (orderT.vendorId ? storage.getVendor(orderT.vendorId) : null) : null;
+    const vnT = ["laundromat","vendor"].includes(cuT.role) ? (storage as any).getVendorByUserId?.(cuT.id) ?? (orderT.vendorId ? storage.getVendor(orderT.vendorId) : null) : null;
     if (!getOrderOwnershipAllowed(orderT, cuT, drT, vnT)) {
       return res.status(403).json({ error: "Access denied" });
     }
@@ -5530,7 +5538,7 @@ export async function registerRoutes(
       }
       if (notifConfig.staff && order.vendorId) {
         // Notify all staff at the vendor
-        const staffUsers = storage.getUsersByRole("laundromat").filter(u => u.vendorId === order.vendorId);
+        const staffUsers = [...storage.getUsersByRole("laundromat"), ...storage.getUsersByRole("vendor")].filter(u => u.vendorId === order.vendorId);
         staffUsers.forEach(s => {
           notifyAndEmit(s.id, order.id, "order_update",
             `Order ${STATUS_LABELS[newStatus] || newStatus}`, notifConfig.staff!, `/staff`);
@@ -5639,7 +5647,7 @@ export async function registerRoutes(
     const order = storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
     const driverRec = currentUser.role === "driver" ? storage.getDriverByUserId(currentUser.id) : null;
-    const vendorRec = currentUser.role === "laundromat" ? (storage as any).getVendorByUserId?.(currentUser.id) ?? (order.vendorId ? storage.getVendor(order.vendorId) : null) : null;
+    const vendorRec = ["laundromat","vendor"].includes(currentUser.role) ? (storage as any).getVendorByUserId?.(currentUser.id) ?? (order.vendorId ? storage.getVendor(order.vendorId) : null) : null;
     if (!getOrderOwnershipAllowed(order, currentUser, driverRec, vendorRec)) {
       return res.status(403).json({ error: "Access denied" });
     }

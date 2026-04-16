@@ -140,6 +140,7 @@ export interface IStorage {
   createOrderPhoto(data: schema.InsertOrderPhoto): schema.OrderPhoto;
   getOrderPhotos(orderId: number): schema.OrderPhoto[];
   getOrderPhotosByType(orderId: number, type: string): schema.OrderPhoto[];
+  getPhotosByOrder(orderId: number): schema.OrderPhoto[];
   // Notification helpers
   deleteNotification(id: number): void;
   getNotificationsByCategory(userId: number, category: string): schema.Notification[];
@@ -462,6 +463,11 @@ class DatabaseStorage implements IStorage {
     return db.select().from(schema.orderPhotos)
       .where(and(eq(schema.orderPhotos.orderId, orderId), eq(schema.orderPhotos.type, type)))
       .orderBy(schema.orderPhotos.timestamp)
+      .all();
+  }
+  getPhotosByOrder(orderId: number) {
+    return db.select().from(schema.orderPhotos)
+      .where(eq(schema.orderPhotos.orderId, orderId))
       .all();
   }
 
