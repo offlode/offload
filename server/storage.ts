@@ -54,6 +54,7 @@ export interface IStorage {
   getOrderEvents(orderId: number): schema.OrderEvent[];
   createOrderEvent(data: schema.InsertOrderEvent): schema.OrderEvent;
   // Payment Methods
+  getPaymentMethod(id: number): schema.PaymentMethod | undefined;
   getPaymentMethodsByUser(userId: number): schema.PaymentMethod[];
   createPaymentMethod(data: schema.InsertPaymentMethod): schema.PaymentMethod;
   updatePaymentMethod(id: number, data: Partial<schema.InsertPaymentMethod>): schema.PaymentMethod | undefined;
@@ -80,6 +81,7 @@ export interface IStorage {
   getReviewsByDriver(driverId: number): schema.Review[];
   createReview(data: schema.InsertReview): schema.Review;
   // Notifications
+  getNotification(id: number): schema.Notification | undefined;
   getNotificationsByUser(userId: number): schema.Notification[];
   getUnreadCount(userId: number): number;
   createNotification(data: schema.InsertNotification): schema.Notification;
@@ -268,6 +270,7 @@ class DatabaseStorage implements IStorage {
   createOrderEvent(data: schema.InsertOrderEvent) { return db.insert(schema.orderEvents).values(data).returning().get(); }
 
   // ─── Payment Methods ───
+  getPaymentMethod(id: number) { return db.select().from(schema.paymentMethods).where(eq(schema.paymentMethods.id, id)).get(); }
   getPaymentMethodsByUser(userId: number) { return db.select().from(schema.paymentMethods).where(eq(schema.paymentMethods.userId, userId)).all(); }
   createPaymentMethod(data: schema.InsertPaymentMethod) { return db.insert(schema.paymentMethods).values(data).returning().get(); }
   updatePaymentMethod(id: number, data: Partial<schema.InsertPaymentMethod>) {
@@ -309,6 +312,7 @@ class DatabaseStorage implements IStorage {
   createReview(data: schema.InsertReview) { return db.insert(schema.reviews).values(data).returning().get(); }
 
   // ─── Notifications ───
+  getNotification(id: number) { return db.select().from(schema.notifications).where(eq(schema.notifications.id, id)).get(); }
   getNotificationsByUser(userId: number) {
     return db.select().from(schema.notifications).where(eq(schema.notifications.userId, userId)).orderBy(desc(schema.notifications.createdAt)).all();
   }

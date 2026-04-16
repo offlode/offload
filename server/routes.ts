@@ -82,7 +82,7 @@ function destroySession(token: string): void {
 // Clean up expired sessions every 10 minutes
 setInterval(() => {
   const now = Date.now();
-  for (const [token, session] of sessions) {
+  for (const [token, session] of Array.from(sessions.entries())) {
     if (now > session.expiresAt) sessions.delete(token);
   }
 }, 10 * 60 * 1000);
@@ -117,7 +117,7 @@ function recordLoginAttempt(ip: string): void {
 // Clean up rate limit records every 30 minutes
 setInterval(() => {
   const now = Date.now();
-  for (const [ip, record] of loginAttempts) {
+  for (const [ip, record] of Array.from(loginAttempts.entries())) {
     if (now - record.firstAttempt > LOGIN_WINDOW_MS) loginAttempts.delete(ip);
   }
 }, 30 * 60 * 1000);
@@ -1071,31 +1071,20 @@ function requireAuth(allowedRoles?: string[]) {
     const authHeader = req.headers.authorization;
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
-    // Fallback: also check x-user-id for backward compatibility during migration
-    // This will be removed in a future release
-    const legacyUserId = req.headers["x-user-id"];
-
-    let userId: number | null = null;
-
-    if (token) {
-      const session = getSession(token);
-      if (!session) {
-        return res.status(401).json({ error: "Session expired or invalid" });
-      }
-      userId = session.userId;
-    } else if (legacyUserId && process.env.NODE_ENV !== "production") {
-      // Only allow x-user-id in non-production for migration period
-      userId = Number(legacyUserId);
-    }
-
-    if (!userId) {
+    if (!token) {
       return res.status(401).json({ error: "Authentication required" });
     }
 
-    const user = storage.getUser(userId);
+    const session = getSession(token);
+    if (!session) {
+      return res.status(401).json({ error: "Session expired or invalid" });
+    }
+
+    const user = storage.getUser(session.userId);
     if (!user) {
       return res.status(401).json({ error: "Invalid user" });
     }
+    // SECURITY: Role comes from the stored user record, never from request headers/body
     if (allowedRoles && !allowedRoles.includes(user.role)) {
       return res.status(403).json({ error: "Insufficient permissions" });
     }
@@ -1175,6 +1164,52 @@ function startBackgroundTasks() {
       }
     }
   }, 120000);
+
+  // STUCK ORDER DETECTION — check every 5 minutes for orders that haven't progressed
+  setInterval(() => {
+    const activeOrders = storage.getActiveOrders();
+    const nowMs = Date.now();
+    const STUCK_THRESHOLDS_MS: Record<string, number> = {
+      pending: 2 * 60 * 60 * 1000,              // 2 hours without being scheduled
+      scheduled: 4 * 60 * 60 * 1000,             // 4 hours without driver assignment
+      driver_assigned: 1 * 60 * 60 * 1000,       // 1 hour without driver starting
+      driver_en_route_pickup: 45 * 60 * 1000,    // 45 min to reach pickup
+      arrived_pickup: 30 * 60 * 1000,             // 30 min at pickup
+      at_facility: 6 * 60 * 60 * 1000,           // 6 hours at facility without processing
+      processing: 4 * 60 * 60 * 1000,            // 4 hours in processing
+      ready_for_delivery: 2 * 60 * 60 * 1000,    // 2 hours waiting for delivery driver
+      driver_en_route_delivery: 45 * 60 * 1000,  // 45 min to reach delivery
+    };
+
+    for (const order of activeOrders) {
+      if (order.status === "cancelled" || order.status === "completed" || order.status === "delivered") continue;
+      const threshold = STUCK_THRESHOLDS_MS[order.status];
+      if (!threshold) continue;
+
+      const updatedAt = new Date(order.updatedAt).getTime();
+      const stuckDuration = nowMs - updatedAt;
+      if (stuckDuration > threshold) {
+        // Flag as stuck — notify admins
+        const admins = storage.getUsersByRole("admin");
+        admins.forEach(admin => {
+          notifyUser(admin.id, order.id, "system",
+            "Stuck Order Alert",
+            `Order ${order.orderNumber} has been in '${order.status}' for ${Math.round(stuckDuration / 60000)} minutes without progressing.`,
+            `/admin/orders`
+          );
+        });
+        storage.createOrderEvent({
+          orderId: order.id,
+          eventType: "stuck_order_detected",
+          description: `Order stuck in '${order.status}' for ${Math.round(stuckDuration / 60000)} minutes`,
+          actorRole: "system",
+          timestamp: now(),
+        });
+        // Touch the updatedAt to avoid re-alerting every 5 minutes
+        storage.updateOrder(order.id, { updatedAt: now() });
+      }
+    }
+  }, 300000);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1484,7 +1519,14 @@ export async function registerRoutes(
     }
     const user = storage.getUser(Number(req.params.id));
     if (!user) return res.status(404).json({ error: "User not found" });
-    res.json({ ...user, password: undefined });
+    // SECURITY: never expose sensitive fields
+    const { password, ...safeUser } = user;
+    // Only expose phone/email to the user themselves or admin/manager
+    if (currentUserP.id !== user.id && currentUserP.role !== "admin" && currentUserP.role !== "manager") {
+      const { phone, email, ...publicUser } = safeUser;
+      return res.json(publicUser);
+    }
+    res.json(safeUser);
   });
 
   app.patch("/api/users/:id", requireAuth(), (req, res) => {
@@ -1492,7 +1534,10 @@ export async function registerRoutes(
     if (currentUserU.role !== "admin" && currentUserU.role !== "manager" && currentUserU.id !== Number(req.params.id)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const updated = storage.updateUser(Number(req.params.id), req.body);
+    // SECURITY: prevent role escalation — only admins can change roles
+    const { role, password, ...safeFields } = req.body;
+    const updateData = currentUserU.role === "admin" ? req.body : safeFields;
+    const updated = storage.updateUser(Number(req.params.id), updateData);
     if (!updated) return res.status(404).json({ error: "User not found" });
     res.json({ ...updated, password: undefined });
   });
@@ -1513,8 +1558,14 @@ export async function registerRoutes(
   //  VENDORS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/vendors", requireAuth(), (_req, res) => {
-    res.json(storage.getVendors());
+  app.get("/api/vendors", requireAuth(), (req, res) => {
+    const cu = (req as any).currentUser;
+    const vendors = storage.getVendors();
+    // SECURITY: strip vendor contact info for customers
+    if (cu.role === "customer") {
+      return res.json(vendors.map(({ phone, email, ...safe }) => safe));
+    }
+    res.json(vendors);
   });
 
   app.get("/api/vendors/:id", requireAuth(["admin", "manager", "laundromat"]), (req, res) => {
@@ -1547,6 +1598,11 @@ export async function registerRoutes(
   });
 
   app.get("/api/drivers/user/:userId", requireAuth(["driver", "admin", "manager"]), (req, res) => {
+    // SECURITY: drivers can only look up their own record
+    const cu = (req as any).currentUser;
+    if (cu.role === "driver" && cu.id !== Number(req.params.userId)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     const d = storage.getDriverByUserId(Number(req.params.userId));
     if (!d) return res.status(404).json({ error: "Driver not found" });
     res.json(d);
@@ -1555,6 +1611,12 @@ export async function registerRoutes(
   app.get("/api/drivers/:id", requireAuth(), (req, res) => {
     const d = storage.getDriver(Number(req.params.id));
     if (!d) return res.status(404).json({ error: "Driver not found" });
+    // SECURITY: never expose driver personal phone/email to customers
+    const cu = (req as any).currentUser;
+    if (cu.role === "customer") {
+      const { phone, ...safeDriverInfo } = d;
+      return res.json(safeDriverInfo);
+    }
     res.json(d);
   });
 
@@ -1605,6 +1667,14 @@ export async function registerRoutes(
 
   // Driver go online/offline
   app.patch("/api/drivers/:id/status", requireAuth(["driver", "admin"]), (req, res) => {
+    // SECURITY: drivers can only update their own status
+    const cu = (req as any).currentUser;
+    if (cu.role === "driver") {
+      const myDriver = storage.getDriverByUserId(cu.id);
+      if (!myDriver || myDriver.id !== Number(req.params.id)) {
+        return res.status(403).json({ error: "Access denied — can only update your own status" });
+      }
+    }
     const { status } = req.body;
     if (!["available", "busy", "offline"].includes(status)) {
       return res.status(400).json({ error: "Invalid status" });
@@ -2122,15 +2192,18 @@ export async function registerRoutes(
   // ── CREATE ORDER (the main flow) ──
   app.post("/api/orders", requireAuth(), (req, res) => {
     try {
+      // SECURITY: customerId always comes from auth token
+      const currentUser = (req as any).currentUser;
+      const customerId = currentUser.id;
       const {
-        customerId, pickupAddressId, pickupAddress, deliveryType, deliverySpeed,
+        pickupAddressId, pickupAddress, deliveryType, deliverySpeed,
         scheduledPickup, pickupTimeWindow, bags, preferences, certifiedOnly,
         customerNotes, addressNotes, paymentMethodId, serviceType, promoCode,
         loyaltyPointsToRedeem, pricingTierId, tierName, selectedAddOns,
       } = req.body;
 
-      if (!customerId || !pickupAddressId || !pickupAddress) {
-        return res.status(400).json({ error: "Missing required fields: customerId, pickupAddressId, pickupAddress" });
+      if (!pickupAddressId || !pickupAddress) {
+        return res.status(400).json({ error: "Missing required fields: pickupAddressId, pickupAddress" });
       }
 
       let parsedBags: any[];
@@ -2442,7 +2515,10 @@ export async function registerRoutes(
       }
     }
 
-    const { status, description, actorId, actorRole, photoUrl, lat, lng, details, driverId: reqDriverId } = req.body;
+    // SECURITY: actorId and actorRole always from auth token
+    const { status, description, photoUrl, lat, lng, details, driverId: reqDriverId } = req.body;
+    const actorId = currentUser.id;
+    const actorRole = currentUser.role;
     const allowed = validTransitions[order.status];
     if (!allowed || !allowed.includes(status)) {
       return res.status(400).json({
@@ -2489,9 +2565,16 @@ export async function registerRoutes(
     const ts_ = now();
     const updateData: any = { status };
 
-    // Save driverId when assigning driver
+    // Save driverId when assigning driver (only admin/manager can manually assign)
     if (status === "driver_assigned" && reqDriverId) {
-      updateData.driverId = reqDriverId;
+      if (currentUser.role === "admin" || currentUser.role === "manager") {
+        updateData.driverId = reqDriverId;
+        // Also mark the driver as busy
+        const assignedDriver = storage.getDriver(reqDriverId);
+        if (assignedDriver) {
+          storage.updateDriver(reqDriverId, { status: "busy", todayTrips: (assignedDriver.todayTrips || 0) + 1 });
+        }
+      }
     }
 
     // Set timestamp fields based on transition (using new FSM state names)
@@ -2939,6 +3022,13 @@ export async function registerRoutes(
   app.get("/api/orders/:id/eta", requireAuth(), (req, res) => {
     const order = storage.getOrder(Number(req.params.id));
     if (!order) return res.status(404).json({ error: "Order not found" });
+    // SECURITY: ownership check
+    const cu = (req as any).currentUser;
+    const drv = cu.role === "driver" ? storage.getDriverByUserId(cu.id) : null;
+    const vnd = cu.role === "laundromat" ? (storage as any).getVendorByUserId?.(cu.id) ?? (order.vendorId ? storage.getVendor(order.vendorId) : null) : null;
+    if (!getOrderOwnershipAllowed(order, cu, drv, vnd)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     if (order.status === "delivered" || order.status === "cancelled") {
       return res.json({ message: "Order is no longer active", status: order.status, deliveredAt: order.deliveredAt });
     }
@@ -3206,6 +3296,13 @@ export async function registerRoutes(
   app.get("/api/orders/:id/weight-comparison", requireAuth(), (req, res) => {
     const order = storage.getOrder(Number(req.params.id));
     if (!order) return res.status(404).json({ error: "Order not found" });
+    // SECURITY: ownership check
+    const cu = (req as any).currentUser;
+    const drv = cu.role === "driver" ? storage.getDriverByUserId(cu.id) : null;
+    const vnd = cu.role === "laundromat" ? (storage as any).getVendorByUserId?.(cu.id) ?? (order.vendorId ? storage.getVendor(order.vendorId) : null) : null;
+    if (!getOrderOwnershipAllowed(order, cu, drv, vnd)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
 
     const orderAddOnsList = storage.getOrderAddOns(order.id);
     const addOnsTotal = orderAddOnsList.reduce((sum, oa) => sum + oa.total, 0);
@@ -3235,13 +3332,33 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.get("/api/orders/:id/events", requireAuth(), (req, res) => {
+    // SECURITY: ownership check
+    const order = storage.getOrder(Number(req.params.id));
+    if (!order) return res.status(404).json({ error: "Order not found" });
+    const cu = (req as any).currentUser;
+    const drv = cu.role === "driver" ? storage.getDriverByUserId(cu.id) : null;
+    const vnd = cu.role === "laundromat" ? (storage as any).getVendorByUserId?.(cu.id) ?? (order.vendorId ? storage.getVendor(order.vendorId) : null) : null;
+    if (!getOrderOwnershipAllowed(order, cu, drv, vnd)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     res.json(storage.getOrderEvents(Number(req.params.id)));
   });
 
   app.post("/api/orders/:id/events", requireAuth(), (req, res) => {
+    // SECURITY: ownership check + actorId from token
+    const order = storage.getOrder(Number(req.params.id));
+    if (!order) return res.status(404).json({ error: "Order not found" });
+    const cu = (req as any).currentUser;
+    const drv = cu.role === "driver" ? storage.getDriverByUserId(cu.id) : null;
+    const vnd = cu.role === "laundromat" ? (storage as any).getVendorByUserId?.(cu.id) ?? (order.vendorId ? storage.getVendor(order.vendorId) : null) : null;
+    if (!getOrderOwnershipAllowed(order, cu, drv, vnd)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     const event = storage.createOrderEvent({
       ...req.body,
       orderId: Number(req.params.id),
+      actorId: cu.id,
+      actorRole: cu.role,
       timestamp: now(),
     });
     res.status(201).json(event);
@@ -3252,31 +3369,48 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.get("/api/addresses", requireAuth(), (req, res) => {
-    const userId = Number(req.query.userId);
-    res.json(storage.getAddressesByUser(userId));
+    // SECURITY: always use auth token userId
+    const cu = (req as any).currentUser;
+    res.json(storage.getAddressesByUser(cu.id));
   });
 
   app.post("/api/addresses", requireAuth(), (req, res) => {
+    // SECURITY: always use auth token userId
+    const cu = (req as any).currentUser;
     if (req.body.isDefault) {
-      const existing = storage.getAddressesByUser(req.body.userId);
+      const existing = storage.getAddressesByUser(cu.id);
       existing.forEach(a => {
         if (a.isDefault) storage.updateAddress(a.id, { isDefault: 0 });
       });
     }
-    const address = storage.createAddress(req.body);
+    const address = storage.createAddress({ ...req.body, userId: cu.id });
     res.status(201).json(address);
   });
 
   app.patch("/api/addresses/:id", requireAuth(), (req, res) => {
+    // SECURITY: verify address belongs to current user
+    const cu = (req as any).currentUser;
+    const addr = storage.getAddress(Number(req.params.id));
+    if (!addr) return res.status(404).json({ error: "Address not found" });
+    if (addr.userId !== cu.id && cu.role !== "admin") {
+      return res.status(403).json({ error: "Access denied" });
+    }
     if (req.body.isDefault) {
-      const addr = storage.getAddressesByUser(req.body.userId || 0);
-      addr.forEach(a => storage.updateAddress(a.id, { isDefault: 0 }));
+      const allAddr = storage.getAddressesByUser(cu.id);
+      allAddr.forEach(a => storage.updateAddress(a.id, { isDefault: 0 }));
     }
     const updated = storage.updateAddress(Number(req.params.id), req.body);
     res.json(updated);
   });
 
   app.delete("/api/addresses/:id", requireAuth(), (req, res) => {
+    // SECURITY: verify address belongs to current user
+    const cu = (req as any).currentUser;
+    const addr = storage.getAddress(Number(req.params.id));
+    if (!addr) return res.status(404).json({ error: "Address not found" });
+    if (addr.userId !== cu.id && cu.role !== "admin") {
+      return res.status(403).json({ error: "Access denied" });
+    }
     storage.deleteAddress(Number(req.params.id));
     res.json({ success: true });
   });
@@ -3286,21 +3420,30 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.get("/api/payment-methods", requireAuth(), (req, res) => {
-    res.json(storage.getPaymentMethodsByUser(Number(req.query.userId)));
+    // SECURITY: always use auth token userId
+    const cu = (req as any).currentUser;
+    res.json(storage.getPaymentMethodsByUser(cu.id));
   });
 
   app.post("/api/payment-methods", requireAuth(), (req, res) => {
-    res.status(201).json(storage.createPaymentMethod(req.body));
+    // SECURITY: always use auth token userId
+    const cu = (req as any).currentUser;
+    res.status(201).json(storage.createPaymentMethod({ ...req.body, userId: cu.id }));
   });
 
   app.patch("/api/payment-methods/:id", requireAuth(), (req, res) => {
+    const cu = (req as any).currentUser;
     const id = Number(req.params.id);
-    const { isDefault, userId } = req.body;
-    if (isDefault && userId) {
-      const existing = storage.getPaymentMethodsByUser(userId);
-      existing.forEach(pm => {
-        if (pm.id !== id && pm.isDefault) {
-          storage.updatePaymentMethod(pm.id, { isDefault: 0 });
+    // SECURITY: verify payment method belongs to current user
+    const pm = storage.getPaymentMethod(id);
+    if (pm && pm.userId !== cu.id && cu.role !== "admin") {
+      return res.status(403).json({ error: "Access denied" });
+    }
+    if (req.body.isDefault) {
+      const existing = storage.getPaymentMethodsByUser(cu.id);
+      existing.forEach(p => {
+        if (p.id !== id && p.isDefault) {
+          storage.updatePaymentMethod(p.id, { isDefault: 0 });
         }
       });
     }
@@ -3310,6 +3453,12 @@ export async function registerRoutes(
   });
 
   app.delete("/api/payment-methods/:id", requireAuth(), (req, res) => {
+    // SECURITY: verify payment method belongs to current user
+    const cu = (req as any).currentUser;
+    const pm = storage.getPaymentMethod(Number(req.params.id));
+    if (pm && pm.userId !== cu.id && cu.role !== "admin") {
+      return res.status(403).json({ error: "Access denied" });
+    }
     storage.deletePaymentMethod(Number(req.params.id));
     res.json({ success: true });
   });
@@ -3333,13 +3482,14 @@ export async function registerRoutes(
       autoApproveAt,
     });
 
-    // Log event
+    // Log event — actorId from auth token
+    const cuConsent = (req as any).currentUser;
     storage.createOrderEvent({
       orderId: Number(req.params.id),
       eventType: "consent_requested",
       description: `Consent requested: ${req.body.consentType} — ${req.body.description}`,
-      actorId: req.body.requestedBy,
-      actorRole: "vendor",
+      actorId: cuConsent.id,
+      actorRole: cuConsent.role,
       timestamp: ts_,
     });
 
@@ -3570,15 +3720,21 @@ export async function registerRoutes(
   });
 
   app.patch("/api/notifications/:id/read", requireAuth(), (req, res) => {
-    const n = storage.markNotificationRead(Number(req.params.id));
+    const n = storage.getNotification(Number(req.params.id));
     if (!n) return res.status(404).json({ error: "Notification not found" });
-    res.json(n);
+    // SECURITY: users can only mark their own notifications as read
+    const cu = (req as any).currentUser;
+    if (n.userId !== cu.id && cu.role !== "admin") {
+      return res.status(403).json({ error: "Access denied" });
+    }
+    const updated = storage.markNotificationRead(Number(req.params.id));
+    res.json(updated);
   });
 
   app.post("/api/notifications/mark-all-read", requireAuth(), (req, res) => {
-    const userId = Number(req.body.userId);
-    if (!userId) return res.status(400).json({ error: "userId required" });
-    storage.markAllRead(userId);
+    // SECURITY: always use auth token userId, not request body
+    const currentUser = (req as any).currentUser;
+    storage.markAllRead(currentUser.id);
     res.json({ success: true });
   });
 
@@ -3587,7 +3743,13 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.get("/api/customers/:id/stats", requireAuth(), (req, res) => {
-    res.json(storage.getCustomerStats(Number(req.params.id)));
+    // SECURITY: customers can only view their own stats
+    const cu = (req as any).currentUser;
+    const targetId = Number(req.params.id);
+    if (cu.role !== "admin" && cu.role !== "manager" && cu.id !== targetId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+    res.json(storage.getCustomerStats(targetId));
   });
 
   // ─────────────────────────────────────────────────────────
@@ -3696,15 +3858,18 @@ export async function registerRoutes(
   });
 
   app.post("/api/loyalty/redeem", requireAuth(), (req, res) => {
-    const { userId, points, orderId } = req.body;
-    if (!userId || !points) {
-      return res.status(400).json({ error: "userId and points are required" });
+    // SECURITY: userId comes from auth token, not request body
+    const currentUser = (req as any).currentUser;
+    const userId = currentUser.id;
+    const { points, orderId } = req.body;
+    if (!points) {
+      return res.status(400).json({ error: "points is required" });
     }
     if (points % 100 !== 0) {
       return res.status(400).json({ error: "Points must be redeemable in multiples of 100" });
     }
 
-    const user = storage.getUser(Number(userId));
+    const user = storage.getUser(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
     if ((user.loyaltyPoints || 0) < points) {
       return res.status(400).json({ error: `Insufficient points. You have ${user.loyaltyPoints || 0} points.` });
@@ -3713,10 +3878,10 @@ export async function registerRoutes(
     const dollarValue = points / 100;
     const newBalance = (user.loyaltyPoints || 0) - points;
 
-    storage.updateUser(Number(userId), { loyaltyPoints: newBalance });
+    storage.updateUser(userId, { loyaltyPoints: newBalance });
 
     const transaction = storage.createLoyaltyTransaction({
-      userId: Number(userId),
+      userId,
       orderId: orderId || null,
       type: "redeemed",
       points: -points,
@@ -3724,7 +3889,7 @@ export async function registerRoutes(
       createdAt: now(),
     });
 
-    notifyUser(Number(userId), null, "loyalty",
+    notifyUser(userId, null, "loyalty",
       "Points Redeemed",
       `You redeemed ${points} points for $${dollarValue.toFixed(2)} credit.`,
       "/profile"
@@ -3956,13 +4121,16 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.post("/api/chat/message", requireAuth(), (req, res) => {
-    const { userId, message, sessionId } = req.body;
-    if (!userId || !message) {
-      return res.status(400).json({ error: "userId and message are required" });
+    // SECURITY: userId comes from auth token, not request body
+    const currentUser = (req as any).currentUser;
+    const userId = currentUser.id;
+    const { message, sessionId } = req.body;
+    if (!message) {
+      return res.status(400).json({ error: "message is required" });
     }
 
     const intent = detectIntent(message);
-    const { response, resolved, escalate } = generateAIResponse(intent, Number(userId), message);
+    const { response, resolved, escalate } = generateAIResponse(intent, userId, message);
 
     const ts_ = now();
 
@@ -3979,7 +4147,7 @@ export async function registerRoutes(
         { role: "assistant", content: response, timestamp: ts_, intent },
       ];
       session = storage.createChatSession({
-        userId: Number(userId),
+        userId: userId,
         status: resolved ? "resolved" : escalate ? "escalated" : "active",
         topic: intent,
         aiResolved: resolved ? 1 : 0,
@@ -4005,8 +4173,8 @@ export async function registerRoutes(
     // Also store as messages
     storage.createMessage({
       conversationId: `chat-${session.id}`,
-      senderId: Number(userId),
-      senderRole: "customer",
+      senderId: userId,
+      senderRole: currentUser.role,
       content: message,
       messageType: "text",
       timestamp: ts_,
@@ -4043,7 +4211,12 @@ export async function registerRoutes(
   });
 
   app.get("/api/chat/sessions/:userId", requireAuth(), (req, res) => {
+    // SECURITY: ownership check — users can only view their own chat sessions
+    const cu = (req as any).currentUser;
     const userId = Number(req.params.userId);
+    if (cu.role !== "admin" && cu.role !== "manager" && cu.id !== userId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     const user = storage.getUser(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
 
@@ -4061,8 +4234,15 @@ export async function registerRoutes(
   });
 
   app.get("/api/chat/sessions/:userId/:sessionId", requireAuth(), (req, res) => {
+    // SECURITY: ownership check — users can only view their own chat sessions
+    const cu = (req as any).currentUser;
+    const userId = Number(req.params.userId);
+    if (cu.role !== "admin" && cu.role !== "manager" && cu.id !== userId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     const session = storage.getChatSession(Number(req.params.sessionId));
     if (!session) return res.status(404).json({ error: "Session not found" });
+    if (session.userId !== userId) return res.status(403).json({ error: "Access denied" });
     res.json({
       ...session,
       messages: (() => { try { return session.messagesJson ? JSON.parse(session.messagesJson) : []; } catch (_) { return []; } })(),
@@ -5019,27 +5199,66 @@ export async function registerRoutes(
   const DRIVER_SHARE = 0.35;
   const hasStripe = !!process.env.STRIPE_SECRET_KEY;
 
-  app.post("/api/payments/create-intent", requireAuth(), (req, res) => {
+  app.post("/api/payments/create-intent", requireAuth(), async (req, res) => {
     const { orderId, amount } = req.body;
     if (!orderId || !amount) return res.status(400).json({ error: "orderId and amount required" });
 
     const order = storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    const demoIntentId = `pi_demo_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-    const txn = storage.createPaymentTransaction({
-      orderId: Number(orderId), type: "charge", amount, currency: "usd",
-      status: "pending", stripePaymentIntentId: demoIntentId,
-      recipientType: "platform",
-      platformFee: Math.round(amount * PLATFORM_FEE_RATE * 100) / 100,
-      metadata: JSON.stringify({ demo: !hasStripe }), createdAt: now(),
-    });
+    // SECURITY: only the order owner or admin can create payment intents
+    const cu = (req as any).currentUser;
+    if (cu.role !== "admin" && cu.role !== "manager" && order.customerId !== cu.id) {
+      return res.status(403).json({ error: "Access denied" });
+    }
 
-    res.json({
-      paymentIntentId: demoIntentId, transactionId: txn.id,
-      clientSecret: hasStripe ? null : `demo_secret_${demoIntentId}`,
-      amount, status: "pending", demoMode: !hasStripe,
-    });
+    if (hasStripe) {
+      // REAL STRIPE: Create a real PaymentIntent
+      try {
+        const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: Math.round(amount * 100), // Stripe expects cents
+          currency: "usd",
+          metadata: { orderId: String(orderId), customerId: String(order.customerId) },
+          automatic_payment_methods: { enabled: true },
+        });
+
+        const txn = storage.createPaymentTransaction({
+          orderId: Number(orderId), type: "charge", amount, currency: "usd",
+          status: "pending", stripePaymentIntentId: paymentIntent.id,
+          recipientType: "platform",
+          platformFee: Math.round(amount * PLATFORM_FEE_RATE * 100) / 100,
+          metadata: JSON.stringify({ stripe: true }), createdAt: now(),
+        });
+
+        storage.updateOrder(order.id, { paymentStatus: "authorized" });
+
+        res.json({
+          paymentIntentId: paymentIntent.id, transactionId: txn.id,
+          clientSecret: paymentIntent.client_secret,
+          amount, status: "pending", demoMode: false,
+        });
+      } catch (err: any) {
+        console.error("[Stripe] PaymentIntent creation failed:", err.message);
+        res.status(500).json({ error: "Payment processing failed", details: err.message });
+      }
+    } else {
+      // DEMO MODE: no Stripe key configured
+      const demoIntentId = `pi_demo_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      const txn = storage.createPaymentTransaction({
+        orderId: Number(orderId), type: "charge", amount, currency: "usd",
+        status: "pending", stripePaymentIntentId: demoIntentId,
+        recipientType: "platform",
+        platformFee: Math.round(amount * PLATFORM_FEE_RATE * 100) / 100,
+        metadata: JSON.stringify({ demo: true }), createdAt: now(),
+      });
+
+      res.json({
+        paymentIntentId: demoIntentId, transactionId: txn.id,
+        clientSecret: `demo_secret_${demoIntentId}`,
+        amount, status: "pending", demoMode: true,
+      });
+    }
   });
 
   app.post("/api/payments/confirm", requireAuth(["admin", "manager"]), (req, res) => {
@@ -5063,7 +5282,7 @@ export async function registerRoutes(
     res.json({ status: "completed", orderId: order.id, demoMode: !hasStripe });
   });
 
-  app.post("/api/payments/refund", requireAuth(), (req, res) => {
+  app.post("/api/payments/refund", requireAuth(["admin", "manager"]), async (req, res) => {
     const { orderId, amount, reason } = req.body;
     if (!orderId) return res.status(400).json({ error: "orderId required" });
     const order = storage.getOrder(Number(orderId));
@@ -5071,14 +5290,47 @@ export async function registerRoutes(
 
     const refundAmount = amount || order.total || 0;
     const ts_ = now();
-    const txn = storage.createPaymentTransaction({
-      orderId: Number(orderId), type: "refund", amount: refundAmount,
-      currency: "usd", status: "completed", recipientType: "platform",
-      metadata: JSON.stringify({ reason, demo: !hasStripe }),
-      createdAt: ts_, completedAt: ts_,
-    });
-    storage.updateOrder(order.id, { paymentStatus: "refunded" });
-    res.json({ refundId: txn.id, amount: refundAmount, status: "completed", demoMode: !hasStripe });
+
+    if (hasStripe) {
+      // REAL STRIPE: Find the PaymentIntent and issue a real refund
+      try {
+        const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+        const txns = storage.getPaymentTransactionsByOrder(Number(orderId));
+        const chargeTxn = txns.find(t => t.type === "charge" && t.stripePaymentIntentId && !t.stripePaymentIntentId.startsWith("pi_demo"));
+        if (!chargeTxn?.stripePaymentIntentId) {
+          return res.status(400).json({ error: "No Stripe payment found for this order" });
+        }
+
+        const refund = await stripe.refunds.create({
+          payment_intent: chargeTxn.stripePaymentIntentId,
+          amount: Math.round(refundAmount * 100), // cents
+          reason: reason === "customer_request" ? "requested_by_customer" : "other",
+        });
+
+        const txn = storage.createPaymentTransaction({
+          orderId: Number(orderId), type: "refund", amount: refundAmount,
+          currency: "usd", status: "completed", recipientType: "platform",
+          stripeTransferId: refund.id,
+          metadata: JSON.stringify({ reason, stripeRefundId: refund.id }),
+          createdAt: ts_, completedAt: ts_,
+        });
+        storage.updateOrder(order.id, { paymentStatus: "refunded" });
+        res.json({ refundId: txn.id, stripeRefundId: refund.id, amount: refundAmount, status: "completed", demoMode: false });
+      } catch (err: any) {
+        console.error("[Stripe] Refund failed:", err.message);
+        res.status(500).json({ error: "Refund processing failed", details: err.message });
+      }
+    } else {
+      // DEMO MODE
+      const txn = storage.createPaymentTransaction({
+        orderId: Number(orderId), type: "refund", amount: refundAmount,
+        currency: "usd", status: "completed", recipientType: "platform",
+        metadata: JSON.stringify({ reason, demo: true }),
+        createdAt: ts_, completedAt: ts_,
+      });
+      storage.updateOrder(order.id, { paymentStatus: "refunded" });
+      res.json({ refundId: txn.id, amount: refundAmount, status: "completed", demoMode: true });
+    }
   });
 
   app.get("/api/payments/order/:id", requireAuth(), (req, res) => {
@@ -5096,16 +5348,19 @@ export async function registerRoutes(
     res.json({ orderId, paymentStatus: order.paymentStatus, total, platformFee, vendorShare, driverShare, transactions, demoMode: !hasStripe });
   });
 
-  app.post("/api/payments/setup-connect", requireAuth(), (req, res) => {
-    const { userId, userType } = req.body;
-    if (!userId || !userType) return res.status(400).json({ error: "userId and userType required" });
+  app.post("/api/payments/setup-connect", requireAuth(["driver", "laundromat", "admin"]), (req, res) => {
+    // SECURITY: userId comes from auth token, not body
+    const cu = (req as any).currentUser;
+    const userId = cu.id;
+    const { userType } = req.body;
+    if (!userType) return res.status(400).json({ error: "userType required" });
 
-    const existing = storage.getStripeAccount(Number(userId));
+    const existing = storage.getStripeAccount(userId);
     if (existing) return res.json({ accountId: existing.stripeAccountId, status: existing.status, onboardingUrl: null, existing: true });
 
     const demoAccountId = `acct_demo_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const account = storage.createStripeAccount({
-      userId: Number(userId), userType, stripeAccountId: demoAccountId,
+      userId, userType, stripeAccountId: demoAccountId,
       status: hasStripe ? "pending" : "active",
       onboardingComplete: hasStripe ? 0 : 1,
       payoutsEnabled: hasStripe ? 0 : 1,
@@ -5116,7 +5371,12 @@ export async function registerRoutes(
   });
 
   app.get("/api/payments/connect-status/:userId", requireAuth(), (req, res) => {
+    // SECURITY: ownership check
+    const cu = (req as any).currentUser;
     const userId = Number(req.params.userId);
+    if (cu.role !== "admin" && cu.role !== "manager" && cu.id !== userId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     const account = storage.getStripeAccount(userId);
     if (!account) return res.json({ connected: false, status: "not_connected" });
     res.json({
@@ -5341,6 +5601,13 @@ export async function registerRoutes(
   // ═══════════════════════════════════════════════════════════════
 
   app.delete("/api/notifications/:id", requireAuth(), (req, res) => {
+    const n = storage.getNotification(Number(req.params.id));
+    if (!n) return res.status(404).json({ error: "Notification not found" });
+    // SECURITY: users can only delete their own notifications
+    const cu = (req as any).currentUser;
+    if (n.userId !== cu.id && cu.role !== "admin") {
+      return res.status(403).json({ error: "Access denied" });
+    }
     storage.deleteNotification(Number(req.params.id));
     res.json({ success: true });
   });
@@ -5391,12 +5658,13 @@ export async function registerRoutes(
       }
     }
 
-    const { newStatus, actorRole, actorId, notes, lat, lng } = req.body;
+    const { newStatus, notes, lat, lng } = req.body;
     if (!newStatus) return res.status(400).json({ error: "newStatus is required" });
 
     const currentUser = (req as any).currentUser;
-    const role = actorRole || currentUser?.role || "system";
-    const actor = actorId || currentUser?.id;
+    // SECURITY: Role and actor ID always come from auth token, never from request body
+    const role = currentUser.role;
+    const actor = currentUser.id;
 
     // Validate the transition using the FSM
     const validation = validateTransition(order.status, newStatus, role);
@@ -5561,6 +5829,13 @@ export async function registerRoutes(
   app.get("/api/orders/:id/fsm", requireAuth(), (req, res) => {
     const order = storage.getOrder(Number(req.params.id));
     if (!order) return res.status(404).json({ error: "Order not found" });
+    // SECURITY: ownership check
+    const cu = (req as any).currentUser;
+    const drv = cu.role === "driver" ? storage.getDriverByUserId(cu.id) : null;
+    const vnd = cu.role === "laundromat" ? (storage as any).getVendorByUserId?.(cu.id) ?? (order.vendorId ? storage.getVendor(order.vendorId) : null) : null;
+    if (!getOrderOwnershipAllowed(order, cu, drv, vnd)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
 
     const currentStatus = order.status;
     const allowed = FSM_TRANSITIONS[currentStatus] || validTransitions[currentStatus] || [];
@@ -5742,6 +6017,11 @@ export async function registerRoutes(
   app.get("/api/orders/:id/receipt", requireAuth(), (req, res) => {
     const order = storage.getOrder(Number(req.params.id));
     if (!order) return res.status(404).json({ error: "Order not found" });
+    // SECURITY: ownership check
+    const cu = (req as any).currentUser;
+    if (cu.role !== "admin" && cu.role !== "manager" && order.customerId !== cu.id) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     if (!["delivered", "completed"].includes(order.status)) {
       return res.status(400).json({ error: "Receipt only available for completed orders" });
     }
@@ -6146,6 +6426,17 @@ export async function registerRoutes(
 
       const event = req.body;
 
+      // SECURITY: Webhook idempotency — prevent duplicate event processing
+      const eventId = event.id;
+      if (!eventId) {
+        return res.status(400).json({ error: "Missing event ID" });
+      }
+      const idempotencyKey = `stripe_webhook_${eventId}`;
+      const alreadyProcessed = getIdempotentResponse(idempotencyKey);
+      if (alreadyProcessed) {
+        return res.status(200).json({ received: true, duplicate: true });
+      }
+
       switch (event.type) {
         case "payment_intent.succeeded": {
           const pi = event.data?.object;
@@ -6159,6 +6450,12 @@ export async function registerRoutes(
                 description: `Payment of $${(pi.amount / 100).toFixed(2)} confirmed via Stripe`,
                 timestamp: now(),
               });
+              // Update the charge transaction record
+              const txns = storage.getPaymentTransactionsByOrder(orderId);
+              const pendingTxn = txns.find(t => t.type === "charge" && t.status === "pending");
+              if (pendingTxn) {
+                storage.updatePaymentTransaction(pendingTxn.id, { status: "completed", completedAt: now() });
+              }
               // Trigger email notification
               sendOrderEmail(order, "payment_confirmed");
             }
@@ -6195,6 +6492,9 @@ export async function registerRoutes(
           console.log(`[Stripe Webhook] Unhandled event type: ${event.type}`);
       }
 
+      // Mark this event as processed for idempotency
+      setIdempotentResponse(idempotencyKey, { received: true }, 200);
+
       res.status(200).json({ received: true });
     } catch (err: any) {
       console.error("[Stripe Webhook] Error:", err.message);
@@ -6206,9 +6506,9 @@ export async function registerRoutes(
   //  EMAIL NOTIFICATION SYSTEM
   // ═══════════════════════════════════════════════════════════════
 
-  function sendOrderEmail(order: Order, template: string) {
+  async function sendOrderEmail(order: Order, template: string): Promise<{ sent: boolean; provider?: string; error?: string }> {
     const customer = storage.getUser(order.customerId);
-    if (!customer?.email) return;
+    if (!customer?.email) return { sent: false, error: "No customer email" };
 
     const templates: Record<string, { subject: string; body: (o: Order, c: any) => string }> = {
       order_confirmation: {
@@ -6234,55 +6534,83 @@ export async function registerRoutes(
     };
 
     const tmpl = templates[template];
-    if (!tmpl) return;
+    if (!tmpl) return { sent: false, error: `Unknown template: ${template}` };
 
     const emailBody = tmpl.body(order, customer);
     const emailSubject = tmpl.subject;
 
-    // Send email via Resend (or log in dev)
+    // Send email via Resend (primary) or log honestly when no provider configured
     if (process.env.RESEND_API_KEY) {
-      const resend = new Resend(process.env.RESEND_API_KEY);
-      resend.emails.send({
-        from: "Offload <notifications@offloadusa.com>",
-        to: customer.email,
-        subject: emailSubject,
-        text: emailBody,
-      }).then(() => {
+      try {
+        const resend = new Resend(process.env.RESEND_API_KEY);
+        await resend.emails.send({
+          from: process.env.EMAIL_FROM || "Offload <notifications@offloadusa.com>",
+          to: customer.email,
+          subject: emailSubject,
+          text: emailBody,
+        });
         console.log(`[Email] Sent '${template}' to ${customer.email} via Resend`);
-      }).catch((err: any) => {
-        console.error(`[Email] Failed to send '${template}' to ${customer.email}:`, err);
-      });
-    } else if (process.env.SENDGRID_API_KEY) {
-      // Fallback: SendGrid
-      console.log(`[Email] Sending '${template}' to ${customer.email} via SendGrid`);
+        storage.createOrderEvent({
+          orderId: order.id,
+          eventType: "email_sent",
+          description: `Email sent: ${emailSubject}`,
+          details: JSON.stringify({ to: customer.email, template, subject: emailSubject, provider: "resend" }),
+          timestamp: now(),
+        });
+        return { sent: true, provider: "resend" };
+      } catch (err: any) {
+        console.error(`[Email] Failed to send '${template}' to ${customer.email}:`, err.message);
+        storage.createOrderEvent({
+          orderId: order.id,
+          eventType: "email_failed",
+          description: `Email FAILED: ${emailSubject} — ${err.message}`,
+          details: JSON.stringify({ to: customer.email, template, error: err.message }),
+          timestamp: now(),
+        });
+        return { sent: false, error: err.message };
+      }
     } else {
-      // Log email in development
-      console.log(`[Email] Would send '${template}' to ${customer.email}: ${emailSubject}`);
+      // No email provider configured — log honestly, do NOT say "sent"
+      console.warn(`[Email] NOT SENT — no email provider configured. Would send '${template}' to ${customer.email}: ${emailSubject}`);
+      storage.createOrderEvent({
+        orderId: order.id,
+        eventType: "email_not_configured",
+        description: `Email NOT SENT (no provider): ${emailSubject}`,
+        details: JSON.stringify({ to: customer.email, template, subject: emailSubject, reason: "no_provider_configured" }),
+        timestamp: now(),
+      });
+      return { sent: false, error: "No email provider configured (set RESEND_API_KEY)" };
     }
-
-    // Always log the communication
-    storage.createOrderEvent({
-      orderId: order.id,
-      eventType: "email_sent",
-      description: `Email: ${emailSubject}`,
-      details: JSON.stringify({ to: customer.email, template, subject: emailSubject }),
-      timestamp: now(),
-    });
   }
 
   // ── Send email endpoint for admin/system use ──
-  app.post("/api/notifications/send-email", requireAuth(["admin", "manager"]), (req, res) => {
+  app.post("/api/notifications/send-email", requireAuth(["admin", "manager"]), async (req, res) => {
     const { orderId, template, customEmail } = req.body;
     if (!orderId && !customEmail) return res.status(400).json({ error: "orderId or customEmail required" });
 
     if (orderId) {
       const order = storage.getOrder(Number(orderId));
       if (!order) return res.status(404).json({ error: "Order not found" });
-      sendOrderEmail(order, template || "order_confirmation");
-      return res.json({ sent: true, orderId, template });
+      const result = await sendOrderEmail(order, template || "order_confirmation");
+      return res.json({ sent: result.sent, orderId, template, provider: result.provider, error: result.error });
     }
 
-    res.json({ sent: true, to: customEmail, template });
+    // Custom email requires a configured provider
+    if (!process.env.RESEND_API_KEY) {
+      return res.json({ sent: false, error: "No email provider configured" });
+    }
+    try {
+      const resend = new Resend(process.env.RESEND_API_KEY);
+      await resend.emails.send({
+        from: process.env.EMAIL_FROM || "Offload <notifications@offloadusa.com>",
+        to: customEmail,
+        subject: req.body.subject || "Message from Offload",
+        text: req.body.body || "",
+      });
+      res.json({ sent: true, to: customEmail, provider: "resend" });
+    } catch (err: any) {
+      res.json({ sent: false, to: customEmail, error: err.message });
+    }
   });
 
   // ═══════════════════════════════════════════════════════════════
