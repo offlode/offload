@@ -1,0 +1,13 @@
+IMPORTS:
+import DriverEarnings from "@/pages/driver/earnings";
+import DriverAvailability from "@/pages/driver/availability";
+import DriverRoute from "@/pages/driver/route";
+import StaffQueue from "@/pages/staff/queue";
+import StaffQuality from "@/pages/staff/quality";
+
+ROUTES:
+<Route path="/driver/earnings">{() => <RequireAuth allowedRoles={["driver"]}><DriverEarnings /></RequireAuth>}</Route>
+<Route path="/driver/availability">{() => <RequireAuth allowedRoles={["driver"]}><DriverAvailability /></RequireAuth>}</Route>
+<Route path="/driver/route">{() => <RequireAuth allowedRoles={["driver"]}><DriverRoute /></RequireAuth>}</Route>
+<Route path="/staff/queue">{(params) => <RequireAuth allowedRoles={["laundromat"]}><StaffLayout><StaffQueue /></StaffLayout></RequireAuth>}</Route>
+<Route path="/staff/quality">{() => <RequireAuth allowedRoles={["laundromat"]}><StaffLayout><StaffQuality /></StaffLayout></RequireAuth>}</Route>

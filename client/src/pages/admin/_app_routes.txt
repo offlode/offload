@@ -1,0 +1,28 @@
+// ─── ADMIN PANEL ADDITIONS TO App.tsx ───
+// Add these imports after the existing admin imports (after line 28: import AdminDisputes from "@/pages/admin/disputes";)
+
+import AdminAnalytics from "@/pages/admin/analytics";
+import AdminVendorScoring from "@/pages/admin/vendor-scoring";
+import AdminPromos from "@/pages/admin/promos";
+import AdminFinancial from "@/pages/admin/financial";
+import AdminFraud from "@/pages/admin/fraud";
+
+
+// ─── Add these routes inside AppRouter's <Switch>, after the existing /admin/disputes route ───
+// (After line 171: </Route> for /admin/disputes)
+
+      <Route path="/admin/analytics">
+        {() => <RequireAuth allowedRoles={["admin"]}><AdminAnalytics /></RequireAuth>}
+      </Route>
+      <Route path="/admin/vendor-scoring">
+        {() => <RequireAuth allowedRoles={["admin"]}><AdminVendorScoring /></RequireAuth>}
+      </Route>
+      <Route path="/admin/promos">
+        {() => <RequireAuth allowedRoles={["admin"]}><AdminPromos /></RequireAuth>}
+      </Route>
+      <Route path="/admin/financial">
+        {() => <RequireAuth allowedRoles={["admin"]}><AdminFinancial /></RequireAuth>}
+      </Route>
+      <Route path="/admin/fraud">
+        {() => <RequireAuth allowedRoles={["admin"]}><AdminFraud /></RequireAuth>}
+      </Route>

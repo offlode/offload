@@ -1,0 +1,366 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* OFFLOAD — Logistics + trust infrastructure platform
+   Brand purple: #5B4BC4 (HSL 248 51% 53%)
+   Dark surfaces (#010101/#1A1A1A), Inter only
+   Matches Figma "Offload new version" source of truth */
+
+/* LIGHT MODE */
+:root {
+  --button-outline: rgba(0, 0, 0, 0.1);
+  --badge-outline: rgba(0, 0, 0, 0.05);
+  --opaque-button-border-intensity: -8;
+  --elevate-1: rgba(0, 0, 0, 0.03);
+  --elevate-2: rgba(0, 0, 0, 0.08);
+  
+  /* Clean white surfaces */
+  --background: 0 0% 98%;
+  --foreground: 0 0% 7%;
+  --border: 0 0% 88%;
+  --card: 0 0% 100%;
+  --card-foreground: 0 0% 7%;
+  --card-border: 0 0% 90%;
+  
+  /* Sidebar */
+  --sidebar: 0 0% 5%;
+  --sidebar-foreground: 0 0% 92%;
+  --sidebar-border: 0 0% 12%;
+  --sidebar-primary: 248 51% 53%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 0 0% 14%;
+  --sidebar-accent-foreground: 0 0% 92%;
+  --sidebar-ring: 248 51% 53%;
+  
+  /* Popover */
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 7%;
+  --popover-border: 0 0% 88%;
+  
+  /* Primary — brand purple #5B4BC4 */
+  --primary: 248 51% 53%;
+  --primary-foreground: 0 0% 100%;
+  
+  /* Secondary */
+  --secondary: 0 0% 93%;
+  --secondary-foreground: 0 0% 7%;
+  
+  /* Muted */
+  --muted: 0 0% 93%;
+  --muted-foreground: 0 0% 50%;
+  
+  /* Accent — soft purple tint */
+  --accent: 248 20% 95%;
+  --accent-foreground: 0 0% 7%;
+  
+  /* Destructive */
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+  
+  /* Input */
+  --input: 0 0% 82%;
+  --ring: 248 51% 53%;
+  
+  /* Chart palette — from Figma color grid */
+  --chart-1: 248 51% 53%;
+  --chart-2: 142 71% 45%;
+  --chart-3: 213 94% 68%;
+  --chart-4: 38 92% 50%;
+  --chart-5: 0 84% 60%;
+  
+  /* Typography — Inter only (per Figma) */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  
+  --radius: 0.75rem;
+  
+  /* Shadows */
+  --shadow-2xs: 0px 1px 2px hsl(0 0% 7% / 0.04);
+  --shadow-xs: 0px 1px 3px hsl(0 0% 7% / 0.06);
+  --shadow-sm: 0px 2px 4px hsl(0 0% 7% / 0.06);
+  --shadow: 0px 2px 8px hsl(0 0% 7% / 0.08);
+  --shadow-md: 0px 4px 12px hsl(0 0% 7% / 0.08);
+  --shadow-lg: 0px 8px 24px hsl(0 0% 7% / 0.1);
+  --shadow-xl: 0px 12px 32px hsl(0 0% 7% / 0.12);
+  --shadow-2xl: 0px 20px 48px hsl(0 0% 7% / 0.14);
+  
+  --tracking-normal: 0em;
+  --spacing: 0.25rem;
+
+  /* Semantic colors — from Figma color grid */
+  --success: 142 71% 45%;
+  --success-foreground: 0 0% 100%;
+  --warning: 38 92% 50%;
+  --warning-foreground: 0 0% 10%;
+  --info: 213 94% 68%;
+  --info-foreground: 0 0% 100%;
+
+  /* Border color variants */
+  --sidebar-primary-border: hsl(var(--sidebar-primary));
+  --sidebar-primary-border: hsl(
+    from hsl(var(--sidebar-primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha
+  );
+  --sidebar-accent-border: hsl(var(--sidebar-accent));
+  --sidebar-accent-border: hsl(
+    from hsl(var(--sidebar-accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha
+  );
+  --primary-border: hsl(var(--primary));
+  --primary-border: hsl(
+    from hsl(var(--primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha
+  );
+  --secondary-border: hsl(var(--secondary));
+  --secondary-border: hsl(
+    from hsl(var(--secondary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha
+  );
+  --muted-border: hsl(var(--muted));
+  --muted-border: hsl(
+    from hsl(var(--muted)) h s calc(l + var(--opaque-button-border-intensity)) / alpha
+  );
+  --accent-border: hsl(var(--accent));
+  --accent-border: hsl(
+    from hsl(var(--accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha
+  );
+  --destructive-border: hsl(var(--destructive));
+  --destructive-border: hsl(
+    from hsl(var(--destructive)) h s calc(l + var(--opaque-button-border-intensity)) / alpha
+  );
+}
+
+/* DARK MODE — The primary experience (Figma source of truth) */
+.dark {
+  --button-outline: rgba(255, 255, 255, 0.1);
+  --badge-outline: rgba(255, 255, 255, 0.05);
+  --opaque-button-border-intensity: 9;
+  --elevate-1: rgba(255, 255, 255, 0.04);
+  --elevate-2: rgba(255, 255, 255, 0.09);
+  
+  /* Near-black surfaces — from Figma #010101/#1A1A1A/#2E2E2E */
+  --background: 0 0% 4%;
+  --foreground: 0 0% 96%;
+  --border: 0 0% 18%;
+  --card: 0 0% 10%;
+  --card-foreground: 0 0% 100%;
+  --card-border: 0 0% 16%;
+  
+  /* Sidebar */
+  --sidebar: 0 0% 3%;
+  --sidebar-foreground: 0 0% 92%;
+  --sidebar-border: 0 0% 12%;
+  --sidebar-primary: 248 51% 58%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 0 0% 14%;
+  --sidebar-accent-foreground: 0 0% 92%;
+  --sidebar-ring: 248 51% 58%;
+  
+  /* Popover */
+  --popover: 0 0% 10%;
+  --popover-foreground: 0 0% 96%;
+  --popover-border: 0 0% 18%;
+  
+  /* Primary — brand purple, slightly brighter for dark */
+  --primary: 248 51% 58%;
+  --primary-foreground: 0 0% 100%;
+  
+  /* Secondary */
+  --secondary: 0 0% 16%;
+  --secondary-foreground: 0 0% 92%;
+  
+  /* Muted */
+  --muted: 0 0% 17%;
+  --muted-foreground: 0 0% 50%;
+  
+  /* Accent */
+  --accent: 0 0% 16%;
+  --accent-foreground: 0 0% 92%;
+  
+  /* Destructive */
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+  
+  /* Input */
+  --input: 0 0% 22%;
+  --ring: 248 51% 58%;
+  
+  /* Charts — brighter for dark bg, from Figma palette */
+  --chart-1: 270 95% 75%;
+  --chart-2: 142 71% 50%;
+  --chart-3: 213 94% 68%;
+  --chart-4: 38 92% 55%;
+  --chart-5: 0 84% 65%;
+  
+  /* Shadows */
+  --shadow-2xs: 0px 1px 2px hsl(0 0% 0% / 0.2);
+  --shadow-xs: 0px 1px 3px hsl(0 0% 0% / 0.25);
+  --shadow-sm: 0px 2px 4px hsl(0 0% 0% / 0.2);
+  --shadow: 0px 2px 8px hsl(0 0% 0% / 0.25);
+  --shadow-md: 0px 4px 12px hsl(0 0% 0% / 0.3);
+  --shadow-lg: 0px 8px 24px hsl(0 0% 0% / 0.35);
+  --shadow-xl: 0px 12px 32px hsl(0 0% 0% / 0.4);
+  --shadow-2xl: 0px 20px 48px hsl(0 0% 0% / 0.5);
+
+  /* Semantic colors — from Figma palette */
+  --success: 142 71% 50%;
+  --success-foreground: 0 0% 100%;
+  --warning: 38 92% 55%;
+  --warning-foreground: 0 0% 10%;
+  --info: 213 94% 68%;
+  --info-foreground: 0 0% 100%;
+
+  /* Border variants */
+  --sidebar-primary-border: hsl(var(--sidebar-primary));
+  --sidebar-primary-border: hsl(
+    from hsl(var(--sidebar-primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha
+  );
+  --sidebar-accent-border: hsl(var(--sidebar-accent));
+  --sidebar-accent-border: hsl(
+    from hsl(var(--sidebar-accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha
+  );
+  --primary-border: hsl(var(--primary));
+  --primary-border: hsl(
+    from hsl(var(--primary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha
+  );
+  --secondary-border: hsl(var(--secondary));
+  --secondary-border: hsl(
+    from hsl(var(--secondary)) h s calc(l + var(--opaque-button-border-intensity)) / alpha
+  );
+  --muted-border: hsl(var(--muted));
+  --muted-border: hsl(
+    from hsl(var(--muted)) h s calc(l + var(--opaque-button-border-intensity)) / alpha
+  );
+  --accent-border: hsl(var(--accent));
+  --accent-border: hsl(
+    from hsl(var(--accent)) h s calc(l + var(--opaque-button-border-intensity)) / alpha
+  );
+  --destructive-border: hsl(var(--destructive));
+  --destructive-border: hsl(
+    from hsl(var(--destructive)) h s calc(l + var(--opaque-button-border-intensity)) / alpha
+  );
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply font-sans antialiased bg-background text-foreground;
+  }
+}
+
+/* ─── Elevation system ─── */
+@layer utilities {
+  input[type='search']::-webkit-search-cancel-button {
+    @apply hidden;
+  }
+
+  [contenteditable][data-placeholder]:empty::before {
+    content: attr(data-placeholder);
+    color: hsl(var(--muted-foreground));
+    pointer-events: none;
+  }
+
+  .no-default-hover-elevate {}
+  .no-default-active-elevate {}
+
+  .toggle-elevate::before,
+  .toggle-elevate-2::before {
+    content: '';
+    pointer-events: none;
+    position: absolute;
+    inset: 0px;
+    border-radius: inherit;
+    z-index: -1;
+  }
+
+  .toggle-elevate.toggle-elevated::before {
+    background-color: var(--elevate-2);
+  }
+
+  .border.toggle-elevate::before {
+    inset: -1px;
+  }
+
+  .hover-elevate:not(.no-default-hover-elevate),
+  .active-elevate:not(.no-default-active-elevate),
+  .hover-elevate-2:not(.no-default-hover-elevate),
+  .active-elevate-2:not(.no-default-active-elevate) {
+    position: relative;
+    z-index: 0;
+  }
+
+  .hover-elevate:not(.no-default-hover-elevate)::after,
+  .active-elevate:not(.no-default-active-elevate)::after,
+  .hover-elevate-2:not(.no-default-hover-elevate)::after,
+  .active-elevate-2:not(.no-default-active-elevate)::after {
+    content: '';
+    pointer-events: none;
+    position: absolute;
+    inset: 0px;
+    border-radius: inherit;
+    z-index: 999;
+  }
+
+  .hover-elevate:hover:not(.no-default-hover-elevate)::after,
+  .active-elevate:active:not(.no-default-active-elevate)::after {
+    background-color: var(--elevate-1);
+  }
+
+  .hover-elevate-2:hover:not(.no-default-hover-elevate)::after,
+  .active-elevate-2:active:not(.no-default-active-elevate)::after {
+    background-color: var(--elevate-2);
+  }
+
+  .border.hover-elevate:not(.no-hover-interaction-elevate)::after,
+  .border.active-elevate:not(.no-active-interaction-elevate)::after,
+  .border.hover-elevate-2:not(.no-hover-interaction-elevate)::after,
+  .border.active-elevate-2:not(.no-active-interaction-elevate)::after {
+    inset: -1px;
+  }
+}
+
+/* ─── Hide scrollbar utility ─── */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  scrollbar-width: none;
+}
+
+/* ─── Smooth scrollbar ─── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted));
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+
+/* ─── Offload-specific utilities ─── */
+.glass {
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+}
+
+/* Gradient utilities removed — solid colors only */
+.gradient-primary {
+  background: hsl(248 51% 53%);
+}
+
+.gradient-fresh {
+  background: hsl(248 51% 53%);
+}
+
+/* ─── Status badge colors ─── */
+.status-active { @apply bg-blue-500/15 text-blue-500 dark:text-blue-400; }
+.status-success { @apply bg-emerald-500/15 text-emerald-600 dark:text-emerald-400; }
+.status-warning { @apply bg-amber-500/15 text-amber-600 dark:text-amber-400; }
+.status-error { @apply bg-red-500/15 text-red-500 dark:text-red-400; }
+.status-muted { @apply bg-muted text-muted-foreground; }

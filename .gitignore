@@ -1,0 +1,6 @@
+*.db
+*.sqlite
+.env
+cert_tokens.env
+dist/
+node_modules/
