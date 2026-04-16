@@ -30,9 +30,11 @@ export const users = sqliteTable("users", {
   subscriptionTier: text("subscription_tier"), // null | basic | plus | premium
   subscriptionStartDate: text("subscription_start_date"),
   subscriptionEndDate: text("subscription_end_date"),
-  // AI-generated churn risk
+  // Algorithmic churn risk score
   churnRisk: real("churn_risk").default(0), // 0-1 probability
   lastActiveAt: text("last_active_at"),
+  // Account credits (e.g. from SLA breach refunds)
+  credits: integer("credits").default(0),
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({ id: true });
@@ -581,6 +583,7 @@ export const orderPhotos = sqliteTable("order_photos", {
   orderId: integer("order_id").notNull(),
   type: text("type").notNull(), // pickup_proof | delivery_proof | intake_before | intake_after | damage | quality_check
   photoData: text("photo_data").notNull(), // base64 encoded (MVP; would be S3 URL in production)
+  r2Key: text("r2_key"), // Cloudflare R2 object key (when using R2 storage)
   lat: real("lat"),
   lng: real("lng"),
   capturedBy: integer("captured_by").notNull(),
@@ -698,6 +701,33 @@ export const pricingAuditLog = sqliteTable("pricing_audit_log", {
 export const insertPricingAuditLogSchema = createInsertSchema(pricingAuditLog).omit({ id: true });
 export type InsertPricingAuditLog = z.infer<typeof insertPricingAuditLogSchema>;
 export type PricingAuditLog = typeof pricingAuditLog.$inferSelect;
+
+// ─── Sessions (DB-backed) ───
+export const sessions = sqliteTable("sessions", {
+  token: text("token").primaryKey(),
+  userId: integer("user_id").notNull(),
+  role: text("role").notNull(),
+  createdAt: text("created_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+});
+
+// ─── Idempotency Keys (DB-backed) ───
+export const idempotencyKeys = sqliteTable("idempotency_keys", {
+  key: text("key").primaryKey(),
+  response: text("response").notNull(), // JSON stringified response
+  statusCode: integer("status_code").notNull(),
+  createdAt: text("created_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+});
+
+// ─── Promo Usage (per-user tracking) ───
+export const promoUsage = sqliteTable("promo_usage", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  promoId: integer("promo_id").notNull(),
+  userId: integer("user_id").notNull(),
+  orderId: integer("order_id"),
+  usedAt: text("used_at").notNull(),
+});
 
 // ─── Pricing Tiers Constant ───
 export const PRICING_TIERS = {

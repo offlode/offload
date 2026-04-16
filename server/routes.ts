@@ -4,6 +4,7 @@ import { createHash, randomBytes } from "crypto";
 import { Resend } from "resend";
 import type { Server as SocketIOServer } from "socket.io";
 import { storage } from "./storage";
+import { isR2Enabled, uploadToR2, getPresignedDownloadUrl, getPresignedUploadUrl } from "./r2";
 import { SLA_CONFIGS, WEIGHT_TOLERANCE, CONSENT_TIMEOUT_HOURS, LOYALTY_TIERS, SUBSCRIPTION_TIERS, PRICING_TIERS, DELIVERY_FEES, TAX_RATE as SCHEMA_TAX_RATE, QUOTE_VALIDITY_MINUTES } from "@shared/schema";
 import type { Order, Vendor, Driver, Quote } from "@shared/schema";
 import {
@@ -41,51 +42,38 @@ function verifyPassword(pw: string, stored: string): boolean {
 }
 
 // ════════════════════════════════════════════════════════════════
-//  SERVER-SIDE SESSION MANAGEMENT
+//  SERVER-SIDE SESSION MANAGEMENT (DB-backed)
 // ════════════════════════════════════════════════════════════════
 
 interface SessionData {
   userId: number;
   role: string;
-  createdAt: number;
-  expiresAt: number;
 }
 
-const SESSION_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
-const sessions = new Map<string, SessionData>();
+const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 function createSession(userId: number, role: string): string {
   const token = randomBytes(32).toString("hex");
-  sessions.set(token, {
-    userId,
-    role,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + SESSION_DURATION_MS,
-  });
+  const expiresAt = new Date(Date.now() + SESSION_DURATION_MS).toISOString();
+  storage.createSession(token, userId, role, expiresAt);
   return token;
 }
 
 function getSession(token: string): SessionData | null {
-  const session = sessions.get(token);
+  const session = storage.getSession(token);
   if (!session) return null;
-  if (Date.now() > session.expiresAt) {
-    sessions.delete(token);
-    return null;
-  }
-  return session;
+  return { userId: session.userId, role: session.role };
 }
 
 function destroySession(token: string): void {
-  sessions.delete(token);
+  storage.deleteSession(token);
 }
 
-// Clean up expired sessions every 10 minutes
+// Clean up expired sessions and idempotency keys every hour
 setInterval(() => {
-  const now = Date.now();
-  for (const [token, session] of sessions) {
-    if (now > session.expiresAt) sessions.delete(token);
-  }
-}, 10 * 60 * 1000);
+  storage.deleteExpiredSessions();
+  storage.deleteExpiredIdempotencyKeys();
+}, 60 * 60 * 1000);
 
 // ════════════════════════════════════════════════════════════════
 //  LOGIN RATE LIMITING
@@ -526,8 +514,8 @@ function calculatePayouts(order: Order) {
   return { vendorPayout, driverPayout };
 }
 
-function processPaymentCapture(order: Order) {
-  if (order.paymentStatus === "captured") return;
+function processPaymentCapture(order: Order): { alreadyCaptured: boolean; success?: boolean } {
+  if (order.paymentStatus === "captured") return { alreadyCaptured: true };
   // In a real system, this would call Stripe/payment gateway
   // For now, we simulate the capture
   storage.updateOrder(order.id, {
@@ -561,7 +549,7 @@ function processPaymentCapture(order: Order) {
     }
   }
 
-  return { vendorPayout, driverPayout };
+  return { alreadyCaptured: false, success: true };
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1166,6 +1154,31 @@ function startBackgroundTasks() {
               actorRole: "system",
               timestamp: now(),
             });
+
+            // Auto-issue SLA breach credit to customer
+            // Credit = delivery fee paid for this order (refund the speed premium)
+            const deliveryFee = order.deliveryFee || 0;
+            if (deliveryFee > 0 && !(order.notes || "").includes("SLA_CREDIT_ISSUED")) {
+              const customer = storage.getUser(order.customerId);
+              if (customer) {
+                const currentCredits = customer.credits || 0;
+                storage.updateUser(order.customerId, { credits: currentCredits + deliveryFee });
+                storage.createOrderEvent({
+                  orderId: order.id,
+                  eventType: "sla_credit_issued",
+                  description: `SLA breach credit of $${(deliveryFee / 100).toFixed(2)} issued to customer account`,
+                  actorRole: "system",
+                  timestamp: now(),
+                });
+                notifyUser(order.customerId, order.id, "sla_credit",
+                  "Delivery Credit Issued",
+                  `We're sorry your order was delayed. A $${(deliveryFee / 100).toFixed(2)} credit has been applied to your account.`,
+                  `/orders/${order.id}`
+                );
+                // Mark credit issued to prevent duplicates
+                storage.updateOrder(order.id, { notes: `${order.notes || ""}\n[SLA_CREDIT_ISSUED:${deliveryFee}]` } as any);
+              }
+            }
           }
         }
       }
@@ -1217,30 +1230,18 @@ setInterval(() => {
 
 
 
-// ── IDEMPOTENCY KEY CACHE ──
-const idempotencyCache: Record<string, { response: any; statusCode: number; expiresAt: number }> = {};
+// ── IDEMPOTENCY KEY CACHE (DB-backed) ──
 
 function getIdempotentResponse(key: string): { response: any; statusCode: number } | null {
-  const cached = idempotencyCache[key];
+  const cached = storage.getIdempotencyKey(key);
   if (!cached) return null;
-  if (Date.now() > cached.expiresAt) {
-    delete idempotencyCache[key];
-    return null;
-  }
-  return { response: cached.response, statusCode: cached.statusCode };
+  return { response: JSON.parse(cached.response), statusCode: cached.statusCode };
 }
 
 function setIdempotentResponse(key: string, response: any, statusCode: number): void {
-  idempotencyCache[key] = { response, statusCode, expiresAt: Date.now() + 86400000 }; // 24h
+  const expiresAt = new Date(Date.now() + 86400000).toISOString(); // 24h
+  storage.storeIdempotencyKey(key, JSON.stringify(response), statusCode, expiresAt);
 }
-
-// Clean up expired idempotency keys every 10 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const key of Object.keys(idempotencyCache)) {
-    if (idempotencyCache[key].expiresAt < now) delete idempotencyCache[key];
-  }
-}, 600000);
 
 
 
@@ -2246,9 +2247,15 @@ export async function registerRoutes(
       let loyaltyPointsRedeemed = 0;
 
       // Validate and apply promo code
+      let appliedPromoId: number | null = null;
       if (promoCode) {
         const promo = storage.getPromoCode(promoCode);
         if (promo && promo.isActive && (!promo.expiresAt || new Date(promo.expiresAt) > new Date())) {
+          // Per-user promo usage check
+          const userUsageCount = storage.getPromoUsageByUser(promo.id, customerId);
+          if (userUsageCount > 0) {
+            return res.status(400).json({ error: "You've already used this promo code" });
+          }
           if (!promo.minOrderAmount || surgeTotal >= promo.minOrderAmount) {
             if (!promo.maxUses || promo.usedCount! < promo.maxUses) {
               if (promo.type === "percentage") {
@@ -2260,6 +2267,7 @@ export async function registerRoutes(
               }
               // Increment usage count
               storage.updatePromoCode(promo.id, { usedCount: (promo.usedCount || 0) + 1 });
+              appliedPromoId = promo.id;
             }
           }
         }
@@ -2346,6 +2354,11 @@ export async function registerRoutes(
           createdAt: ts_,
         });
         storage.updateOrder(order.id, { loyaltyPointsRedeemed });
+      }
+
+      // Record per-user promo usage
+      if (appliedPromoId) {
+        storage.recordPromoUsage(appliedPromoId, customerId, order.id);
       }
 
       // Event: order placed
@@ -2610,6 +2623,10 @@ export async function registerRoutes(
         if (driver) {
           storage.updateDriver(driver.id, { status: "available" });
         }
+      }
+      // Delete per-user promo usage on cancellation
+      if (order.promoCode) {
+        storage.deletePromoUsageByOrder(order.id);
       }
     }
 
@@ -2960,12 +2977,13 @@ export async function registerRoutes(
       if (driver) storage.updateDriver(driver.id, { status: "available" });
     }
 
-    // Decrement promo usedCount on cancellation
+    // Decrement promo usedCount and delete per-user usage on cancellation
     if (order.promoCode) {
       const promo = storage.getPromoCode(order.promoCode);
       if (promo && (promo.usedCount || 0) > 0) {
         storage.updatePromoCode(promo.id, { usedCount: (promo.usedCount || 0) - 1 });
       }
+      storage.deletePromoUsageByOrder(order.id);
     }
 
     storage.createOrderEvent({
@@ -2978,6 +2996,82 @@ export async function registerRoutes(
     });
 
     notifyOrderUpdate(order, "Order Cancelled", "Your order has been cancelled and a full refund has been initiated.");
+
+    res.json(storage.getOrder(order.id));
+  });
+
+  // ── RESCHEDULE ORDER ──
+  app.post("/api/orders/:id/reschedule", requireAuth(), (req, res) => {
+    const order = storage.getOrder(Number(req.params.id));
+    if (!order) return res.status(404).json({ error: "Order not found" });
+
+    const currentUser = (req as any).currentUser;
+    // Only order owner or admin/manager can reschedule
+    if (currentUser.role === "customer" && order.customerId !== currentUser.id) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+    if (!["customer", "admin", "manager"].includes(currentUser.role)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    // Only allow reschedule before physical pickup
+    const reschedulableStatuses = ["confirmed", "scheduled", "driver_assigned", "driver_en_route_pickup"];
+    if (!reschedulableStatuses.includes(order.status)) {
+      return res.status(400).json({ error: "Order cannot be rescheduled at this stage. Only orders before pickup can be rescheduled." });
+    }
+
+    const { pickupDate, pickupTimeSlot } = req.body;
+    if (!pickupDate || !pickupTimeSlot) {
+      return res.status(400).json({ error: "pickupDate and pickupTimeSlot are required" });
+    }
+
+    const ts_ = now();
+    const oldPickup = order.scheduledPickup;
+    const oldTimeWindow = order.pickupTimeWindow;
+
+    storage.updateOrder(order.id, {
+      scheduledPickup: pickupDate,
+      pickupTimeWindow: pickupTimeSlot,
+      updatedAt: ts_,
+    });
+
+    // Audit trail event
+    storage.createOrderEvent({
+      orderId: order.id,
+      eventType: "reschedule",
+      description: `Order rescheduled: pickup changed to ${pickupDate} (${pickupTimeSlot})`,
+      details: JSON.stringify({
+        type: "reschedule",
+        previousPickup: oldPickup,
+        previousTimeWindow: oldTimeWindow,
+        newPickup: pickupDate,
+        newTimeSlot: pickupTimeSlot,
+        rescheduledBy: currentUser.id,
+        rescheduledByRole: currentUser.role,
+      }),
+      actorId: currentUser.id,
+      actorRole: currentUser.role,
+      timestamp: ts_,
+    });
+
+    // Notify assigned driver if any
+    if (order.driverId) {
+      const driver = storage.getDriver(order.driverId);
+      if (driver) {
+        notifyUser(driver.userId, order.id, "driver_update",
+          "Pickup Rescheduled",
+          `Order ${order.orderNumber} has been rescheduled. New pickup: ${pickupDate} (${pickupTimeSlot}).`,
+          `/orders/${order.id}`);
+      }
+    }
+
+    // Notify customer if rescheduled by admin/manager
+    if (currentUser.role !== "customer") {
+      notifyUser(order.customerId, order.id, "order_update",
+        "Pickup Rescheduled",
+        `Your order ${order.orderNumber} has been rescheduled. New pickup: ${pickupDate} (${pickupTimeSlot}).`,
+        `/orders/${order.id}`);
+    }
 
     res.json(storage.getOrder(order.id));
   });
@@ -5381,7 +5475,7 @@ export async function registerRoutes(
     "damage", "quality_check",
   ];
 
-  app.post("/api/orders/:id/photos", requireAuth(), (req, res) => {
+  app.post("/api/orders/:id/photos", requireAuth(), async (req, res) => {
     const orderId = Number(req.params.id);
     const order = storage.getOrder(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
@@ -5402,10 +5496,27 @@ export async function registerRoutes(
       return res.status(400).json({ error: `Invalid photo type. Must be one of: ${VALID_PHOTO_TYPES.join(", ")}` });
     }
 
+    let r2Key: string | null = null;
+    let storedPhotoData = photoData;
+
+    // If R2 is configured, upload to R2 and store key instead of base64
+    if (isR2Enabled()) {
+      try {
+        const key = `orders/${orderId}/${type}/${Date.now()}-${randomBytes(8).toString("hex")}`;
+        const buffer = Buffer.from(photoData, "base64");
+        await uploadToR2(key, buffer, "image/jpeg");
+        r2Key = key;
+        storedPhotoData = "r2"; // Placeholder — actual data is in R2
+      } catch (err) {
+        console.error("[R2] Upload failed, falling back to base64:", err);
+      }
+    }
+
     const photo = storage.createOrderPhoto({
       orderId,
       type,
-      photoData,
+      photoData: storedPhotoData,
+      r2Key,
       lat: lat || null,
       lng: lng || null,
       capturedBy: currentUser.id,
@@ -5433,10 +5544,10 @@ export async function registerRoutes(
     });
 
     // Return without full base64 in response
-    res.status(201).json({ id: photo.id, orderId, type, timestamp: photo.timestamp, notes: photo.notes });
+    res.status(201).json({ id: photo.id, orderId, type, timestamp: photo.timestamp, notes: photo.notes, r2Key: photo.r2Key || undefined });
   });
 
-  app.get("/api/orders/:id/photos", requireAuth(), (req, res) => {
+  app.get("/api/orders/:id/photos", requireAuth(), async (req, res) => {
     const orderForPhotos = storage.getOrder(Number(req.params.id));
     if (!orderForPhotos) return res.status(404).json({ error: "Order not found" });
     const cu = (req as any).currentUser;
@@ -5446,18 +5557,26 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Access denied" });
     }
     const photos = storage.getOrderPhotos(Number(req.params.id));
-    // Truncate base64 for listing
-    const summaries = photos.map(p => ({
-      id: p.id, orderId: p.orderId, type: p.type,
-      capturedBy: p.capturedBy, capturedByRole: p.capturedByRole,
-      notes: p.notes, timestamp: p.timestamp,
-      hasPhoto: !!p.photoData,
-      thumbnail: p.photoData ? p.photoData.substring(0, 100) + "..." : null,
+    // Build summaries with R2 presigned URLs if available
+    const summaries = await Promise.all(photos.map(async (p) => {
+      let downloadUrl: string | undefined;
+      if (p.r2Key) {
+        try { downloadUrl = await getPresignedDownloadUrl(p.r2Key); } catch {}
+      }
+      return {
+        id: p.id, orderId: p.orderId, type: p.type,
+        capturedBy: p.capturedBy, capturedByRole: p.capturedByRole,
+        notes: p.notes, timestamp: p.timestamp,
+        hasPhoto: !!(p.photoData || p.r2Key),
+        thumbnail: p.r2Key ? undefined : (p.photoData ? p.photoData.substring(0, 100) + "..." : null),
+        r2Key: p.r2Key || undefined,
+        downloadUrl,
+      };
     }));
     res.json(summaries);
   });
 
-  app.get("/api/orders/:id/photos/:photoId", requireAuth(), (req, res) => {
+  app.get("/api/orders/:id/photos/:photoId", requireAuth(), async (req, res) => {
     const orderSingle = storage.getOrder(Number(req.params.id));
     if (!orderSingle) return res.status(404).json({ error: "Order not found" });
     const cuS = (req as any).currentUser;
@@ -5469,6 +5588,15 @@ export async function registerRoutes(
     const photos = storage.getOrderPhotos(Number(req.params.id));
     const photo = photos.find(p => p.id === Number(req.params.photoId));
     if (!photo) return res.status(404).json({ error: "Photo not found" });
+    // If photo is in R2, generate presigned download URL
+    if (photo.r2Key) {
+      try {
+        const downloadUrl = await getPresignedDownloadUrl(photo.r2Key);
+        return res.json({ ...photo, photoData: undefined, downloadUrl });
+      } catch {
+        return res.json(photo);
+      }
+    }
     res.json(photo);
   });
 
@@ -5483,6 +5611,158 @@ export async function registerRoutes(
     }
     const photos = storage.getOrderPhotosByType(Number(req.params.id), req.params.type);
     res.json(photos);
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  //  R2 PRESIGNED UPLOAD ENDPOINT
+  // ═══════════════════════════════════════════════════════════════
+
+  app.post("/api/photos/presigned-upload", requireAuth(["driver", "vendor", "laundromat", "admin", "manager"]), async (req, res) => {
+    if (!isR2Enabled()) {
+      return res.status(503).json({ error: "R2 storage is not configured" });
+    }
+    const { orderId, type, contentType } = req.body;
+    if (!orderId || !type || !contentType) {
+      return res.status(400).json({ error: "orderId, type, and contentType are required" });
+    }
+    if (!VALID_PHOTO_TYPES.includes(type)) {
+      return res.status(400).json({ error: `Invalid photo type. Must be one of: ${VALID_PHOTO_TYPES.join(", ")}` });
+    }
+    const order = storage.getOrder(Number(orderId));
+    if (!order) return res.status(404).json({ error: "Order not found" });
+
+    const key = `orders/${orderId}/${type}/${Date.now()}-${randomBytes(8).toString("hex")}`;
+    try {
+      const uploadUrl = await getPresignedUploadUrl(key, contentType);
+      res.json({ uploadUrl, key });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to generate presigned URL" });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  //  GDPR / CCPA DATA DELETION & EXPORT
+  // ═══════════════════════════════════════════════════════════════
+
+  app.delete("/api/users/:id/data", requireAuth(), (req, res) => {
+    const targetId = Number(req.params.id);
+    const currentUser = (req as any).currentUser;
+
+    // Auth: user themselves or admin
+    if (currentUser.id !== targetId && currentUser.role !== "admin") {
+      return res.status(403).json({ error: "Access denied. Only the user themselves or an admin can delete user data." });
+    }
+
+    const targetUser = storage.getUser(targetId);
+    if (!targetUser) return res.status(404).json({ error: "User not found" });
+
+    // 1. Anonymize user PII
+    storage.updateUser(targetId, {
+      name: "Deleted User",
+      email: `deleted-${targetId}@removed.invalid`,
+      phone: null,
+      avatarUrl: null,
+      referralCode: null,
+      specialInstructions: null,
+      preferredDetergent: "standard",
+      preferredWashTemp: "cold",
+      subscriptionTier: null,
+      subscriptionStartDate: null,
+      subscriptionEndDate: null,
+      churnRisk: 0,
+      lastActiveAt: null,
+    } as any);
+
+    // 2. Clear addresses
+    const userAddresses = storage.getAddressesByUser(targetId);
+    for (const addr of userAddresses) {
+      storage.deleteAddress(addr.id);
+    }
+
+    // 3. Clear payment methods
+    const userPaymentMethods = storage.getPaymentMethodsByUser(targetId);
+    for (const pm of userPaymentMethods) {
+      storage.deletePaymentMethod(pm.id);
+    }
+
+    // 4. Clear chat sessions
+    const userChatSessions = storage.getChatSessions(targetId);
+    for (const cs of userChatSessions) {
+      storage.updateChatSession(cs.id, { messages: "[]", summary: "Deleted" } as any);
+    }
+
+    // 5. Anonymize orders (keep for business records)
+    const userOrders = storage.getOrdersByCustomer(targetId);
+    for (const order of userOrders) {
+      storage.updateOrder(order.id, {
+        customerName: "Deleted User",
+        customerEmail: null,
+        customerPhone: null,
+      } as any);
+    }
+
+    // 6. Clear notifications
+    const userNotifications = storage.getNotificationsByUser(targetId);
+    for (const notif of userNotifications) {
+      storage.deleteNotification(notif.id);
+    }
+
+    // 7. Invalidate all sessions for the user
+    storage.deleteSessionsByUser(targetId);
+
+    res.json({ success: true, message: "All personal data has been deleted" });
+  });
+
+  app.get("/api/users/:id/data-export", requireAuth(), (req, res) => {
+    const targetId = Number(req.params.id);
+    const currentUser = (req as any).currentUser;
+
+    // Auth: user themselves or admin
+    if (currentUser.id !== targetId && currentUser.role !== "admin") {
+      return res.status(403).json({ error: "Access denied. Only the user themselves or an admin can export user data." });
+    }
+
+    const targetUser = storage.getUser(targetId);
+    if (!targetUser) return res.status(404).json({ error: "User not found" });
+
+    // Gather all user data
+    const exportAddresses = storage.getAddressesByUser(targetId);
+    const exportPaymentMethods = storage.getPaymentMethodsByUser(targetId).map(pm => ({
+      id: pm.id,
+      type: pm.type,
+      label: pm.label,
+      last4: pm.last4 ? `****${pm.last4}` : null,
+      expiryDate: pm.expiryDate,
+      isDefault: pm.isDefault,
+    }));
+    const exportOrders = storage.getOrdersByCustomer(targetId).map(o => ({
+      id: o.id,
+      orderNumber: o.orderNumber,
+      status: o.status,
+      total: o.total,
+      createdAt: o.createdAt,
+      deliveredAt: o.deliveredAt,
+    }));
+    const exportMessages = storage.getMessagesBySender(targetId);
+    const exportLoyalty = storage.getLoyaltyTransactions(targetId);
+    const exportChatSessions = storage.getChatSessions(targetId);
+    const exportNotifications = storage.getNotificationsByUser(targetId);
+    const exportReferrals = storage.getReferralsByUser(targetId);
+
+    const { password: _pw, ...profile } = targetUser;
+
+    res.json({
+      exportDate: new Date().toISOString(),
+      profile,
+      addresses: exportAddresses,
+      paymentMethods: exportPaymentMethods,
+      orders: exportOrders,
+      messages: exportMessages.map(m => ({ id: m.id, content: m.content, timestamp: m.timestamp, orderId: m.orderId })),
+      loyaltyTransactions: exportLoyalty,
+      chatSessions: exportChatSessions.map(cs => ({ id: cs.id, createdAt: cs.createdAt, summary: cs.summary })),
+      notifications: exportNotifications.map(n => ({ id: n.id, title: n.title, body: n.body, createdAt: n.createdAt })),
+      referrals: exportReferrals,
+    });
   });
 
   // ═══════════════════════════════════════════════════════════════
@@ -5602,6 +5882,10 @@ export async function registerRoutes(
       if (order.driverId) {
         const driver = storage.getDriver(order.driverId);
         if (driver) storage.updateDriver(driver.id, { status: "available" });
+      }
+      // Delete per-user promo usage on cancellation
+      if (order.promoCode) {
+        storage.deletePromoUsageByOrder(order.id);
       }
     }
 

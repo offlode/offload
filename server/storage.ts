@@ -163,6 +163,20 @@ export interface IStorage {
   getPricingAuditLog(limit?: number): schema.PricingAuditLog[];
   // Stats
   getCustomerStats(id: number): any;
+  // Sessions (DB-backed)
+  createSession(token: string, userId: number, role: string, expiresAt: string): void;
+  getSession(token: string): { userId: number; role: string; expiresAt: string } | null;
+  deleteSession(token: string): void;
+  deleteSessionsByUser(userId: number): void;
+  deleteExpiredSessions(): void;
+  // Idempotency Keys (DB-backed)
+  storeIdempotencyKey(key: string, response: string, statusCode: number, expiresAt: string): void;
+  getIdempotencyKey(key: string): { response: string; statusCode: number } | null;
+  deleteExpiredIdempotencyKeys(): void;
+  // Promo Usage
+  recordPromoUsage(promoId: number, userId: number, orderId: number): void;
+  getPromoUsageByUser(promoId: number, userId: number): number;
+  deletePromoUsageByOrder(orderId: number): void;
 }
 
 class DatabaseStorage implements IStorage {
@@ -549,6 +563,81 @@ class DatabaseStorage implements IStorage {
       loyaltyTier: user?.loyaltyTier || "bronze",
       memberSince: user?.memberSince,
     };
+  }
+
+  // ─── Sessions (DB-backed) ───
+  createSession(token: string, userId: number, role: string, expiresAt: string): void {
+    db.insert(schema.sessions).values({
+      token,
+      userId,
+      role,
+      createdAt: new Date().toISOString(),
+      expiresAt,
+    }).run();
+  }
+  getSession(token: string): { userId: number; role: string; expiresAt: string } | null {
+    const session = db.select().from(schema.sessions).where(eq(schema.sessions.token, token)).get();
+    if (!session) return null;
+    if (new Date(session.expiresAt) < new Date()) {
+      db.delete(schema.sessions).where(eq(schema.sessions.token, token)).run();
+      return null;
+    }
+    return { userId: session.userId, role: session.role, expiresAt: session.expiresAt };
+  }
+  deleteSession(token: string): void {
+    db.delete(schema.sessions).where(eq(schema.sessions.token, token)).run();
+  }
+  deleteSessionsByUser(userId: number): void {
+    db.delete(schema.sessions).where(eq(schema.sessions.userId, userId)).run();
+  }
+  deleteExpiredSessions(): void {
+    const now = new Date().toISOString();
+    db.delete(schema.sessions).where(sql`${schema.sessions.expiresAt} < ${now}`).run();
+  }
+
+  // ─── Idempotency Keys (DB-backed) ───
+  storeIdempotencyKey(key: string, response: string, statusCode: number, expiresAt: string): void {
+    db.insert(schema.idempotencyKeys).values({
+      key,
+      response,
+      statusCode,
+      createdAt: new Date().toISOString(),
+      expiresAt,
+    }).onConflictDoUpdate({
+      target: schema.idempotencyKeys.key,
+      set: { response, statusCode, expiresAt },
+    }).run();
+  }
+  getIdempotencyKey(key: string): { response: string; statusCode: number } | null {
+    const row = db.select().from(schema.idempotencyKeys).where(eq(schema.idempotencyKeys.key, key)).get();
+    if (!row) return null;
+    if (new Date(row.expiresAt) < new Date()) {
+      db.delete(schema.idempotencyKeys).where(eq(schema.idempotencyKeys.key, key)).run();
+      return null;
+    }
+    return { response: row.response, statusCode: row.statusCode };
+  }
+  deleteExpiredIdempotencyKeys(): void {
+    const now = new Date().toISOString();
+    db.delete(schema.idempotencyKeys).where(sql`${schema.idempotencyKeys.expiresAt} < ${now}`).run();
+  }
+
+  // ─── Promo Usage ───
+  recordPromoUsage(promoId: number, userId: number, orderId: number): void {
+    db.insert(schema.promoUsage).values({
+      promoId,
+      userId,
+      orderId,
+      usedAt: new Date().toISOString(),
+    }).run();
+  }
+  getPromoUsageByUser(promoId: number, userId: number): number {
+    const result = db.select({ count: sql<number>`count(*)` }).from(schema.promoUsage)
+      .where(and(eq(schema.promoUsage.promoId, promoId), eq(schema.promoUsage.userId, userId))).get();
+    return result?.count || 0;
+  }
+  deletePromoUsageByOrder(orderId: number): void {
+    db.delete(schema.promoUsage).where(eq(schema.promoUsage.orderId, orderId)).run();
   }
 }
 

@@ -4,6 +4,9 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import Bugsnag from "@bugsnag/node";
+import rateLimit from "express-rate-limit";
+import { sanitizeMiddleware } from "./sanitize";
+import { scheduleBackups } from "./backup";
 
 // ── BugSnag Error Tracking ──
 if (process.env.BUGSNAG_API_KEY) {
@@ -83,6 +86,20 @@ app.use(
 );
 
 app.use(express.urlencoded({ extended: false }));
+
+// ── Global Rate Limiting (100 req/min per IP) ──
+const globalLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later" },
+  keyGenerator: (req) => req.ip || req.socket.remoteAddress || "unknown",
+});
+app.use("/api/", globalLimiter);
+
+// ── Input Sanitization (after JSON parsing, before routes) ──
+app.use(sanitizeMiddleware);
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
@@ -188,6 +205,9 @@ app.use((req, res, next) => {
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || "5000", 10);
+  // ── Automated DB Backups (every 6 hours) ──
+  scheduleBackups("./data.db", 6);
+
   httpServer.listen(
     {
       port,
