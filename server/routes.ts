@@ -6267,10 +6267,9 @@ export async function registerRoutes(
     }
 
     try {
-      // Verify webhook signature using Stripe SDK
-      // NOTE: Requires `stripe` package and raw body. Until Stripe SDK is configured:
+      // Verify webhook signature using raw body buffer for correct HMAC
       const crypto = require("crypto");
-      const payload = typeof req.body === "string" ? req.body : JSON.stringify(req.body);
+      const payload = (req as any).rawBody ? (req as any).rawBody.toString() : (typeof req.body === "string" ? req.body : JSON.stringify(req.body));
       const sigParts = (sig as string).split(",").reduce((acc: any, part: string) => {
         const [k, v] = part.split("=");
         acc[k] = v;
