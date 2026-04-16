@@ -67,11 +67,7 @@ function RequireAuth({ children, allowedRoles }: { children: React.ReactNode; al
     return <Redirect to="/login" />;
   }
 
-<<<<<<< HEAD
   if (allowedRoles && user && user.role !== "admin" && !allowedRoles.includes(user.role)) {
-=======
-  if (allowedRoles && user && !allowedRoles.includes(user.role) && user.role !== "admin") {
->>>>>>> 9b9fa41 (feat: forgot-password flow, super admin (chaimfischer2@gmail.com), admin role bypass)
     // Redirect to appropriate home (admin bypasses all role checks)
     switch (user.role) {
       case "customer": return <Redirect to="/" />;

@@ -702,16 +702,6 @@ export const insertPricingAuditLogSchema = createInsertSchema(pricingAuditLog).o
 export type InsertPricingAuditLog = z.infer<typeof insertPricingAuditLogSchema>;
 export type PricingAuditLog = typeof pricingAuditLog.$inferSelect;
 
-// ─── Password Reset Tokens ───
-export const passwordResetTokens = sqliteTable("password_reset_tokens", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  userId: integer("user_id").notNull(),
-  token: text("token").notNull().unique(),
-  expiresAt: text("expires_at").notNull(),
-  usedAt: text("used_at"),
-  createdAt: text("created_at").notNull(),
-});
-
 // ─── Sessions (DB-backed) ───
 export const sessions = sqliteTable("sessions", {
   token: text("token").primaryKey(),
