@@ -179,8 +179,9 @@ export interface IStorage {
   getPromoUsageByUser(promoId: number, userId: number): number;
   deletePromoUsageByOrder(orderId: number): void;
   // Password Reset Tokens
-  createPasswordResetToken(userId: number, token: string, expiresAt: string): any;
-  getPasswordResetToken(token: string): any | undefined;
+  createPasswordResetToken(userId: number, token: string, expiresAt: string): void;
+  getPasswordResetToken(token: string): { userId: number; token: string; expiresAt: string; usedAt: string | null } | undefined;
+
   markPasswordResetTokenUsed(token: string): void;
   cleanExpiredResetTokens(): void;
 }
@@ -651,16 +652,18 @@ class DatabaseStorage implements IStorage {
   }
 
   // ─── Password Reset Tokens ───
-  createPasswordResetToken(userId: number, token: string, expiresAt: string) {
-    return db.insert(schema.passwordResetTokens).values({
+  createPasswordResetToken(userId: number, token: string, expiresAt: string): void {
+    db.insert(schema.passwordResetTokens).values({
+
       userId,
       token,
       expiresAt,
       createdAt: new Date().toISOString(),
-    }).returning().get();
+    }).run();
   }
-  getPasswordResetToken(token: string) {
-    return db.select().from(schema.passwordResetTokens).where(eq(schema.passwordResetTokens.token, token)).get();
+  getPasswordResetToken(token: string): { userId: number; token: string; expiresAt: string; usedAt: string | null } | undefined {
+    return db.select().from(schema.passwordResetTokens).where(eq(schema.passwordResetTokens.token, token)).get() as any;
+
   }
   markPasswordResetTokenUsed(token: string): void {
     db.update(schema.passwordResetTokens)

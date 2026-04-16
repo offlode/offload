@@ -131,7 +131,8 @@ export default function LoginPage() {
               data-testid="link-forgot-password"
               type="button"
               className="text-sm text-primary hover:text-primary/80 transition-colors"
-              onClick={() => navigate("/forgot-password")}
+              onClick={() => { window.location.hash = "#/forgot-password"; }}
+
             >
               Forgot Password?
             </button>

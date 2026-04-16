@@ -56,6 +56,8 @@ import ManagerOrders from "@/pages/manager/orders";
 import ManagerPayouts from "@/pages/manager/payouts";
 import TrackingPage from "@/pages/tracking";
 import NotFound from "@/pages/not-found";
+import ForgotPasswordPage from "@/pages/forgot-password";
+import ResetPasswordPage from "@/pages/reset-password";
 
 function RequireAuth({ children, allowedRoles }: { children: React.ReactNode; allowedRoles?: string[] }) {
   const { user, isAuthenticated } = useAuth();
@@ -65,7 +67,11 @@ function RequireAuth({ children, allowedRoles }: { children: React.ReactNode; al
     return <Redirect to="/login" />;
   }
 
+<<<<<<< HEAD
   if (allowedRoles && user && user.role !== "admin" && !allowedRoles.includes(user.role)) {
+=======
+  if (allowedRoles && user && !allowedRoles.includes(user.role) && user.role !== "admin") {
+>>>>>>> 9b9fa41 (feat: forgot-password flow, super admin (chaimfischer2@gmail.com), admin role bypass)
     // Redirect to appropriate home (admin bypasses all role checks)
     switch (user.role) {
       case "customer": return <Redirect to="/" />;

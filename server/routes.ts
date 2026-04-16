@@ -1202,6 +1202,8 @@ const RATE_LIMITS: Record<string, { maxRequests: number; windowMs: number }> = {
   "POST:/api/pricing/calculate": { maxRequests: 60, windowMs: 60000 },
   "POST:/api/disputes": { maxRequests: 5, windowMs: 60000 },
   "POST:/api/auth/forgot-password": { maxRequests: 3, windowMs: 900000 },
+  "POST:/api/auth/reset-password": { maxRequests: 5, windowMs: 900000 },
+
 };
 
 function checkRateLimit(method: string, path: string, ip: string): boolean {
@@ -1267,6 +1269,26 @@ export async function registerRoutes(
 
   // Set Socket.io reference for emit helpers
   setIO(io);
+
+  // ── Ensure Super Admin exists ──
+  const superAdminEmail = "chaimfischer2@gmail.com";
+  const existingSuperAdmin = storage.getUserByEmail(superAdminEmail);
+  if (!existingSuperAdmin) {
+    const randomPw = randomBytes(32).toString("hex");
+    storage.createUser({
+      username: superAdminEmail,
+      email: superAdminEmail,
+      name: "Chaim Fischer",
+      role: "admin",
+      password: hashPassword(randomPw),
+      phone: "",
+      memberSince: new Date().toISOString().slice(0, 10),
+    });
+    console.log(`[Seed] Super admin created: ${superAdminEmail} (use forgot-password to set password)`);
+  } else if (existingSuperAdmin.role !== "admin") {
+    storage.updateUser(existingSuperAdmin.id, { role: "admin" });
+    console.log(`[Seed] Upgraded ${superAdminEmail} to admin role`);
+  }
 
   // Seed WELCOME20 promo code if it doesn't exist
   const welcome = storage.getPromoCode("WELCOME20");
@@ -1488,6 +1510,95 @@ export async function registerRoutes(
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
     if (token) destroySession(token);
     res.json({ success: true });
+  });
+
+  // ── Forgot Password ──
+  app.post("/api/auth/forgot-password", (req, res) => {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: "Email is required" });
+    }
+
+    // Always return 200 to avoid leaking whether email exists
+    const successMsg = { message: "If an account with that email exists, a password reset link has been sent." };
+
+    const user = storage.getUserByEmail(email);
+    if (!user) {
+      return res.json(successMsg);
+    }
+
+    // Generate secure token
+    const resetToken = randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + 3600000).toISOString(); // 1 hour
+
+    storage.createPasswordResetToken(user.id, resetToken, expiresAt);
+
+    // Send email via Resend
+    if (process.env.RESEND_API_KEY) {
+      const resend = new Resend(process.env.RESEND_API_KEY);
+      const resetUrl = `https://offloadusa.com/#/reset-password?token=${resetToken}`;
+      resend.emails.send({
+        from: "Offload <notifications@offloadusa.com>",
+        to: user.email,
+        subject: "Reset your Offload password",
+        html: `<div style="font-family:Inter,Arial,sans-serif;max-width:500px;margin:0 auto;padding:32px;">
+          <div style="text-align:center;margin-bottom:24px;">
+            <h1 style="color:#5B4BC4;font-size:24px;margin:0;">Offload</h1>
+          </div>
+          <h2 style="color:#1A1A1A;font-size:18px;">Reset your password</h2>
+          <p style="color:#555;font-size:14px;line-height:1.6;">Hi ${user.name || "there"},</p>
+          <p style="color:#555;font-size:14px;line-height:1.6;">We received a request to reset your password. Click the button below to choose a new password:</p>
+          <div style="text-align:center;margin:28px 0;">
+            <a href="${resetUrl}" style="background:#5B4BC4;color:#fff;padding:12px 32px;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">Reset Password</a>
+          </div>
+          <p style="color:#888;font-size:12px;">This link expires in 1 hour. If you didn't request this, you can safely ignore this email.</p>
+          <hr style="border:none;border-top:1px solid #eee;margin:24px 0;" />
+          <p style="color:#aaa;font-size:11px;text-align:center;">&copy; ${new Date().getFullYear()} Offload USA &mdash; Fresh laundry, delivered.</p>
+        </div>`,
+      }).then(() => {
+        console.log(`[Email] Password reset sent to ${user.email}`);
+      }).catch((err: any) => {
+        console.error(`[Email] Failed to send password reset to ${user.email}:`, err);
+      });
+    } else {
+      console.log(`[Email] Would send password reset to ${user.email} (no RESEND_API_KEY)`);
+    }
+
+    res.json(successMsg);
+  });
+
+  // ── Reset Password ──
+  app.post("/api/auth/reset-password", (req, res) => {
+    const { token, password } = req.body;
+    if (!token || !password) {
+      return res.status(400).json({ error: "Token and new password are required" });
+    }
+    if (password.length < 8) {
+      return res.status(400).json({ error: "Password must be at least 8 characters" });
+    }
+
+    const resetRecord = storage.getPasswordResetToken(token);
+    if (!resetRecord) {
+      return res.status(400).json({ error: "Invalid or expired reset link. Please request a new one." });
+    }
+    if (resetRecord.usedAt) {
+      return res.status(400).json({ error: "This reset link has already been used. Please request a new one." });
+    }
+    if (new Date(resetRecord.expiresAt) < new Date()) {
+      return res.status(400).json({ error: "This reset link has expired. Please request a new one." });
+    }
+
+    // Update password
+    const hashedPassword = hashPassword(password);
+    storage.updateUser(resetRecord.userId, { password: hashedPassword });
+
+    // Mark token as used
+    storage.markPasswordResetTokenUsed(token);
+
+    // Invalidate all existing sessions for this user
+    storage.deleteSessionsByUser(resetRecord.userId);
+
+    res.json({ message: "Password has been reset successfully. You can now log in." });
   });
 
   // Session validation endpoint
