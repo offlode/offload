@@ -30,6 +30,9 @@ export const ORDER_STATES = {
   DELIVERED: 'delivered',
   COMPLETED: 'completed',
   CANCELLED: 'cancelled',
+  // Failure states
+  PICKUP_FAILED: 'pickup_failed',
+  DELIVERY_FAILED: 'delivery_failed',
 } as const;
 
 export type OrderState = typeof ORDER_STATES[keyof typeof ORDER_STATES];
@@ -48,7 +51,7 @@ export const VALID_TRANSITIONS: Record<string, string[]> = {
   scheduled: ['driver_assigned', 'cancelled'],
   driver_assigned: ['driver_en_route_pickup', 'cancelled'],
   driver_en_route_pickup: ['arrived_pickup', 'cancelled'],
-  arrived_pickup: ['picked_up', 'cancelled'],
+  arrived_pickup: ['picked_up', 'pickup_failed', 'cancelled'],
   picked_up: ['driver_en_route_facility'],
   driver_en_route_facility: ['at_facility'],
   at_facility: ['processing'],
@@ -58,10 +61,13 @@ export const VALID_TRANSITIONS: Record<string, string[]> = {
   folding: ['ready_for_delivery'],
   ready_for_delivery: ['driver_en_route_delivery'],
   driver_en_route_delivery: ['arrived_delivery'],
-  arrived_delivery: ['delivered'],
+  arrived_delivery: ['delivered', 'delivery_failed'],
   delivered: ['completed'],
   completed: [],
   cancelled: [],
+  // Failure states — allow rescheduling or cancellation
+  pickup_failed: ['scheduled', 'cancelled'],
+  delivery_failed: ['driver_en_route_delivery', 'cancelled'],
 };
 
 // Who can trigger each transition
@@ -105,6 +111,13 @@ export const TRANSITION_ACTORS: Record<string, string[]> = {
   'driver_assigned->cancelled': ['customer', 'admin', 'system'],
   'driver_en_route_pickup->cancelled': ['customer', 'admin', 'system'],
   'arrived_pickup->cancelled': ['customer', 'admin', 'system'],
+  // Failure state transitions
+  'arrived_pickup->pickup_failed': ['driver', 'admin'],
+  'arrived_delivery->delivery_failed': ['driver', 'admin'],
+  'pickup_failed->scheduled': ['system', 'admin'],
+  'pickup_failed->cancelled': ['customer', 'admin', 'system'],
+  'delivery_failed->driver_en_route_delivery': ['system', 'admin'],
+  'delivery_failed->cancelled': ['admin', 'system'],
 };
 
 // Notification templates per transition
@@ -131,6 +144,8 @@ export const STATUS_NOTIFICATIONS: Record<string, { customer?: string; driver?: 
   'delivered': { customer: 'Delivery complete! Rate your experience.' },
   'completed': { customer: 'Order complete. Thank you!' },
   'cancelled': { customer: 'Your order has been cancelled.' },
+  'pickup_failed': { customer: 'We were unable to complete your pickup. We\'re rescheduling now.', driver: 'Pickup failed — please report details.' },
+  'delivery_failed': { customer: 'Delivery could not be completed. We\'re arranging a redelivery.', driver: 'Delivery failed — please report details.' },
 };
 
 // Human-readable status labels
@@ -159,6 +174,8 @@ export const STATUS_LABELS: Record<string, string> = {
   delivered: 'Delivered',
   completed: 'Completed',
   cancelled: 'Cancelled',
+  pickup_failed: 'Pickup Failed',
+  delivery_failed: 'Delivery Failed',
 };
 
 // Ordered steps for the timeline (excluding cancelled and expired)
