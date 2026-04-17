@@ -194,7 +194,13 @@ app.use((req, res, next) => {
   // setting up all the other routes so the catch-all route
   // doesn't interfere with the other routes
   if (process.env.NODE_ENV === "production") {
-    serveStatic(app);
+    try {
+      serveStatic(app);
+    } catch (e) {
+      console.warn("[Static] Could not serve static files (API-only mode):", (e as Error).message);
+      // In API-only mode, serve a simple health check at root
+      app.get("/", (_req, res) => res.json({ status: "ok", service: "offload-api" }));
+    }
   } else {
     const { setupVite } = await import("./vite");
     await setupVite(httpServer, app);
@@ -218,4 +224,7 @@ app.use((req, res, next) => {
       log(`serving on port ${port}`);
     },
   );
-})();
+})().catch((err) => {
+  console.error("[FATAL] Server startup failed:", err);
+  process.exit(1);
+});
