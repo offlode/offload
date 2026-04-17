@@ -1304,6 +1304,7 @@ export async function registerRoutes(
       isActive: 1,
       minOrderAmount: 0,
       expiresAt: null,
+      createdAt: now(),
     });
   }
 
@@ -2003,131 +2004,6 @@ export async function registerRoutes(
       });
     } catch (err: any) {
       res.status(400).json({ error: err.message });
-    }
-  });
-
-  // ── Public: Website Checkout (no auth required) ──
-  // Creates a payment intent from a quote, creates a guest order
-  app.post("/api/public/checkout", async (req, res) => {
-    try {
-      const { quoteId, email, phone, notes, pickupDate, pickupTime } = req.body;
-      if (!quoteId) return res.status(400).json({ error: "quoteId is required" });
-      if (!email) return res.status(400).json({ error: "Email is required" });
-      if (!phone) return res.status(400).json({ error: "Phone number is required" });
-
-      const quote = storage.getQuote(Number(quoteId));
-      if (!quote) return res.status(404).json({ error: "Quote not found" });
-      if (quote.status !== "quoted") return res.status(400).json({ error: "Quote already used or expired" });
-
-      // Check expiry
-      if (quote.expiresAt && new Date(quote.expiresAt) < new Date()) {
-        return res.status(400).json({ error: "Quote has expired. Please get a new price." });
-      }
-
-      const totalCents = Math.round(Number(quote.total) * 100);
-      if (totalCents <= 0) return res.status(400).json({ error: "Invalid quote total" });
-
-      // Generate order number
-      const orderNumber = generateOrderNumber();
-
-      // Build scheduled pickup timestamp
-      const timeMap: Record<string, string> = {
-        '8-10am': '09:00',
-        '10-12pm': '11:00',
-        '12-2pm': '13:00',
-        '2-4pm': '15:00',
-        '4-6pm': '17:00',
-        '6-8pm': '19:00',
-      };
-      const timeStr = pickupTime ? (timeMap[pickupTime] || '09:00') : '09:00';
-      const scheduledPickup = pickupDate ? `${pickupDate}T${timeStr}:00.000Z` : null;
-
-      const ts = now();
-
-      // Create the order (use 0 as guest customerId and pickupAddressId placeholder)
-      const order = storage.createOrder({
-        orderNumber,
-        customerId: 0,
-        status: "pending_payment",
-        pickupAddressId: 0,
-        pickupAddress: quote.pickupAddress,
-        deliveryAddress: quote.deliveryAddress || quote.pickupAddress,
-        deliveryType: "contactless",
-        deliverySpeed: quote.deliverySpeed || "48h",
-        serviceType: quote.serviceType || "wash_fold",
-        tierName: quote.tierName,
-        tierFlatPrice: quote.tierFlatPrice,
-        tierMaxWeight: quote.tierMaxWeight,
-        bags: JSON.stringify([{ type: quote.tierName, quantity: 1 }]),
-        subtotal: quote.subtotal,
-        tax: quote.taxAmount,
-        deliveryFee: quote.deliveryFee || 0,
-        discount: quote.discount || 0,
-        total: quote.total,
-        finalPrice: quote.total,
-        certifiedOnly: 1,
-        customerNotes: notes || null,
-        scheduledPickup,
-        pickupTimeWindow: pickupTime || null,
-        paymentStatus: "pending",
-        slaStatus: "on_track",
-        createdAt: ts,
-        updatedAt: ts,
-      });
-
-      // Update quote status
-      storage.updateQuote(quote.id, { status: "accepted", orderId: order.id, updatedAt: ts });
-
-      // Create Stripe payment intent
-      const stripeKey = process.env.STRIPE_SECRET_KEY;
-      let clientSecret: string;
-      let intentId: string;
-
-      if (stripeKey) {
-        const stripeClient = new Stripe(stripeKey, { apiVersion: "2024-12-18.acacia" as any });
-        const intent = await stripeClient.paymentIntents.create({
-          amount: totalCents,
-          currency: "usd",
-          metadata: {
-            orderId: String(order.id),
-            orderNumber: order.orderNumber,
-            email,
-            phone,
-          },
-          receipt_email: email,
-        });
-        intentId = intent.id;
-        clientSecret = intent.client_secret!;
-      } else {
-        intentId = "pi_demo_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
-        clientSecret = "demo_secret_" + intentId;
-      }
-
-      // Record the payment transaction
-      const CHECKOUT_FEE_RATE = 0.18;
-      storage.createPaymentTransaction({
-        orderId: order.id,
-        type: "charge",
-        amount: Number(quote.total),
-        currency: "usd",
-        status: "pending",
-        stripePaymentIntentId: intentId,
-        recipientType: "platform",
-        platformFee: Math.round(Number(quote.total) * CHECKOUT_FEE_RATE * 100) / 100,
-        metadata: JSON.stringify({ quoteId: quote.id, email, phone, demo: !stripeKey }),
-        createdAt: ts,
-      });
-
-      res.json({
-        clientSecret,
-        orderId: order.id,
-        orderNumber: order.orderNumber,
-        total: quote.total,
-        demoMode: !stripeKey,
-      });
-    } catch (err: any) {
-      console.error("[Public Checkout] Error:", err.message);
-      res.status(500).json({ error: err.message || "Checkout failed" });
     }
   });
 
