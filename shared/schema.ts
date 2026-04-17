@@ -747,6 +747,16 @@ export const PRICING_TIERS = {
   xl_bag: { maxWeight: 50, flatPrice: 89.99, overageRate: 2.50, displayName: "XL Bag", description: "Commercial & bulk orders" },
 } as const;
 
+// ─── Service Type Multipliers ───
+export const SERVICE_TYPE_MULTIPLIERS: Record<string, number> = {
+  wash_fold: 1.0,
+  dry_cleaning: 1.65,
+  comforters: 1.40,
+  mixed: 1.25,
+  alterations: 1.50,
+  commercial: 0.85, // bulk discount
+};
+
 // ─── Delivery Fees ───
 export const DELIVERY_FEES = {
   "48h": { fee: 0, label: "Standard (48h)" },

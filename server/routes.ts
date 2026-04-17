@@ -6,7 +6,7 @@ import Stripe from "stripe";
 import type { Server as SocketIOServer } from "socket.io";
 import { storage } from "./storage";
 import { isR2Enabled, uploadToR2, getPresignedDownloadUrl, getPresignedUploadUrl } from "./r2";
-import { SLA_CONFIGS, WEIGHT_TOLERANCE, CONSENT_TIMEOUT_HOURS, LOYALTY_TIERS, SUBSCRIPTION_TIERS, PRICING_TIERS, DELIVERY_FEES, TAX_RATE as SCHEMA_TAX_RATE, QUOTE_VALIDITY_MINUTES } from "@shared/schema";
+import { SLA_CONFIGS, WEIGHT_TOLERANCE, CONSENT_TIMEOUT_HOURS, LOYALTY_TIERS, SUBSCRIPTION_TIERS, PRICING_TIERS, DELIVERY_FEES, TAX_RATE as SCHEMA_TAX_RATE, QUOTE_VALIDITY_MINUTES, SERVICE_TYPE_MULTIPLIERS } from "@shared/schema";
 import type { Order, Vendor, Driver, Quote } from "@shared/schema";
 import {
   VALID_TRANSITIONS as FSM_TRANSITIONS,
@@ -172,6 +172,7 @@ interface QuotePriceBreakdown {
 function calculateQuotePrice(input: {
   tierName: string;
   deliverySpeed: string;
+  serviceType?: string;
   vendorId?: number;
   pickupLat?: number;
   pickupLng?: number;
@@ -183,8 +184,9 @@ function calculateQuotePrice(input: {
   const tier = PRICING_TIERS[normalizedTier as keyof typeof PRICING_TIERS];
   if (!tier) throw new Error(`Unknown pricing tier: ${input.tierName}`);
 
-  // 2. Laundry service price (flat rate from tier)
-  const laundryServicePrice = tier.flatPrice;
+  // 2. Laundry service price (flat rate from tier, adjusted by service type)
+  const serviceMultiplier = SERVICE_TYPE_MULTIPLIERS[input.serviceType || 'wash_fold'] || 1.0;
+  const laundryServicePrice = Math.round(tier.flatPrice * serviceMultiplier * 100) / 100;
 
   // 3. Delivery fee (flat rate based on speed)
   const speed = (input.deliverySpeed === "express" ? "express_3h" : input.deliverySpeed === "express_24h" ? "24h" : input.deliverySpeed === "standard" ? "48h" : input.deliverySpeed) || "48h";
