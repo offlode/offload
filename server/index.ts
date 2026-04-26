@@ -7,6 +7,7 @@ import Bugsnag from "@bugsnag/node";
 import rateLimit from "express-rate-limit";
 import { sanitizeMiddleware } from "./sanitize";
 import { scheduleBackups } from "./backup";
+import { bootstrapAccounts } from "./bootstrap";
 
 // ── BugSnag Error Tracking ──
 if (process.env.BUGSNAG_API_KEY) {
@@ -140,6 +141,14 @@ app.use((req, res, next) => {
 
 (async () => {
   await registerRoutes(httpServer, app, io);
+
+  // Ensure critical accounts (Apple reviewer + admin) exist after every deploy
+  // until persistent storage is wired up.
+  try {
+    await bootstrapAccounts();
+  } catch (e) {
+    console.error("[Bootstrap] Unhandled error:", (e as Error).message);
+  }
 
   // ── Built-in Error Tracking (ring buffer + file log) ──
   const ERROR_LOG: Array<{ts: string; status: number; method: string; path: string; message: string; stack?: string}> = [];
