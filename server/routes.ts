@@ -10,7 +10,7 @@ import { isR2Enabled, uploadToR2, getPresignedDownloadUrl, getPresignedUploadUrl
 import { sendPushToUser } from "./push";
 import { sendSMS } from "./sms";
 import { distanceMatrix, isGoogleMapsConfigured } from "./maps";
-import { SLA_CONFIGS, WEIGHT_TOLERANCE, CONSENT_TIMEOUT_HOURS, LOYALTY_TIERS, SUBSCRIPTION_TIERS, PRICING_TIERS, DELIVERY_FEES, TAX_RATE as SCHEMA_TAX_RATE, QUOTE_VALIDITY_MINUTES, SERVICE_TYPE_MULTIPLIERS, insertNotificationRuleSchema } from "@shared/schema";
+import { SLA_CONFIGS, WEIGHT_TOLERANCE, CONSENT_TIMEOUT_HOURS, LOYALTY_TIERS, SUBSCRIPTION_TIERS, PRICING_TIERS, DELIVERY_FEES, TAX_RATE as SCHEMA_TAX_RATE, QUOTE_VALIDITY_MINUTES, SERVICE_TYPE_MULTIPLIERS, insertNotificationRuleSchema, insertAddOnSchema } from "@shared/schema";
 import type { Order, Vendor, Driver, Quote } from "@shared/schema";
 import {
   VALID_TRANSITIONS as FSM_TRANSITIONS,
@@ -7729,6 +7729,93 @@ export async function registerRoutes(
       res.json({ deleted: true });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || "Failed to delete notification rule" });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  //  ADMIN ADD-ON PRICING (CRUD)
+  // ═══════════════════════════════════════════════════════════════
+
+  app.get("/api/admin/add-ons", requireAuth(["admin", "manager"]), async (_req, res) => {
+    try {
+      const items = await storage.getAllAddOns();
+      res.json(items);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to fetch add-ons" });
+    }
+  });
+
+  app.get("/api/admin/add-ons/:id", requireAuth(["admin", "manager"]), async (req, res) => {
+    try {
+      const item = await storage.getAddOn(Number(req.params.id));
+      if (!item) return res.status(404).json({ error: "Add-on not found" });
+      res.json(item);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to fetch add-on" });
+    }
+  });
+
+  app.post("/api/admin/add-ons", requireAuth(["admin"]), async (req, res) => {
+    try {
+      const parsed = insertAddOnSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: "Validation error", details: parsed.error.flatten() });
+      const item = await storage.createAddOn(parsed.data);
+      try {
+        await storage.createPricingAuditEntry({
+          action: "create_addon",
+          details: JSON.stringify({ entityType: "add_on", entityId: item.id, after: item }),
+          actorId: (req as any).user?.id || null,
+          actorRole: (req as any).user?.role || null,
+          timestamp: now(),
+        });
+      } catch {}
+      res.status(201).json(item);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to create add-on" });
+    }
+  });
+
+  app.patch("/api/admin/add-ons/:id", requireAuth(["admin"]), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const before = await storage.getAddOn(id);
+      if (!before) return res.status(404).json({ error: "Add-on not found" });
+      const item = await storage.updateAddOn(id, req.body);
+      if (!item) return res.status(404).json({ error: "Add-on not found" });
+      try {
+        await storage.createPricingAuditEntry({
+          action: "update_addon",
+          details: JSON.stringify({ entityType: "add_on", entityId: id, before, after: item }),
+          actorId: (req as any).user?.id || null,
+          actorRole: (req as any).user?.role || null,
+          timestamp: now(),
+        });
+      } catch {}
+      res.json(item);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to update add-on" });
+    }
+  });
+
+  app.delete("/api/admin/add-ons/:id", requireAuth(["admin"]), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      // Soft delete: deactivate instead of hard delete (preserves order history)
+      const before = await storage.getAddOn(id);
+      if (!before) return res.status(404).json({ error: "Add-on not found" });
+      const item = await storage.updateAddOn(id, { isActive: 0 });
+      try {
+        await storage.createPricingAuditEntry({
+          action: "deactivate_addon",
+          details: JSON.stringify({ entityType: "add_on", entityId: id, before, after: item }),
+          actorId: (req as any).user?.id || null,
+          actorRole: (req as any).user?.role || null,
+          timestamp: now(),
+        });
+      } catch {}
+      res.json({ deactivated: true, id });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to deactivate add-on" });
     }
   });
 

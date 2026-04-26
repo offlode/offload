@@ -171,8 +171,11 @@ export interface IStorage {
   createPricingTier(data: schema.InsertPricingTier): Promise<schema.PricingTier>;
   // Add-Ons
   getAddOns(): Promise<schema.AddOn[]>;
+  getAllAddOns(): Promise<schema.AddOn[]>;
   getAddOn(id: number): Promise<schema.AddOn | undefined>;
   createAddOn(data: schema.InsertAddOn): Promise<schema.AddOn>;
+  updateAddOn(id: number, data: Partial<schema.InsertAddOn>): Promise<schema.AddOn | undefined>;
+  deleteAddOn(id: number): Promise<boolean>;
   // Order Add-Ons
   getOrderAddOns(orderId: number): Promise<schema.OrderAddOn[]>;
   createOrderAddOn(data: schema.InsertOrderAddOn): Promise<schema.OrderAddOn>;
@@ -619,6 +622,7 @@ class DatabaseStorage implements IStorage {
 
   // ─── Add-Ons ───
   async getAddOns() { return db.select().from(schema.addOns).where(eq(schema.addOns.isActive, 1)); }
+  async getAllAddOns() { return db.select().from(schema.addOns).orderBy(schema.addOns.id); }
   async getAddOn(id: number) {
     const [row] = await db.select().from(schema.addOns).where(eq(schema.addOns.id, id));
     return row;
@@ -626,6 +630,14 @@ class DatabaseStorage implements IStorage {
   async createAddOn(data: schema.InsertAddOn) {
     const [row] = await db.insert(schema.addOns).values(data).returning();
     return row;
+  }
+  async updateAddOn(id: number, data: Partial<schema.InsertAddOn>) {
+    const [row] = await db.update(schema.addOns).set(data).where(eq(schema.addOns.id, id)).returning();
+    return row;
+  }
+  async deleteAddOn(id: number): Promise<boolean> {
+    const result = await db.delete(schema.addOns).where(eq(schema.addOns.id, id)).returning();
+    return result.length > 0;
   }
 
   // ─── Order Add-Ons ───
