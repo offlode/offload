@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useCallback, useEffect } from "react";
 import type { User } from "@shared/schema";
 import { apiRequest, setCurrentUserId, setAuthToken } from "@/lib/queryClient";
+import { useIOSPushRegistration } from "@/hooks/use-ios-push-registration";
 
 type AuthContextType = {
   user: User | null;
@@ -22,6 +23,7 @@ const AuthContext = createContext<AuthContextType>({
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUserState] = useState<User | null>(null);
+  useIOSPushRegistration(user);
 
   // Keep the module-level userId and token in sync with the current user
   useEffect(() => {

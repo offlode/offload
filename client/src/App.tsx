@@ -36,8 +36,6 @@ import AdminFraud from "@/pages/admin/fraud";
 import LoginPage from "@/pages/login";
 import RegisterPage from "@/pages/register";
 import RoleSelectPage from "@/pages/role-select";
-import ForgotPasswordPage from "@/pages/forgot-password";
-import ResetPasswordPage from "@/pages/reset-password";
 import StaffLayout from "@/pages/staff/layout";
 import StaffOrdersPage from "@/pages/staff/orders";
 import StaffActivePage from "@/pages/staff/active";
@@ -102,7 +100,7 @@ function AppRouter() {
         {() => <RequireAuth allowedRoles={["customer"]}><OrdersPage /></RequireAuth>}
       </Route>
       <Route path="/orders/:id">
-        {(params) => <RequireAuth allowedRoles={["customer"]}><OrderDetailPage params={params} /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["customer"]}><OrderDetailPage /></RequireAuth>}
       </Route>
       <Route path="/profile">
         {() => <RequireAuth><ProfilePage /></RequireAuth>}
@@ -123,7 +121,7 @@ function AppRouter() {
         {() => <RequireAuth allowedRoles={["customer"]}><ChatPage /></RequireAuth>}
       </Route>
       <Route path="/tracking/:id">
-        {(params) => <RequireAuth allowedRoles={["customer"]}><TrackingPage /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["customer"]}><TrackingPage /></RequireAuth>}
       </Route>
 
       {/* Staff routes */}
@@ -143,10 +141,10 @@ function AppRouter() {
         {() => <RequireAuth allowedRoles={["laundromat"]}><StaffLayout><StaffQuality /></StaffLayout></RequireAuth>}
       </Route>
       <Route path="/staff/weigh/:id">
-        {(params) => <RequireAuth allowedRoles={["laundromat"]}><WeighPhotoPage params={params} /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["laundromat"]}><WeighPhotoPage /></RequireAuth>}
       </Route>
       <Route path="/staff/wash/:id">
-        {(params) => <RequireAuth allowedRoles={["laundromat"]}><StartWashingPage params={params} /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["laundromat"]}><StartWashingPage /></RequireAuth>}
       </Route>
 
       {/* Driver routes */}
@@ -157,10 +155,10 @@ function AppRouter() {
         {() => <RequireAuth allowedRoles={["driver"]}><DriverDashboard /></RequireAuth>}
       </Route>
       <Route path="/driver/order/:id">
-        {(params) => <RequireAuth allowedRoles={["driver"]}><DriverOrderDetail params={params} /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["driver"]}><DriverOrderDetail /></RequireAuth>}
       </Route>
       <Route path="/driver/navigation/:id">
-        {(params) => <RequireAuth allowedRoles={["driver"]}><DriverNavigation params={params} /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["driver"]}><DriverNavigation /></RequireAuth>}
       </Route>
       <Route path="/driver/earnings">
         {() => <RequireAuth allowedRoles={["driver"]}><DriverEarnings /></RequireAuth>}

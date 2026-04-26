@@ -4,3 +4,5 @@
 cert_tokens.env
 dist/
 node_modules/
+data.db-shm
+data.db-wal

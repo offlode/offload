@@ -1,12 +1,9 @@
-import { useQuery, useMutation } from "@tanstack/react-query";
-import { DollarSign, TrendingUp, Clock, CreditCard, ExternalLink, Loader2, Check, Wallet } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { DollarSign, TrendingUp, Clock, CreditCard, Check, Wallet } from "lucide-react";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/auth-context";
-import { apiRequest, queryClient } from "@/lib/queryClient";
 
 interface PayoutDashboardProps {
   userType: "vendor" | "driver";
@@ -15,7 +12,6 @@ interface PayoutDashboardProps {
 
 export function PayoutDashboard({ userType, entityId }: PayoutDashboardProps) {
   const { user } = useAuth();
-  const { toast } = useToast();
 
   // Fetch earnings data
   const earningsEndpoint = userType === "vendor"
@@ -31,28 +27,6 @@ export function PayoutDashboard({ userType, entityId }: PayoutDashboardProps) {
   const { data: connectStatus } = useQuery<any>({
     queryKey: [`/api/payments/connect-status/${user?.id}`],
     enabled: !!user?.id,
-  });
-
-  // Setup Stripe Connect
-  const setupConnectMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("/api/payments/setup-connect", {
-        method: "POST",
-        body: JSON.stringify({ userId: user?.id, userType }),
-      });
-      return res.json();
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: [`/api/payments/connect-status/${user?.id}`] });
-      if (data.onboardingUrl) {
-        window.open(data.onboardingUrl, "_blank");
-      } else {
-        toast({ title: "Account connected", description: "Stripe Connect account is ready!" });
-      }
-    },
-    onError: (err: Error) => {
-      toast({ title: "Setup failed", description: err.message, variant: "destructive" });
-    },
   });
 
   const totalEarnings = userType === "vendor"
@@ -181,23 +155,10 @@ export function PayoutDashboard({ userType, entityId }: PayoutDashboardProps) {
               </>
             ) : (
               <>
-                <p className="text-sm font-semibold">Connect with Stripe</p>
-                <p className="text-xs text-muted-foreground mt-0.5 mb-3">
-                  Set up direct deposits to receive your earnings automatically.
+                <p className="text-sm font-semibold">Payout onboarding unavailable</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Vendor payout onboarding is not yet available. Please contact support.
                 </p>
-                <Button
-                  size="sm"
-                  className="h-8 text-xs bg-primary hover:bg-primary/85"
-                  disabled={setupConnectMutation.isPending}
-                  onClick={() => setupConnectMutation.mutate()}
-                  data-testid="button-setup-connect"
-                >
-                  {setupConnectMutation.isPending ? (
-                    <><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Setting up...</>
-                  ) : (
-                    <><ExternalLink className="w-3 h-3 mr-1" /> Connect Stripe Account</>
-                  )}
-                </Button>
               </>
             )}
           </div>

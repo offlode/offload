@@ -389,6 +389,19 @@ export const insertNotificationSchema = createInsertSchema(notifications).omit({
 export type InsertNotification = z.infer<typeof insertNotificationSchema>;
 export type Notification = typeof notifications.$inferSelect;
 
+// ─── Push Tokens ───
+export const pushTokens = sqliteTable("push_tokens", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id").notNull(),
+  token: text("token").notNull().unique(),
+  platform: text("platform").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+export const insertPushTokenSchema = createInsertSchema(pushTokens).omit({ id: true });
+export type InsertPushToken = z.infer<typeof insertPushTokenSchema>;
+export type PushToken = typeof pushTokens.$inferSelect;
+
 // ─── Promo Codes ───
 export const promoCodes = sqliteTable("promo_codes", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -527,6 +540,7 @@ export const paymentTransactions = sqliteTable("payment_transactions", {
   orderId: integer("order_id").notNull(),
   type: text("type").notNull(), // charge | refund | payout_vendor | payout_driver
   amount: real("amount").notNull(),
+  amountCents: integer("amount_cents"),
   currency: text("currency").default("usd"),
   status: text("status").default("pending"), // pending | processing | completed | failed
   stripePaymentIntentId: text("stripe_payment_intent_id"),
@@ -719,6 +733,17 @@ export const idempotencyKeys = sqliteTable("idempotency_keys", {
   createdAt: text("created_at").notNull(),
   expiresAt: text("expires_at").notNull(),
 });
+
+// ─── Stripe Webhook Processed Events ───
+export const stripeProcessedEvents = sqliteTable("stripe_processed_events", {
+  eventId: text("event_id").primaryKey(),
+  type: text("type").notNull(),
+  processedAt: text("processed_at").notNull(),
+});
+
+export const insertStripeProcessedEventSchema = createInsertSchema(stripeProcessedEvents);
+export type InsertStripeProcessedEvent = z.infer<typeof insertStripeProcessedEventSchema>;
+export type StripeProcessedEvent = typeof stripeProcessedEvents.$inferSelect;
 
 // ─── Password Reset Tokens ───
 export const passwordResetTokens = sqliteTable("password_reset_tokens", {

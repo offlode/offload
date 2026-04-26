@@ -23,7 +23,7 @@ export default function ForgotPasswordPage() {
 
     setLoading(true);
     try {
-      await apiRequest("POST", "/api/auth/forgot-password", { email: email.trim() });
+      await apiRequest("/api/auth/forgot-password", { method: "POST", body: JSON.stringify({ email: email.trim() }) });
       setSent(true);
     } catch (err: any) {
       setError("Something went wrong. Please try again.");

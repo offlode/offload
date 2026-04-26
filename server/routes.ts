@@ -3,9 +3,13 @@ import { createServer, type Server } from "http";
 import { createHash, randomBytes } from "crypto";
 import { Resend } from "resend";
 import Stripe from "stripe";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { Server as SocketIOServer } from "socket.io";
 import { storage } from "./storage";
 import { isR2Enabled, uploadToR2, getPresignedDownloadUrl, getPresignedUploadUrl } from "./r2";
+import { sendPushToUser } from "./push";
+import { sendSMS } from "./sms";
+import { distanceMatrix, isGoogleMapsConfigured } from "./maps";
 import { SLA_CONFIGS, WEIGHT_TOLERANCE, CONSENT_TIMEOUT_HOURS, LOYALTY_TIERS, SUBSCRIPTION_TIERS, PRICING_TIERS, DELIVERY_FEES, TAX_RATE as SCHEMA_TAX_RATE, QUOTE_VALIDITY_MINUTES, SERVICE_TYPE_MULTIPLIERS } from "@shared/schema";
 import type { Order, Vendor, Driver, Quote } from "@shared/schema";
 import {
@@ -52,6 +56,44 @@ interface SessionData {
 }
 
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const SESSION_COOKIE = "offload_session";
+const ADMIN_ROLES = ["admin", "manager"];
+const APPLE_ISSUER = "https://appleid.apple.com";
+const APPLE_AUDIENCE = "com.offloadusa.app";
+const appleJWKS = createRemoteJWKSet(new URL("https://appleid.apple.com/auth/keys"), {
+  cacheMaxAge: 60 * 60 * 1000,
+  cooldownDuration: 30_000,
+});
+
+function isAdminOrManager(user: any): boolean {
+  return !!user && ADMIN_ROLES.includes(user.role);
+}
+
+function getCookieValue(req: Request, name: string): string | null {
+  const cookieHeader = req.headers.cookie || "";
+  const pair = cookieHeader.split(";").map(part => part.trim()).find(part => part.startsWith(`${name}=`));
+  if (!pair) return null;
+  return decodeURIComponent(pair.slice(name.length + 1));
+}
+
+function getSessionTokenFromRequest(req: Request): string | null {
+  const authHeader = req.headers.authorization;
+  const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  return bearerToken || getCookieValue(req, SESSION_COOKIE);
+}
+
+function setSessionCookie(res: Response, token: string): void {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader(
+    "Set-Cookie",
+    `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly${secure}; SameSite=Lax; Path=/; Max-Age=${Math.floor(SESSION_DURATION_MS / 1000)}`
+  );
+}
+
+function clearSessionCookie(res: Response): void {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; HttpOnly${secure}; SameSite=Lax; Path=/; Max-Age=0`);
+}
 
 function createSession(userId: number, role: string): string {
   const token = randomBytes(32).toString("hex");
@@ -107,7 +149,7 @@ function recordLoginAttempt(ip: string): void {
 // Clean up rate limit records every 30 minutes
 setInterval(() => {
   const now = Date.now();
-  for (const [ip, record] of loginAttempts) {
+  for (const [ip, record] of Array.from(loginAttempts.entries())) {
     if (now - record.firstAttempt > LOGIN_WINDOW_MS) loginAttempts.delete(ip);
   }
 }, 30 * 60 * 1000);
@@ -454,6 +496,14 @@ function notifyUser(userId: number, orderId: number | null, type: string, title:
 function notifyOrderUpdate(order: Order, title: string, body: string) {
   // Notify customer
   notifyUser(order.customerId, order.id, "order_update", title, body, `/orders/${order.id}`);
+  void sendPushToUser(order.customerId, title, body, { orderId: order.id, type: "order_update" });
+}
+
+function sendOrderStatusSMS(order: Order, status: string) {
+  const user = storage.getUser(order.customerId);
+  if (!user?.phone) return;
+  const orderNumber = (order as any).orderNumber || order.id;
+  void sendSMS(user.phone, `Your Offload order #${orderNumber} is now ${status.replace(/_/g, " ")}`);
 }
 
 // Socket.io emit helper — safe no-op when io is not available
@@ -1062,9 +1112,8 @@ const validTransitions: Record<string, string[]> = {
 
 function requireAuth(allowedRoles?: string[]) {
   return (req: Request, res: Response, next: NextFunction) => {
-    // Extract token from Authorization header: "Bearer <token>"
-    const authHeader = req.headers.authorization;
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    // Accept bearer tokens for native clients and HTTP-only cookies for browser sessions
+    const token = getSessionTokenFromRequest(req);
 
     let userId: number | null = null;
 
@@ -1162,7 +1211,7 @@ function startBackgroundTasks() {
             // Auto-issue SLA breach credit to customer
             // Credit = delivery fee paid for this order (refund the speed premium)
             const deliveryFee = order.deliveryFee || 0;
-            if (deliveryFee > 0 && !(order.notes || "").includes("SLA_CREDIT_ISSUED")) {
+            if (deliveryFee > 0 && !(order.customerNotes || "").includes("SLA_CREDIT_ISSUED")) {
               const customer = storage.getUser(order.customerId);
               if (customer) {
                 const currentCredits = customer.credits || 0;
@@ -1180,7 +1229,7 @@ function startBackgroundTasks() {
                   `/orders/${order.id}`
                 );
                 // Mark credit issued to prevent duplicates
-                storage.updateOrder(order.id, { notes: `${order.notes || ""}\n[SLA_CREDIT_ISSUED:${deliveryFee}]` } as any);
+                storage.updateOrder(order.id, { customerNotes: `${order.customerNotes || ""}\n[SLA_CREDIT_ISSUED:${deliveryFee}]` } as any);
               }
             }
           }
@@ -1336,13 +1385,28 @@ export async function registerRoutes(
     res.setHeader("X-XSS-Protection", "1; mode=block");
     // Allow cross-origin requests from the marketing site and deployed site
     const origin = req.headers.origin;
-    const allowedOrigins = ["http://localhost:3000", "http://127.0.0.1:3000", "https://offloadusa.com", "http://offloadusa.com"];
-    if (origin && allowedOrigins.some(o => origin.startsWith(o))) {
+    const allowedOrigins = [
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      "https://offloadusa.com",
+      "http://offloadusa.com",
+      "https://www.offloadusa.com",
+      "https://admin.offloadusa.com",
+      // Capacitor native shells (iOS/Android)
+      "capacitor://localhost",
+      "ionic://localhost",
+      "http://localhost",
+      "https://localhost",
+    ];
+    if (origin && allowedOrigins.some(o => origin === o || origin.startsWith(o))) {
       res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+    } else if (!origin) {
+      // Native fetches may omit Origin — allow non-browser callers (no credentials needed; auth via Bearer)
+      res.setHeader("Access-Control-Allow-Origin", "*");
     }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key");
     if (req.method === "OPTIONS") return res.status(204).end();
     next();
   });
@@ -1478,6 +1542,7 @@ export async function registerRoutes(
     notifyUser(user.id, null, "system", "Welcome to Offload!", `Hey ${name}, welcome aboard! Your account is set up and ready to go.`, "/");
 
     const token = createSession(user.id, user.role);
+    setSessionCookie(res, token);
     res.status(201).json({ user: { ...user, password: undefined }, token });
   });
 
@@ -1499,6 +1564,7 @@ export async function registerRoutes(
     // Create server-side session and return token
     const token = createSession(user.id, user.role);
     storage.updateUser(user.id, { lastActiveAt: now() });
+    setSessionCookie(res, token);
     res.json({ user: { ...user, password: undefined }, token });
   });
 
@@ -1508,10 +1574,94 @@ export async function registerRoutes(
     res.status(404).json({ error: "Demo login is not available in production" });
   });
 
+  // ── Sign in with Apple ──
+  // Accepts identity_token (JWT) from native iOS Sign-in with Apple flow,
+  // verifies Apple's RS256 signature/JWKS, then finds or creates a user.
+  app.post("/api/auth/apple", async (req, res) => {
+    try {
+      const { identityToken, fullName, user: appleUserId, nonce } = req.body || {};
+      if (!identityToken) {
+        return res.status(400).json({ error: "Missing identityToken" });
+      }
+
+      let payload: any;
+      try {
+        const verified = await jwtVerify(String(identityToken), appleJWKS, {
+          issuer: APPLE_ISSUER,
+          audience: APPLE_AUDIENCE,
+          algorithms: ["RS256"],
+          requiredClaims: ["iss", "aud", "exp", "sub"],
+        });
+        payload = verified.payload;
+        if (verified.protectedHeader.alg !== "RS256") {
+          return res.status(401).json({ error: "Invalid token algorithm" });
+        }
+        if (!verified.protectedHeader.kid) {
+          return res.status(401).json({ error: "Invalid token key id" });
+        }
+      } catch (err: any) {
+        console.warn("[apple-auth] token verification failed:", err?.message || err);
+        return res.status(401).json({ error: "Invalid identity token" });
+      }
+
+      if (nonce) {
+        if (payload.nonce_supported !== true) {
+          return res.status(401).json({ error: "Nonce not supported by identity token" });
+        }
+        if (payload.nonce !== nonce) {
+          return res.status(401).json({ error: "Invalid token nonce" });
+        }
+      }
+
+      const sub: string = payload.sub || appleUserId;
+      const email: string | undefined = payload.email;
+      if (!sub) {
+        return res.status(400).json({ error: "Missing Apple user identifier" });
+      }
+
+      // Stable Apple-derived email: Apple may send a private relay email or the real one
+      // Use the email from the token; if missing, generate a placeholder using sub.
+      const effectiveEmail = email || `apple_${sub.replace(/[^a-zA-Z0-9]/g, "").substring(0, 24)}@privaterelay.appleid.com`;
+
+      // Try finding existing user by email first, then by appleSub if we tracked it
+      let user = storage.getUserByEmail(effectiveEmail);
+
+      if (!user) {
+        // Create new account — customer role, no password (Apple-only)
+        const displayName = (fullName && (fullName.givenName || fullName.familyName))
+          ? `${fullName.givenName || ""} ${fullName.familyName || ""}`.trim()
+          : (effectiveEmail.split("@")[0] || "Apple User");
+        const username = `apple_${sub.substring(0, 16)}_${Date.now()}`;
+        user = storage.createUser({
+          username,
+          password: hashPassword(randomBytes(32).toString("hex")), // unguessable random
+          name: displayName,
+          email: effectiveEmail,
+          phone: null,
+          role: "customer",
+          memberSince: new Date().toISOString().split("T")[0],
+          loyaltyPoints: 0,
+          loyaltyTier: "bronze",
+          referralCode: displayName.toUpperCase().replace(/\s+/g, "-").substring(0, 8) + "-" + Date.now().toString(36).toUpperCase().substring(0, 4),
+        });
+        notifyUser(user.id, null, "system", "Welcome to Offload!", `Hey ${displayName}, welcome aboard. Your account is ready.`, "/");
+      } else {
+        storage.updateUser(user.id, { lastActiveAt: now() });
+      }
+
+      const token = createSession(user.id, user.role);
+      setSessionCookie(res, token);
+      res.json({ user: { ...user, password: undefined }, token });
+    } catch (err: any) {
+      console.error("[apple-auth] error:", err);
+      res.status(500).json({ error: "Apple sign-in failed" });
+    }
+  });
+
   app.post("/api/auth/logout", (req, res) => {
-    const authHeader = req.headers.authorization;
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    const token = getSessionTokenFromRequest(req);
     if (token) destroySession(token);
+    clearSessionCookie(res);
     res.json({ success: true });
   });
 
@@ -1610,97 +1760,23 @@ export async function registerRoutes(
     res.json({ user: { ...user, password: undefined } });
   });
 
-  // ── FORGOT PASSWORD ──
-  app.post("/api/auth/forgot-password", (req, res) => {
-    const { email } = req.body;
-    const safeMsg = "If an account with that email exists, a password reset link has been sent.";
-    if (!email) return res.status(200).json({ message: safeMsg });
-
-    const user = storage.getUserByEmail(email);
-    if (user) {
-      const token = randomBytes(32).toString("hex");
-      const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
-      storage.createPasswordResetToken(user.id, token, expiresAt);
-
-      // Send email via Resend
-      const resetLink = `https://offloadusa.com/#/reset-password?token=${token}`;
-      const apiKey = process.env.RESEND_API_KEY || "re_WRb6SKUJ_GCVu86o6Ju8qJPa39usgsKfz";
-      const resend = new Resend(apiKey);
-      resend.emails.send({
-        from: "Offload <notifications@offloadusa.com>",
-        to: email,
-        subject: "Reset your Offload password",
-        html: `<div style="font-family:Inter,sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#1A1A1A;color:#fff;border-radius:12px;">
-          <h2 style="color:#5B4BC4;margin-bottom:16px;">Reset Your Password</h2>
-          <p style="color:#ccc;line-height:1.6;">We received a request to reset the password for your Offload account. Click the button below to set a new password:</p>
-          <div style="text-align:center;margin:32px 0;">
-            <a href="${resetLink}" style="display:inline-block;padding:14px 32px;background:#5B4BC4;color:#fff;text-decoration:none;border-radius:999px;font-weight:600;font-size:16px;">Reset Password</a>
-          </div>
-          <p style="color:#888;font-size:13px;line-height:1.5;">This link expires in 1 hour. If you didn't request a password reset, you can safely ignore this email.</p>
-          <hr style="border:none;border-top:1px solid #333;margin:24px 0;" />
-          <p style="color:#666;font-size:12px;">Offload &mdash; Laundry, delivered.</p>
-        </div>`,
-      }).then(() => {
-        console.log(`[Email] Password reset sent to ${email} via Resend`);
-      }).catch((err: any) => {
-        console.error(`[Email] Failed to send password reset to ${email}:`, err);
-      });
-    }
-
-    res.status(200).json({ message: safeMsg });
-  });
-
-  // ── RESET PASSWORD ──
-  app.post("/api/auth/reset-password", (req, res) => {
-    const { token, password } = req.body;
-    if (!token || !password) {
-      return res.status(400).json({ error: "Token and password are required" });
-    }
-    if (password.length < 6) {
-      return res.status(400).json({ error: "Password must be at least 6 characters" });
-    }
-
-    const resetToken = storage.getPasswordResetToken(token);
-    if (!resetToken) {
-      return res.status(400).json({ error: "Invalid or expired reset token" });
-    }
-    if (resetToken.usedAt) {
-      return res.status(400).json({ error: "This reset link has already been used" });
-    }
-    if (new Date(resetToken.expiresAt) < new Date()) {
-      return res.status(400).json({ error: "This reset link has expired. Please request a new one." });
-    }
-
-    // Update password
-    const hashedPw = hashPassword(password);
-    storage.updateUser(resetToken.userId, { password: hashedPw });
-
-    // Mark token as used
-    storage.markPasswordResetTokenUsed(token);
-
-    // Invalidate all existing sessions for this user
-    storage.deleteSessionsByUser(resetToken.userId);
-
-    res.status(200).json({ message: "Password has been reset successfully. You can now log in." });
-  });
-
   // ─────────────────────────────────────────────────────────
   //  USERS
   // ─────────────────────────────────────────────────────────
 
   app.get("/api/users/:id", requireAuth(), (req, res) => {
     const currentUserP = (req as any).currentUser;
-    if (currentUserP.role !== "admin" && currentUserP.role !== "manager" && currentUserP.id !== Number(req.params.id)) {
+    if (currentUserP.role !== "admin" && currentUserP.role !== "manager" && currentUserP.id !== Number(String(req.params.id))) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const user = storage.getUser(Number(req.params.id));
+    const user = storage.getUser(Number(String(req.params.id)));
     if (!user) return res.status(404).json({ error: "User not found" });
     res.json({ ...user, password: undefined });
   });
 
   app.patch("/api/users/:id", requireAuth(), (req, res) => {
     const currentUserU = (req as any).currentUser;
-    const targetId = Number(req.params.id);
+    const targetId = Number(String(req.params.id));
     if (targetId !== currentUserU.id && !["admin","manager"].includes(currentUserU.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
@@ -1736,7 +1812,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/vendors/:id", requireAuth(["admin", "manager", "laundromat", "vendor"]), (req, res) => {
-    const v = storage.getVendor(Number(req.params.id));
+    const v = storage.getVendor(Number(String(req.params.id)));
     if (!v) return res.status(404).json({ error: "Vendor not found" });
     res.json(v);
   });
@@ -1744,12 +1820,12 @@ export async function registerRoutes(
   app.get("/api/vendors/:id/stats", requireAuth(["admin", "manager", "laundromat", "vendor"]), (req, res) => {
     const currentUser = (req as any).currentUser;
     if (currentUser.role === "laundromat" || currentUser.role === "vendor") {
-      const vendor = storage.getVendor(Number(req.params.id));
-      if (!vendor || vendor.userId !== currentUser.id) {
+      const vendor = storage.getVendor(Number(String(req.params.id)));
+      if (!vendor || storage.getVendorByUserId(currentUser.id)?.id !== vendor.id) {
         return res.status(403).json({ error: "Access denied" });
       }
     }
-    res.json(storage.getVendorStats(Number(req.params.id)));
+    res.json(storage.getVendorStats(Number(String(req.params.id))));
   });
 
   app.post("/api/vendors", requireAuth(["admin", "manager"]), (req, res) => {
@@ -1760,12 +1836,12 @@ export async function registerRoutes(
   app.patch("/api/vendors/:id", requireAuth(["admin", "manager", "laundromat", "vendor"]), (req, res) => {
     const currentUser = (req as any).currentUser;
     if (currentUser.role === "laundromat" || currentUser.role === "vendor") {
-      const vendor = storage.getVendor(Number(req.params.id));
-      if (!vendor || vendor.userId !== currentUser.id) {
+      const vendor = storage.getVendor(Number(String(req.params.id)));
+      if (!vendor || storage.getVendorByUserId(currentUser.id)?.id !== vendor.id) {
         return res.status(403).json({ error: "Access denied" });
       }
     }
-    const updated = storage.updateVendor(Number(req.params.id), req.body);
+    const updated = storage.updateVendor(Number(String(req.params.id)), req.body);
     if (!updated) return res.status(404).json({ error: "Vendor not found" });
     res.json(updated);
   });
@@ -1779,19 +1855,19 @@ export async function registerRoutes(
   });
 
   app.get("/api/drivers/user/:userId", requireAuth(["driver", "admin", "manager"]), (req, res) => {
-    const d = storage.getDriverByUserId(Number(req.params.userId));
+    const d = storage.getDriverByUserId(Number(String(req.params.userId)));
     if (!d) return res.status(404).json({ error: "Driver not found" });
     res.json(d);
   });
 
   app.get("/api/drivers/:id", requireAuth(), (req, res) => {
-    const d = storage.getDriver(Number(req.params.id));
+    const d = storage.getDriver(Number(String(req.params.id)));
     if (!d) return res.status(404).json({ error: "Driver not found" });
     res.json(d);
   });
 
   app.get("/api/drivers/:id/stats", requireAuth(["driver", "admin", "manager"]), (req, res) => {
-    res.json(storage.getDriverStats(Number(req.params.id)));
+    res.json(storage.getDriverStats(Number(String(req.params.id))));
   });
 
   app.post("/api/drivers", requireAuth(["admin", "manager"]), (req, res) => {
@@ -1814,11 +1890,11 @@ export async function registerRoutes(
     const currentUser = (req as any).currentUser;
     if (currentUser.role === "driver") {
       const myDriver = storage.getDriverByUserId(currentUser.id);
-      if (!myDriver || myDriver.id !== Number(req.params.id)) {
+      if (!myDriver || myDriver.id !== Number(String(req.params.id))) {
         return res.status(403).json({ error: "Access denied" });
       }
     }
-    const updated = storage.updateDriver(Number(req.params.id), req.body);
+    const updated = storage.updateDriver(Number(String(req.params.id)), req.body);
     if (!updated) return res.status(404).json({ error: "Driver not found" });
     res.json(updated);
   });
@@ -1829,12 +1905,12 @@ export async function registerRoutes(
     const cuLoc = (req as any).currentUser;
     if (cuLoc.role === "driver") {
       const myDriverLoc = storage.getDriverByUserId(cuLoc.id);
-      if (!myDriverLoc || myDriverLoc.id !== Number(req.params.id)) {
+      if (!myDriverLoc || myDriverLoc.id !== Number(String(req.params.id))) {
         return res.status(403).json({ error: "Access denied — can only update your own location" });
       }
     }
     const { lat, lng } = req.body;
-    const updated = storage.updateDriver(Number(req.params.id), {
+    const updated = storage.updateDriver(Number(String(req.params.id)), {
       currentLat: lat,
       currentLng: lng,
     });
@@ -1848,7 +1924,7 @@ export async function registerRoutes(
     if (!["available", "busy", "offline"].includes(status)) {
       return res.status(400).json({ error: "Invalid status" });
     }
-    const updated = storage.updateDriver(Number(req.params.id), { status });
+    const updated = storage.updateDriver(Number(String(req.params.id)), { status });
     if (!updated) return res.status(404).json({ error: "Driver not found" });
     res.json(updated);
   });
@@ -2009,7 +2085,7 @@ export async function registerRoutes(
 
   // ── Public: Get quote by ID ──
   app.get("/api/quotes/:id", (req, res) => {
-    const quote = storage.getQuote(Number(req.params.id));
+    const quote = storage.getQuote(Number(String(req.params.id)));
     if (!quote) return res.status(404).json({ error: "Quote not found" });
 
     // Check expiry
@@ -2140,7 +2216,7 @@ export async function registerRoutes(
               customerEmail: email,
             },
             receipt_email: email,
-          });
+          }, { idempotencyKey: `order-${order.id}-intent` });
           paymentIntentId = intent.id;
           clientSecret = intent.client_secret!;
         } catch (err: any) {
@@ -2161,6 +2237,7 @@ export async function registerRoutes(
         orderId: order.id,
         type: "charge",
         amount: quote.total || 0,
+        amountCents,
         currency: "usd",
         status: "pending",
         stripePaymentIntentId: paymentIntentId,
@@ -2207,7 +2284,7 @@ export async function registerRoutes(
   // ── Auth required: Accept (lock) a quote ──
   app.post("/api/quotes/:id/accept", requireAuth(), (req, res) => {
     try {
-      const quote = storage.getQuote(Number(req.params.id));
+      const quote = storage.getQuote(Number(String(req.params.id)));
       if (!quote) return res.status(404).json({ error: "Quote not found" });
 
       const currentUser = (req as any).currentUser;
@@ -2249,7 +2326,7 @@ export async function registerRoutes(
   // ── Auth required: Convert accepted quote to real order ──
   app.post("/api/quotes/:id/convert", requireAuth(), (req, res) => {
     try {
-      const quote = storage.getQuote(Number(req.params.id));
+      const quote = storage.getQuote(Number(String(req.params.id)));
       if (!quote) return res.status(404).json({ error: "Quote not found" });
 
       const currentUser = (req as any).currentUser;
@@ -2437,10 +2514,10 @@ export async function registerRoutes(
     const { value, category, description } = req.body;
     if (!value || !category) return res.status(400).json({ error: "value and category required" });
     const userId = (req as any).currentUser?.id;
-    const config = storage.upsertPricingConfig(req.params.key, value, category, description, userId);
+    const config = storage.upsertPricingConfig(String(req.params.key), value, category, description, userId);
     storage.createPricingAuditEntry({
       action: "config_change",
-      details: JSON.stringify({ key: req.params.key, value, category }),
+      details: JSON.stringify({ key: String(req.params.key), value, category }),
       actorId: userId,
       actorRole: "admin",
       timestamp: now(),
@@ -2467,24 +2544,24 @@ export async function registerRoutes(
       const customerId = req.query.customerId ? Number(req.query.customerId) : undefined;
       const vendorId = req.query.vendorId ? Number(req.query.vendorId) : undefined;
       const driverId = req.query.driverId ? Number(req.query.driverId) : undefined;
-      const status = req.query.status as string | undefined;
-      if (customerId) return res.json(storage.getOrdersByCustomer(customerId));
-      if (vendorId) return res.json(storage.getOrdersByVendor(vendorId));
-      if (driverId) return res.json(storage.getOrdersByDriver(driverId));
-      if (status) return res.json(storage.getOrdersByStatus(status));
-      return res.json(storage.getOrders());
+      const status = typeof req.query.status === "string" ? req.query.status : undefined;
+      if (customerId) return res.json(storage.getOrdersByCustomer(customerId).map(enrichAdminOrder));
+      if (vendorId) return res.json(storage.getOrdersByVendor(vendorId).map(enrichAdminOrder));
+      if (driverId) return res.json(storage.getOrdersByDriver(driverId).map(enrichAdminOrder));
+      if (status) return res.json(storage.getOrdersByStatus(status).map(enrichAdminOrder));
+      return res.json(storage.getOrders().map(enrichAdminOrder));
     }
 
     // Vendor sees only their assigned orders
     if (["laundromat","vendor"].includes(userRole)) {
-      const vendorProfile = storage.getVendorByUserId?.(user.id);
+      const vendorProfile = storage.getVendorByUserId(user.id);
       if (vendorProfile) return res.json(storage.getOrdersByVendor(vendorProfile.id));
       return res.json([]);
     }
 
     // Driver sees only their assigned orders
     if (userRole === "driver") {
-      const driverProfile = storage.getDriverByUserId?.(user.id);
+      const driverProfile = storage.getDriverByUserId(user.id);
       if (driverProfile) return res.json(storage.getOrdersByDriver(driverProfile.id));
       return res.json([]);
     }
@@ -2498,7 +2575,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/orders/:id", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // BOLA check: enforce ownership based on role
@@ -2508,7 +2585,7 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Access denied" });
     }
     if (userRole === "driver" && order.driverId !== user.id) {
-      const driverProfile = storage.getDriverByUserId?.(user.id);
+      const driverProfile = storage.getDriverByUserId(user.id);
       if (!driverProfile || (order.driverId !== driverProfile.id && order.returnDriverId !== driverProfile.id)) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -2538,7 +2615,9 @@ export async function registerRoutes(
 
     res.json({
       ...order,
+      ...(userRole === "admin" || userRole === "manager" ? enrichAdminOrder(order) : {}),
       events,
+      statusHistory: storage.getOrderStatusHistory(order.id),
       vendor: vendor ? { id: vendor.id, name: vendor.name, rating: vendor.rating, address: vendor.address } : null,
       driver: driverInfo,
       customer: customerInfo,
@@ -2863,7 +2942,7 @@ export async function registerRoutes(
 
   // ── UPDATE ORDER STATUS — Step-locked transitions ──
   app.patch("/api/orders/:id/status", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // BOLA: ownership check
@@ -3090,6 +3169,7 @@ export async function registerRoutes(
 
     if (statusMessages[status]) {
       notifyOrderUpdate(order, `Order ${status.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase())}`, statusMessages[status]);
+      sendOrderStatusSMS(order, status);
     }
 
     // When delivered, send review request
@@ -3142,7 +3222,7 @@ export async function registerRoutes(
 
   // General order update
   app.patch("/api/orders/:id", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // BOLA: ownership + role check
@@ -3203,7 +3283,7 @@ export async function registerRoutes(
 
   // ── WS5: Driver failure reporting ──
   app.post("/api/orders/:id/report-issue", requireAuth(["driver"]), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const currentUser = (req as any).currentUser;
@@ -3254,7 +3334,7 @@ export async function registerRoutes(
 
   // ── WS5: Vendor order actions (accept/reject/complete) ──
   app.post("/api/orders/:id/vendor-action", requireAuth(["laundromat", "vendor", "admin", "manager"]), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const currentUser = (req as any).currentUser;
@@ -3316,7 +3396,7 @@ export async function registerRoutes(
 
   // ── CANCEL ORDER ──
   app.post("/api/orders/:id/cancel", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // BOLA: only order owner or admin/manager can cancel
@@ -3393,7 +3473,7 @@ export async function registerRoutes(
 
   // ── RESCHEDULE ORDER ──
   app.post("/api/orders/:id/reschedule", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const currentUser = (req as any).currentUser;
@@ -3469,7 +3549,7 @@ export async function registerRoutes(
 
   // ── PREDICTIVE ETA ──
   app.get("/api/orders/:id/eta", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
     if (order.status === "delivered" || order.status === "cancelled") {
       return res.json({ message: "Order is no longer active", status: order.status, deliveredAt: order.deliveredAt });
@@ -3569,7 +3649,7 @@ export async function registerRoutes(
 
   // Staff records intake weight
   app.post("/api/orders/:id/intake", requireAuth(["laundromat", "vendor", "admin"]), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const { weight, photoUrl, actorId } = req.body;
@@ -3596,7 +3676,7 @@ export async function registerRoutes(
 
   // Staff records output weight (after wash)
   app.post("/api/orders/:id/output-weight", requireAuth(["laundromat", "vendor", "admin"]), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const { weight, actorId } = req.body;
@@ -3652,7 +3732,7 @@ export async function registerRoutes(
 
   // Driver records dirty weight at pickup
   app.post("/api/orders/:id/record-dirty-weight", requireAuth(["driver", "laundromat", "vendor", "admin"]), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const { weight, actorId } = req.body;
@@ -3675,7 +3755,7 @@ export async function registerRoutes(
 
   // Staff records clean weight after wash — auto-calculates overage and final price
   app.post("/api/orders/:id/record-clean-weight", requireAuth(["laundromat", "vendor", "admin"]), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const { weight, actorId } = req.body;
@@ -3736,7 +3816,7 @@ export async function registerRoutes(
 
   // Weight comparison breakdown
   app.get("/api/orders/:id/weight-comparison", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const orderAddOnsList = storage.getOrderAddOns(order.id);
@@ -3767,19 +3847,19 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.get("/api/orders/:id/events", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
     const currentUser = (req as any).currentUser;
     if (order.customerId !== currentUser.id && order.driverId !== currentUser.id && order.vendorId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    res.json(storage.getOrderEvents(Number(req.params.id)));
+    res.json(storage.getOrderEvents(Number(String(req.params.id))));
   });
 
   app.post("/api/orders/:id/events", requireAuth(["admin", "manager"]), (req, res) => {
     const event = storage.createOrderEvent({
       ...req.body,
-      orderId: Number(req.params.id),
+      orderId: Number(String(req.params.id)),
       timestamp: now(),
     });
     res.status(201).json(event);
@@ -3810,7 +3890,7 @@ export async function registerRoutes(
 
   app.patch("/api/addresses/:id", requireAuth(), (req, res) => {
     const currentUser = (req as any).currentUser;
-    const addr = storage.getAddress(Number(req.params.id));
+    const addr = storage.getAddress(Number(String(req.params.id)));
     if (!addr) return res.status(404).json({ error: "Address not found" });
     if (addr.userId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
@@ -3819,18 +3899,18 @@ export async function registerRoutes(
       const allAddr = storage.getAddressesByUser(addr.userId);
       allAddr.forEach(a => storage.updateAddress(a.id, { isDefault: 0 }));
     }
-    const updated = storage.updateAddress(Number(req.params.id), req.body);
+    const updated = storage.updateAddress(Number(String(req.params.id)), req.body);
     res.json(updated);
   });
 
   app.delete("/api/addresses/:id", requireAuth(), (req, res) => {
     const currentUser = (req as any).currentUser;
-    const addr = storage.getAddress(Number(req.params.id));
+    const addr = storage.getAddress(Number(String(req.params.id)));
     if (!addr) return res.status(404).json({ error: "Address not found" });
     if (addr.userId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    storage.deleteAddress(Number(req.params.id));
+    storage.deleteAddress(Number(String(req.params.id)));
     res.json({ success: true });
   });
 
@@ -3852,7 +3932,7 @@ export async function registerRoutes(
 
   app.patch("/api/payment-methods/:id", requireAuth(), (req, res) => {
     const currentUser = (req as any).currentUser;
-    const id = Number(req.params.id);
+    const id = Number(String(req.params.id));
     const allMethods = storage.getPaymentMethodsByUser(currentUser.id);
     const method = allMethods.find(m => m.id === id);
     if (!method && !["admin", "manager"].includes(currentUser.role)) {
@@ -3874,7 +3954,7 @@ export async function registerRoutes(
 
   app.delete("/api/payment-methods/:id", requireAuth(), (req, res) => {
     const currentUser = (req as any).currentUser;
-    const id = Number(req.params.id);
+    const id = Number(String(req.params.id));
     const allMethods = storage.getPaymentMethodsByUser(currentUser.id);
     const method = allMethods.find(m => m.id === id);
     if (!method && !["admin", "manager"].includes(currentUser.role)) {
@@ -3889,7 +3969,7 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.get("/api/orders/:id/consents", requireAuth(), (req, res) => {
-    res.json(storage.getConsentsByOrder(Number(req.params.id)));
+    res.json(storage.getConsentsByOrder(Number(String(req.params.id))));
   });
 
   app.post("/api/orders/:id/consents", requireAuth(["laundromat", "vendor", "admin"]), (req, res) => {
@@ -3898,14 +3978,14 @@ export async function registerRoutes(
 
     const consent = storage.createConsent({
       ...req.body,
-      orderId: Number(req.params.id),
+      orderId: Number(String(req.params.id)),
       requestedAt: ts_,
       autoApproveAt,
     });
 
     // Log event
     storage.createOrderEvent({
-      orderId: Number(req.params.id),
+      orderId: Number(String(req.params.id)),
       eventType: "consent_requested",
       description: `Consent requested: ${req.body.consentType} — ${req.body.description}`,
       actorId: req.body.requestedBy,
@@ -3914,7 +3994,7 @@ export async function registerRoutes(
     });
 
     // Notify customer
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (order) {
       notifyUser(order.customerId, order.id, "consent_request",
         "Action Required",
@@ -3928,7 +4008,7 @@ export async function registerRoutes(
 
   // Customer responds to consent
   app.patch("/api/consents/:id", requireAuth(), (req, res) => {
-    const consent = storage.getConsent(Number(req.params.id));
+    const consent = storage.getConsent(Number(String(req.params.id)));
     if (!consent) return res.status(404).json({ error: "Consent not found" });
 
     const { status } = req.body;
@@ -3969,17 +4049,17 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.get("/api/orders/:id/messages", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
     const currentUser = (req as any).currentUser;
     if (order.customerId !== currentUser.id && order.driverId !== currentUser.id && order.vendorId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    res.json(storage.getMessagesByOrder(Number(req.params.id)));
+    res.json(storage.getMessagesByOrder(Number(String(req.params.id))));
   });
 
   app.post("/api/orders/:id/messages", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
     const currentUser = (req as any).currentUser;
     if (order.customerId !== currentUser.id && order.driverId !== currentUser.id && order.vendorId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
@@ -3987,7 +4067,7 @@ export async function registerRoutes(
     }
     const msg = storage.createMessage({
       ...req.body,
-      orderId: Number(req.params.id),
+      orderId: Number(String(req.params.id)),
       senderId: currentUser.id,
       senderRole: currentUser.role,
       timestamp: now(),
@@ -4004,7 +4084,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/disputes/:id", requireAuth(), (req, res) => {
-    const d = storage.getDispute(Number(req.params.id));
+    const d = storage.getDispute(Number(String(req.params.id)));
     if (!d) return res.status(404).json({ error: "Dispute not found" });
     const currentUser = (req as any).currentUser;
     if (d.customerId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
@@ -4056,12 +4136,12 @@ export async function registerRoutes(
   });
 
   app.patch("/api/disputes/:id", requireAuth(["admin", "manager"]), (req, res) => {
-    const updated = storage.updateDispute(Number(req.params.id), req.body);
+    const updated = storage.updateDispute(Number(String(req.params.id)), req.body);
     if (!updated) return res.status(404).json({ error: "Dispute not found" });
 
     // If resolved, notify customer
     if (req.body.status === "resolved" || req.body.status === "closed") {
-      const dispute = storage.getDispute(Number(req.params.id));
+      const dispute = storage.getDispute(Number(String(req.params.id)));
       if (dispute) {
         notifyUser(dispute.customerId, dispute.orderId, "system",
           "Dispute Resolved",
@@ -4089,13 +4169,13 @@ export async function registerRoutes(
   });
 
   app.get("/api/orders/:id/review", requireAuth(), (req, res) => {
-    const review = storage.getReviewByOrder(Number(req.params.id));
+    const review = storage.getReviewByOrder(Number(String(req.params.id)));
     if (!review) return res.status(404).json({ error: "No review yet" });
     res.json(review);
   });
 
   app.post("/api/orders/:id/review", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // Check if already reviewed
@@ -4147,6 +4227,21 @@ export async function registerRoutes(
   });
 
   // ─────────────────────────────────────────────────────────
+  //  PUSH TOKENS
+  // ─────────────────────────────────────────────────────────
+
+  app.post("/api/push/register-token", requireAuth(), (req, res) => {
+    const currentUser = (req as any).currentUser;
+    const { token, platform } = req.body || {};
+    if (!token || typeof token !== "string") return res.status(400).json({ error: "token is required" });
+    if (!platform || typeof platform !== "string") return res.status(400).json({ error: "platform is required" });
+    if (!["ios", "android", "web"].includes(platform)) return res.status(400).json({ error: "Unsupported platform" });
+
+    const saved = storage.savePushToken(currentUser.id, token, platform);
+    res.status(201).json({ id: saved.id, platform: saved.platform, createdAt: saved.createdAt });
+  });
+
+  // ─────────────────────────────────────────────────────────
   //  NOTIFICATIONS
   // ─────────────────────────────────────────────────────────
 
@@ -4164,15 +4259,17 @@ export async function registerRoutes(
   });
 
   app.patch("/api/notifications/:id/read", requireAuth(), (req, res) => {
-    const n = storage.markNotificationRead(Number(req.params.id));
-    if (!n) return res.status(404).json({ error: "Notification not found" });
+    const currentUser = (req as any).currentUser;
+    const existing = storage.getNotification(Number(String(req.params.id)));
+    if (!existing) return res.status(404).json({ error: "Notification not found" });
+    if (existing.userId !== currentUser.id) return res.status(403).json({ error: "Access denied" });
+    const n = storage.markNotificationRead(existing.id);
     res.json(n);
   });
 
   app.post("/api/notifications/mark-all-read", requireAuth(), (req, res) => {
-    const userId = Number(req.body.userId);
-    if (!userId) return res.status(400).json({ error: "userId required" });
-    storage.markAllRead(userId);
+    const currentUser = (req as any).currentUser;
+    storage.markAllRead(currentUser.id);
     res.json({ success: true });
   });
 
@@ -4182,10 +4279,10 @@ export async function registerRoutes(
 
   app.get("/api/customers/:id/stats", requireAuth(), (req, res) => {
     const currentUser = (req as any).currentUser;
-    if (Number(req.params.id) !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
+    if (Number(String(req.params.id)) !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    res.json(storage.getCustomerStats(Number(req.params.id)));
+    res.json(storage.getCustomerStats(Number(String(req.params.id))));
   });
 
   // ─────────────────────────────────────────────────────────
@@ -4269,10 +4366,10 @@ export async function registerRoutes(
 
   app.get("/api/loyalty/:userId", requireAuth(), (req, res) => {
     const cuL = (req as any).currentUser;
-    if (cuL.role !== "admin" && cuL.role !== "manager" && cuL.id !== Number(req.params.userId)) {
+    if (cuL.role !== "admin" && cuL.role !== "manager" && cuL.id !== Number(String(req.params.userId))) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const userId = Number(req.params.userId);
+    const userId = Number(String(req.params.userId));
     const user = storage.getUser(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
 
@@ -4353,10 +4450,10 @@ export async function registerRoutes(
 
   app.get("/api/referrals/:userId", requireAuth(), (req, res) => {
     const cuR = (req as any).currentUser;
-    if (cuR.role !== "admin" && cuR.role !== "manager" && cuR.id !== Number(req.params.userId)) {
+    if (cuR.role !== "admin" && cuR.role !== "manager" && cuR.id !== Number(String(req.params.userId))) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const userId = Number(req.params.userId);
+    const userId = Number(String(req.params.userId));
     const user = storage.getUser(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
 
@@ -4548,13 +4645,13 @@ export async function registerRoutes(
   });
 
   app.patch("/api/admin/promos/:id", requireAuth(["admin"]), (req, res) => {
-    const updated = storage.updatePromoCode(Number(req.params.id), req.body);
+    const updated = storage.updatePromoCode(Number(String(req.params.id)), req.body);
     if (!updated) return res.status(404).json({ error: "Promo code not found" });
     res.json(updated);
   });
 
   app.delete("/api/admin/promos/:id", requireAuth(["admin"]), (req, res) => {
-    const updated = storage.updatePromoCode(Number(req.params.id), { isActive: 0 });
+    const updated = storage.updatePromoCode(Number(String(req.params.id)), { isActive: 0 });
     if (!updated) return res.status(404).json({ error: "Promo code not found" });
     res.json({ success: true, message: "Promo code deactivated" });
   });
@@ -4564,13 +4661,15 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.post("/api/chat/message", requireAuth(), (req, res) => {
-    const { userId, message, sessionId } = req.body;
-    if (!userId || !message) {
-      return res.status(400).json({ error: "userId and message are required" });
+    const { message, sessionId } = req.body;
+    const currentUser = (req as any).currentUser;
+    const userId = currentUser.id;
+    if (!message) {
+      return res.status(400).json({ error: "message is required" });
     }
 
     const intent = detectIntent(message);
-    const { response, resolved, escalate } = generateAIResponse(intent, Number(userId), message);
+    const { response, resolved, escalate } = generateAIResponse(intent, userId, message);
 
     const ts_ = now();
 
@@ -4578,6 +4677,9 @@ export async function registerRoutes(
     let session;
     if (sessionId) {
       session = storage.getChatSession(Number(sessionId));
+      if (session && session.userId !== userId) {
+        return res.status(403).json({ error: "Access denied" });
+      }
     }
 
     if (!session) {
@@ -4587,7 +4689,7 @@ export async function registerRoutes(
         { role: "assistant", content: response, timestamp: ts_, intent },
       ];
       session = storage.createChatSession({
-        userId: Number(userId),
+        userId,
         status: resolved ? "resolved" : escalate ? "escalated" : "active",
         topic: intent,
         aiResolved: resolved ? 1 : 0,
@@ -4613,7 +4715,7 @@ export async function registerRoutes(
     // Also store as messages
     storage.createMessage({
       conversationId: `chat-${session.id}`,
-      senderId: Number(userId),
+      senderId: userId,
       senderRole: "customer",
       content: message,
       messageType: "text",
@@ -4652,10 +4754,10 @@ export async function registerRoutes(
 
   app.get("/api/chat/sessions/:userId", requireAuth(), (req, res) => {
     const currentUser = (req as any).currentUser;
-    if (Number(req.params.userId) !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
+    if (Number(String(req.params.userId)) !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const userId = Number(req.params.userId);
+    const userId = Number(String(req.params.userId));
     const user = storage.getUser(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
 
@@ -4673,14 +4775,15 @@ export async function registerRoutes(
   });
 
   app.get("/api/chat/sessions/:userId/:sessionId", requireAuth(), (req, res) => {
+    const currentUser = (req as any).currentUser;
     // Ownership check: user can only view their own chat sessions
-    if (Number(req.params.userId) !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
+    if (Number(String(req.params.userId)) !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Forbidden" });
     }
-    const session = storage.getChatSession(Number(req.params.sessionId));
+    const session = storage.getChatSession(Number(String(req.params.sessionId)));
     if (!session) return res.status(404).json({ error: "Session not found" });
     // Verify session belongs to the requested user
-    if (session.userId !== Number(req.params.userId) && !["admin", "manager"].includes(currentUser.role)) {
+    if (session.userId !== Number(String(req.params.userId)) && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Forbidden" });
     }
     res.json({
@@ -4746,7 +4849,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/admin/vendor-health/:id", requireAuth(["admin", "manager"]), (req, res) => {
-    const vendor = storage.getVendor(Number(req.params.id));
+    const vendor = storage.getVendor(Number(String(req.params.id)));
     if (!vendor) return res.status(404).json({ error: "Vendor not found" });
 
     const health = calculateVendorHealthScore(vendor);
@@ -4843,7 +4946,7 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.post("/api/admin/fraud-check/:orderId", requireAuth(["admin"]), (req, res) => {
-    const orderId = Number(req.params.orderId);
+    const orderId = Number(String(req.params.orderId));
     const order = storage.getOrder(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -4951,10 +5054,10 @@ export async function registerRoutes(
 
   app.get("/api/subscription/:userId", requireAuth(), (req, res) => {
     const cuSub = (req as any).currentUser;
-    if (cuSub.role !== "admin" && cuSub.role !== "manager" && cuSub.id !== Number(req.params.userId)) {
+    if (cuSub.role !== "admin" && cuSub.role !== "manager" && cuSub.id !== Number(String(req.params.userId))) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const userId = Number(req.params.userId);
+    const userId = Number(String(req.params.userId));
     const user = storage.getUser(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
 
@@ -5059,10 +5162,10 @@ export async function registerRoutes(
 
   app.delete("/api/subscription/:userId", requireAuth(), (req, res) => {
     const cuSubD = (req as any).currentUser;
-    if (cuSubD.role !== "admin" && cuSubD.role !== "manager" && cuSubD.id !== Number(req.params.userId)) {
+    if (cuSubD.role !== "admin" && cuSubD.role !== "manager" && cuSubD.id !== Number(String(req.params.userId))) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const userId = Number(req.params.userId);
+    const userId = Number(String(req.params.userId));
     const user = storage.getUser(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
     if (!user.subscriptionTier) {
@@ -5178,6 +5281,177 @@ export async function registerRoutes(
     });
   });
 
+  function enrichAdminOrder(order: Order) {
+    const customer = storage.getUser(order.customerId);
+    const vendor = order.vendorId ? storage.getVendor(order.vendorId) : null;
+    const driver = order.driverId ? storage.getDriver(order.driverId) : null;
+    const returnDriver = order.returnDriverId ? storage.getDriver(order.returnDriverId) : null;
+    return {
+      ...order,
+      customerName: customer?.name || "Unknown customer",
+      customerEmail: customer?.email || null,
+      customerPhone: customer?.phone || null,
+      vendorName: vendor?.name || null,
+      driverName: driver?.name || null,
+      returnDriverName: returnDriver?.name || null,
+    };
+  }
+
+  app.get("/api/admin/orders", requireAuth(ADMIN_ROLES), (_req, res) => {
+    res.json(storage.getOrders().map(enrichAdminOrder));
+  });
+
+  app.get("/api/admin/orders/:id", requireAuth(ADMIN_ROLES), (req, res) => {
+    const order = storage.getOrder(Number(String(req.params.id)));
+    if (!order) return res.status(404).json({ error: "Order not found" });
+    res.json({
+      ...enrichAdminOrder(order),
+      events: storage.getOrderEvents(order.id),
+      statusHistory: storage.getOrderStatusHistory(order.id),
+      photos: storage.getOrderPhotos(order.id),
+      paymentTransactions: storage.getPaymentTransactionsByOrder(order.id),
+      consents: storage.getConsentsByOrder(order.id),
+      review: storage.getReviewByOrder(order.id),
+    });
+  });
+
+  app.get("/api/admin/users/:id", requireAuth(ADMIN_ROLES), (req, res) => {
+    const user = storage.getUser(Number(String(req.params.id)));
+    if (!user) return res.status(404).json({ error: "User not found" });
+    res.json({
+      ...user,
+      password: undefined,
+      orders: user.role === "customer" ? storage.getOrdersByCustomer(user.id) : [],
+      driverProfile: user.role === "driver" ? storage.getDriverByUserId(user.id) : null,
+      vendorProfile: ["vendor", "laundromat", "manager"].includes(user.role) ? storage.getVendorByUserId(user.id) : null,
+      notifications: storage.getNotificationsByUser(user.id),
+    });
+  });
+
+  app.get("/api/admin/payments", requireAuth(ADMIN_ROLES), (_req, res) => {
+    const payments = storage.getOrders().flatMap(order =>
+      storage.getPaymentTransactionsByOrder(order.id).map(txn => ({
+        ...txn,
+        orderNumber: order.orderNumber,
+        customerId: order.customerId,
+        orderTotal: order.total,
+      }))
+    );
+    res.json(payments);
+  });
+
+  app.get("/api/admin/drivers", requireAuth(ADMIN_ROLES), (_req, res) => {
+    res.json(storage.getDrivers());
+  });
+
+  app.get("/api/admin/vendors", requireAuth(ADMIN_ROLES), (_req, res) => {
+    res.json(storage.getVendors());
+  });
+
+  app.get("/api/admin/financial-summary", requireAuth(ADMIN_ROLES), (_req, res) => {
+    const orders = storage.getOrders();
+    const delivered = orders.filter(o => o.status === "delivered");
+    const revenue = delivered.reduce((sum, o) => sum + (o.total || 0), 0);
+    const refunds = orders.flatMap(o => storage.getPaymentTransactionsByOrder(o.id))
+      .filter(t => t.type === "refund" && t.status === "completed")
+      .reduce((sum, t) => sum + Math.abs(t.amount || 0), 0);
+    const aov = delivered.length ? revenue / delivered.length : 0;
+    res.json({
+      revenue: Math.round(revenue * 100) / 100,
+      refunds: Math.round(refunds * 100) / 100,
+      averageOrderValue: Math.round(aov * 100) / 100,
+      deliveredOrders: delivered.length,
+      totalOrders: orders.length,
+    });
+  });
+
+  function adminKpis() {
+    const orders = storage.getOrders();
+    const customers = storage.getUsersByRole("customer");
+    const drivers = storage.getDrivers();
+    const disputes = storage.getDisputes();
+    const delivered = orders.filter(o => o.status === "delivered");
+    const revenue = delivered.reduce((sum, o) => sum + (o.total || 0), 0);
+    return {
+      totalRevenue: Math.round(revenue * 100) / 100,
+      activeOrders: orders.filter(o => !["delivered", "cancelled"].includes(o.status)).length,
+      activeCustomers: customers.length,
+      activeDrivers: drivers.filter(d => d.status !== "offline").length,
+      avgOrderValue: delivered.length ? Math.round((revenue / delivered.length) * 100) / 100 : 0,
+      openDisputes: disputes.filter(d => ["open", "investigating"].includes(d.status)).length,
+      slaViolations: orders.filter(o => o.slaStatus === "breached").length,
+    };
+  }
+
+  app.get("/api/dashboard/kpis", requireAuth(ADMIN_ROLES), (_req, res) => {
+    res.json(adminKpis());
+  });
+
+  app.get("/api/dashboard/revenue", requireAuth(ADMIN_ROLES), (_req, res) => {
+    const delivered = storage.getOrders().filter(o => o.status === "delivered");
+    const buckets: Record<string, number> = {};
+    delivered.forEach(o => {
+      const key = new Date(o.deliveredAt || o.createdAt).toISOString().slice(0, 10);
+      buckets[key] = (buckets[key] || 0) + (o.total || 0);
+    });
+    res.json(Object.entries(buckets).map(([date, revenue]) => ({ date, revenue: Math.round(revenue * 100) / 100 })));
+  });
+
+  app.get("/api/dashboard/orders-by-status", requireAuth(ADMIN_ROLES), (_req, res) => {
+    const counts: Record<string, number> = {};
+    storage.getOrders().forEach(o => { counts[o.status] = (counts[o.status] || 0) + 1; });
+    res.json(Object.entries(counts).map(([status, count]) => ({ status, count })));
+  });
+
+  app.get("/api/dashboard/recent-orders", requireAuth(ADMIN_ROLES), (_req, res) => {
+    res.json(storage.getOrders().slice(0, 10).map(enrichAdminOrder));
+  });
+
+  app.get("/api/customers", requireAuth(ADMIN_ROLES), (_req, res) => {
+    res.json(storage.getUsersByRole("customer").map(u => ({ ...u, password: undefined })));
+  });
+
+  app.get("/api/customers/:id", requireAuth(ADMIN_ROLES), (req, res) => {
+    const user = storage.getUser(Number(String(req.params.id)));
+    if (!user || user.role !== "customer") return res.status(404).json({ error: "Customer not found" });
+    res.json({ ...user, password: undefined, orders: storage.getOrdersByCustomer(user.id) });
+  });
+
+  app.get("/api/customers/:id/orders", requireAuth(ADMIN_ROLES), (req, res) => {
+    res.json(storage.getOrdersByCustomer(Number(String(req.params.id))).map(enrichAdminOrder));
+  });
+
+  app.get("/api/customers/:id/communications", requireAuth(ADMIN_ROLES), (req, res) => {
+    res.json(storage.getNotificationsByUser(Number(String(req.params.id))));
+  });
+
+  app.get("/api/transactions", requireAuth(ADMIN_ROLES), (_req, res) => {
+    res.json(storage.getPaymentTransactions());
+  });
+
+  app.get("/api/analytics/overview", requireAuth(ADMIN_ROLES), (_req, res) => {
+    const kpis = adminKpis();
+    res.json({ kpis, acquisitionFunnel: [], acquisitionFunnelMessage: "Insufficient data: web analytics events are not available in the production database." });
+  });
+
+  app.get("/api/settings", requireAuth(ADMIN_ROLES), (_req, res) => {
+    res.json(storage.getAllPricingConfig());
+  });
+
+  app.get("/api/promo-codes", requireAuth(ADMIN_ROLES), (_req, res) => {
+    res.json(storage.getPromoCodes());
+  });
+
+  app.post("/api/promo-codes", requireAuth(["admin"]), (req, res) => {
+    res.status(201).json(storage.createPromoCode({ ...req.body, createdAt: now() }));
+  });
+
+  app.patch("/api/promo-codes/:id", requireAuth(["admin"]), (req, res) => {
+    const updated = storage.updatePromoCode(Number(String(req.params.id)), req.body);
+    if (!updated) return res.status(404).json({ error: "Promo code not found" });
+    res.json(updated);
+  });
+
   // Admin: Analytics dashboard
   app.get("/api/admin/analytics", requireAuth(["admin", "manager"]), (_req, res) => {
     const allOrders = storage.getOrders();
@@ -5213,13 +5487,9 @@ export async function registerRoutes(
     allOrders.forEach(o => { statusCounts[o.status] = (statusCounts[o.status] || 0) + 1; });
     const orderStatusBreakdown = Object.entries(statusCounts).map(([name, value]) => ({ name, value }));
 
-    // Acquisition funnel
-    const acquisitionFunnel = [
-      { stage: "Visitors", count: allCustomers.length * 12, percentage: 100 },
-      { stage: "Sign-ups", count: allCustomers.length * 4, percentage: 33 },
-      { stage: "First Order", count: allCustomers.length * 2, percentage: 17 },
-      { stage: "Repeat Customer", count: allCustomers.length, percentage: 8 },
-    ];
+    // Acquisition funnel requires real web analytics data, which is not stored in the app DB.
+    const acquisitionFunnel: Array<{ stage: string; count: number; percentage: number }> = [];
+    const acquisitionFunnelMessage = "Insufficient data: web analytics events are not available in the production database.";
 
     // Top vendors
     const topVendors = allVendors.map(v => {
@@ -5244,6 +5514,7 @@ export async function registerRoutes(
       },
       orderStatusBreakdown,
       acquisitionFunnel,
+      acquisitionFunnelMessage,
       topVendors,
     });
   });
@@ -5278,19 +5549,29 @@ export async function registerRoutes(
       };
     }).sort((a, b) => b.grossRevenue - a.grossRevenue);
 
-    // Monthly trend (simulated for demo since we don't have months of data)
-    const months = ["Aug", "Sep", "Oct", "Nov", "Dec", "Jan"];
-    const monthlyTrend = months.map((month, i) => {
-      const factor = 0.6 + (i * 0.1) + 0.075;
-      const revenue = Math.round(totalRevenue * factor * 4);
-      return {
-        month,
-        revenue,
-        vendorPayouts: Math.round(revenue * 0.65),
-        driverPayouts: Math.round(revenue * 0.14),
-        platformRevenue: Math.round(revenue * 0.21),
-      };
+    // Monthly trend from real delivered orders only.
+    const monthlyBuckets: Record<string, { revenue: number; vendorPayouts: number; driverPayouts: number; platformRevenue: number }> = {};
+    deliveredOrders.forEach(o => {
+      const date = new Date(o.deliveredAt || o.createdAt);
+      if (Number.isNaN(date.getTime())) return;
+      const month = date.toLocaleString("en-US", { month: "short", year: "2-digit" });
+      if (!monthlyBuckets[month]) monthlyBuckets[month] = { revenue: 0, vendorPayouts: 0, driverPayouts: 0, platformRevenue: 0 };
+      const revenue = o.total || 0;
+      const vendorPayout = o.vendorPayout || 0;
+      const driverPayout = o.driverPayout || 0;
+      monthlyBuckets[month].revenue += revenue;
+      monthlyBuckets[month].vendorPayouts += vendorPayout;
+      monthlyBuckets[month].driverPayouts += driverPayout;
+      monthlyBuckets[month].platformRevenue += revenue - vendorPayout - driverPayout;
     });
+    const monthlyTrend = Object.entries(monthlyBuckets).map(([month, values]) => ({
+      month,
+      revenue: Math.round(values.revenue * 100) / 100,
+      vendorPayouts: Math.round(values.vendorPayouts * 100) / 100,
+      driverPayouts: Math.round(values.driverPayouts * 100) / 100,
+      platformRevenue: Math.round(values.platformRevenue * 100) / 100,
+    }));
+    const monthlyTrendMessage = monthlyTrend.length ? undefined : "Insufficient data: no delivered orders available for monthly trend.";
 
     res.json({
       summary: {
@@ -5302,6 +5583,7 @@ export async function registerRoutes(
       },
       vendorBreakdown,
       monthlyTrend,
+      monthlyTrendMessage,
     });
   });
 
@@ -5432,17 +5714,8 @@ export async function registerRoutes(
         trips: dayDelivered.length,
       });
     }
-    // If all weekly data is 0 (demo data with old dates), generate realistic fallback
-    const hasWeeklyData = weeklyData.some(w => w.earnings > 0);
-    const finalWeeklyData = hasWeeklyData ? weeklyData : [
-      { day: "Mon", earnings: 62.50, trips: 7 },
-      { day: "Tue", earnings: 85.00, trips: 10 },
-      { day: "Wed", earnings: 44.50, trips: 5 },
-      { day: "Thu", earnings: 97.00, trips: 11 },
-      { day: "Fri", earnings: 120.50, trips: 14 },
-      { day: "Sat", earnings: 78.00, trips: 9 },
-      { day: "Sun", earnings: 55.50, trips: 6 },
-    ];
+    const finalWeeklyData = weeklyData;
+    const weeklyDataMessage = weeklyData.some(w => w.earnings > 0) ? undefined : "Insufficient data: no completed driver trips in the last 7 days.";
 
     // Trip history from delivered orders
     const tripHistory = delivered.slice(0, 10).map(o => ({
@@ -5473,6 +5746,7 @@ export async function registerRoutes(
       avgPerTrip,
       bestDayEarnings,
       weeklyData: finalWeeklyData,
+      weeklyDataMessage,
       tripHistory,
       nextPayoutDate: new Date(Date.now() + (5 - new Date().getDay() + 7) % 7 * 86400000 || 7 * 86400000).toISOString(),
       rating: driver.rating,
@@ -5486,7 +5760,7 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.get("/api/vendor-payouts/:vendorId", requireAuth(["admin", "manager"]), (req, res) => {
-    const vendorId = Number(req.params.vendorId);
+    const vendorId = Number(String(req.params.vendorId));
     const vendor = storage.getVendor(vendorId);
     if (!vendor) return res.status(404).json({ error: "Vendor not found" });
     const payouts = storage.getVendorPayouts(vendorId);
@@ -5517,7 +5791,7 @@ export async function registerRoutes(
   });
 
   app.patch("/api/vendor-payouts/:id", requireAuth(["admin"]), (req, res) => {
-    const updated = storage.updateVendorPayout(Number(req.params.id), req.body);
+    const updated = storage.updateVendorPayout(Number(String(req.params.id)), req.body);
     if (!updated) return res.status(404).json({ error: "Payout not found" });
 
     // If completed, clear pendingPayout for vendor
@@ -5591,7 +5865,7 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.post("/api/orders/:id/ble-weight", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const currentUser = (req as any).currentUser;
@@ -5648,13 +5922,127 @@ export async function registerRoutes(
   const hasStripe = !!process.env.STRIPE_SECRET_KEY;
   const stripe = hasStripe ? new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2024-12-18.acacia" as any }) : null;
 
+  function dollarsToCents(amount: number | null | undefined): number {
+    return Math.round(Number(amount || 0) * 100);
+  }
+
+  function centsToDollars(amountCents: number): number {
+    return Math.round(amountCents) / 100;
+  }
+
+  function getOrderChargeAmountCents(order: Order): number {
+    return dollarsToCents(order.finalPrice ?? order.total ?? 0);
+  }
+
+  function getCapturedChargeForOrder(orderId: number) {
+    const transactions = storage.getPaymentTransactionsByOrder(orderId);
+    const chargeTxn = transactions.find(t =>
+      t.type === "charge" &&
+      ["completed", "paid", "captured"].includes(String(t.status || "")) &&
+      !!t.stripePaymentIntentId
+    ) || transactions.find(t =>
+      t.type === "charge" &&
+      !!t.stripePaymentIntentId &&
+      !String(t.stripePaymentIntentId).startsWith("pi_demo_")
+    );
+    const alreadyRefundedCents = transactions
+      .filter(t => t.type === "refund" && t.status === "completed")
+      .reduce((sum, t) => sum + Number(t.amountCents ?? dollarsToCents(t.amount || 0)), 0);
+    return { transactions, chargeTxn, alreadyRefundedCents };
+  }
+
+  async function issueStripeRefundForOrder(order: Order, amountCents: number, reason: string | undefined, idempotencyKey: string) {
+    if (!["paid", "captured"].includes(String(order.paymentStatus || ""))) {
+      return { errorStatus: 400, error: "Order payment must be paid or captured before refunding" };
+    }
+
+    const { chargeTxn, alreadyRefundedCents } = getCapturedChargeForOrder(order.id);
+    if (!chargeTxn) {
+      return { errorStatus: 400, error: "Captured payment transaction not found" };
+    }
+    if (stripe && (!chargeTxn.stripePaymentIntentId || String(chargeTxn.stripePaymentIntentId).startsWith("pi_demo_"))) {
+      return { errorStatus: 400, error: "Captured Stripe payment intent not found" };
+    }
+
+    const capturedAmountCents = Number(chargeTxn.amountCents ?? dollarsToCents(chargeTxn.amount || (order.finalPrice ?? order.total ?? 0)));
+    const remainingRefundableCents = capturedAmountCents - alreadyRefundedCents;
+    if (!Number.isInteger(amountCents) || amountCents <= 0) {
+      return { errorStatus: 400, error: "Refund amount must be a positive integer number of cents" };
+    }
+    if (amountCents > remainingRefundableCents) {
+      return {
+        errorStatus: 400,
+        error: "Refund amount exceeds remaining refundable amount",
+        maxRefundable: remainingRefundableCents,
+        totalAlreadyRefunded: alreadyRefundedCents,
+      };
+    }
+
+    let stripeRefundId: string | null = null;
+    if (stripe) {
+      try {
+        const refund = await stripe.refunds.create({
+          payment_intent: chargeTxn.stripePaymentIntentId!,
+          amount: amountCents,
+          reason: (reason === "duplicate" || reason === "fraudulent" || reason === "requested_by_customer") ? reason : "requested_by_customer",
+        }, { idempotencyKey });
+        stripeRefundId = refund.id;
+      } catch (err: any) {
+        console.error("[Stripe] Refund failed:", err.message);
+        return { errorStatus: 502, error: "Refund processing failed" };
+      }
+    }
+
+    const ts_ = now();
+    const amountDollars = centsToDollars(amountCents);
+    const newTotalRefundedCents = alreadyRefundedCents + amountCents;
+    const newPaymentStatus = newTotalRefundedCents >= capturedAmountCents ? "refunded" : "partially_refunded";
+    const txn = storage.createPaymentTransaction({
+      orderId: order.id,
+      type: "refund",
+      amount: amountDollars,
+      amountCents,
+      currency: "usd",
+      status: "completed",
+      recipientType: "platform",
+      metadata: JSON.stringify({ reason, stripeRefundId, amountCents, idempotencyKey, demo: !hasStripe }),
+      createdAt: ts_,
+      completedAt: ts_,
+    });
+    storage.updateOrder(order.id, { paymentStatus: newPaymentStatus });
+    storage.createOrderEvent({
+      orderId: order.id,
+      eventType: "refund_issued",
+      description: `Refund of $${amountDollars.toFixed(2)} issued. Reason: ${reason || "not specified"}`,
+      timestamp: ts_,
+    });
+
+    return {
+      txn,
+      stripeRefundId,
+      amountCents,
+      amount: amountDollars,
+      remainingRefundable: remainingRefundableCents - amountCents,
+      totalRefunded: newTotalRefundedCents,
+      paymentStatus: newPaymentStatus,
+    };
+  }
+
   app.post("/api/payments/create-intent", requireAuth(), async (req, res) => {
-    const { orderId, amount } = req.body;
-    if (!orderId || !amount) return res.status(400).json({ error: "orderId and amount required" });
-    if (amount <= 0) return res.status(400).json({ error: "Amount must be positive" });
+    const { orderId } = req.body;
+    if (!orderId) return res.status(400).json({ error: "orderId required" });
 
     const order = storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
+
+    const currentUser = (req as any).currentUser;
+    if (order.customerId !== currentUser.id && !isAdminOrManager(currentUser)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const amountCents = getOrderChargeAmountCents(order);
+    if (amountCents <= 0) return res.status(400).json({ error: "Order total must be positive" });
+    const amount = centsToDollars(amountCents);
 
     let intentId: string;
     let clientSecret: string | null = null;
@@ -5663,10 +6051,10 @@ export async function registerRoutes(
       // Real Stripe payment intent
       try {
         const intent = await stripe.paymentIntents.create({
-          amount: Math.round(amount), // amount in cents
+          amount: amountCents,
           currency: "usd",
           metadata: { orderId: String(orderId), orderNumber: order.orderNumber || "" },
-        });
+        }, { idempotencyKey: `order-${order.id}-intent` });
         intentId = intent.id;
         clientSecret = intent.client_secret;
       } catch (err: any) {
@@ -5681,16 +6069,17 @@ export async function registerRoutes(
 
     const txn = storage.createPaymentTransaction({
       orderId: Number(orderId), type: "charge", amount, currency: "usd",
+      amountCents,
       status: "pending", stripePaymentIntentId: intentId,
       recipientType: "platform",
       platformFee: Math.round(amount * PLATFORM_FEE_RATE * 100) / 100,
-      metadata: JSON.stringify({ demo: !hasStripe }), createdAt: now(),
+      metadata: JSON.stringify({ demo: !hasStripe, amountCents }), createdAt: now(),
     });
 
     res.json({
       paymentIntentId: intentId, transactionId: txn.id,
       clientSecret,
-      amount, status: "pending", demoMode: !hasStripe,
+      amount, amountCents, status: "pending", demoMode: !hasStripe,
     });
   });
 
@@ -5715,52 +6104,30 @@ export async function registerRoutes(
     res.json({ status: "completed", orderId: order.id, demoMode: !hasStripe });
   });
 
-  app.post("/api/payments/refund", requireAuth(), async (req, res) => {
+  app.post("/api/payments/refund", requireAuth(["admin", "manager"]), async (req, res) => {
     const { orderId, amount, reason } = req.body;
-    if (!orderId) return res.status(400).json({ error: "orderId required" });
+    if (!orderId || amount === undefined) return res.status(400).json({ error: "orderId and amount required" });
     const order = storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    const currentUser = (req as any).currentUser;
-    if (order.customerId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
-      return res.status(403).json({ error: "Access denied" });
+    const amountCents = Number(amount);
+    const result = await issueStripeRefundForOrder(order, amountCents, reason, `refund-${order.id}-${Date.now()}`);
+    if ("errorStatus" in result) {
+      return res.status(result.errorStatus as number).json(result);
     }
-
-    const refundAmount = amount || order.total || 0;
-    const ts_ = now();
-
-    // Real Stripe refund if payment was via Stripe
-    let stripeRefundId: string | null = null;
-    if (stripe) {
-      const chargeTxn = storage.getPaymentTransactionsByOrder(Number(orderId))
-        .find(t => t.type === "charge" && t.stripePaymentIntentId && !t.stripePaymentIntentId.startsWith("pi_demo_"));
-      if (chargeTxn?.stripePaymentIntentId) {
-        try {
-          const refund = await stripe.refunds.create({
-            payment_intent: chargeTxn.stripePaymentIntentId,
-            amount: Math.round(refundAmount),
-            reason: (reason === "duplicate" || reason === "fraudulent" || reason === "requested_by_customer") ? reason : "requested_by_customer",
-          });
-          stripeRefundId = refund.id;
-        } catch (err: any) {
-          console.error("[Stripe] Refund failed:", err.message);
-          return res.status(500).json({ error: "Refund processing failed" });
-        }
-      }
-    }
-
-    const txn = storage.createPaymentTransaction({
-      orderId: Number(orderId), type: "refund", amount: refundAmount,
-      currency: "usd", status: "completed", recipientType: "platform",
-      metadata: JSON.stringify({ reason, stripeRefundId, demo: !hasStripe }),
-      createdAt: ts_, completedAt: ts_,
+    res.json({
+      refundId: result.txn.id,
+      stripeRefundId: result.stripeRefundId,
+      amount: result.amount,
+      amountCents: result.amountCents,
+      status: "completed",
+      paymentStatus: result.paymentStatus,
+      demoMode: !hasStripe,
     });
-    storage.updateOrder(order.id, { paymentStatus: "refunded" });
-    res.json({ refundId: txn.id, stripeRefundId, amount: refundAmount, status: "completed", demoMode: !hasStripe });
   });
 
   app.get("/api/payments/order/:id", requireAuth(), (req, res) => {
-    const orderId = Number(req.params.id);
+    const orderId = Number(String(req.params.id));
     const order = storage.getOrder(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -5774,34 +6141,46 @@ export async function registerRoutes(
     res.json({ orderId, paymentStatus: order.paymentStatus, total, platformFee, vendorShare, driverShare, transactions, demoMode: !hasStripe });
   });
 
-  app.post("/api/payments/setup-connect", requireAuth(), (req, res) => {
-    const { userId, userType } = req.body;
-    if (!userId || !userType) return res.status(400).json({ error: "userId and userType required" });
-
-    const existing = storage.getStripeAccount(Number(userId));
-    if (existing) return res.json({ accountId: existing.stripeAccountId, status: existing.status, onboardingUrl: null, existing: true });
-
-    const demoAccountId = `acct_demo_${Date.now()}_${randomBytes(3).toString("hex")}`;
-    const account = storage.createStripeAccount({
-      userId: Number(userId), userType, stripeAccountId: demoAccountId,
-      status: hasStripe ? "pending" : "active",
-      onboardingComplete: hasStripe ? 0 : 1,
-      payoutsEnabled: hasStripe ? 0 : 1,
-      chargesEnabled: hasStripe ? 0 : 1,
-      createdAt: now(),
-    });
-    res.status(201).json({ accountId: demoAccountId, status: account.status, onboardingUrl: hasStripe ? `https://connect.stripe.com/setup/${demoAccountId}` : null, demoMode: !hasStripe });
+  app.post("/api/payments/setup-connect", requireAuth(), (_req, res) => {
+    res.status(501).json({ error: "Vendor payout onboarding is not yet available. Please contact support." });
   });
 
   app.get("/api/payments/connect-status/:userId", requireAuth(), (req, res) => {
-    const userId = Number(req.params.userId);
+    const userId = Number(String(req.params.userId));
+    const currentUser = (req as any).currentUser;
+    if (userId !== currentUser.id && !isAdminOrManager(currentUser)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     const account = storage.getStripeAccount(userId);
     if (!account) return res.json({ connected: false, status: "not_connected" });
+    if (!account.stripeAccountId || account.stripeAccountId.startsWith("acct_demo_")) {
+      return res.json({ connected: false, status: "not_connected", demoMode: false });
+    }
     res.json({
       connected: true, accountId: account.stripeAccountId, status: account.status,
       onboardingComplete: !!account.onboardingComplete, payoutsEnabled: !!account.payoutsEnabled,
       chargesEnabled: !!account.chargesEnabled, demoMode: !hasStripe,
     });
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  //  MAPS ENDPOINTS
+  // ═══════════════════════════════════════════════════════════════
+
+  app.get("/api/maps/distance", requireAuth(), async (req, res) => {
+    const origin = typeof req.query.origin === "string" ? req.query.origin : "";
+    const destination = typeof req.query.destination === "string" ? req.query.destination : "";
+    if (!origin || !destination) return res.status(400).json({ error: "origin and destination are required" });
+    if (!isGoogleMapsConfigured()) return res.json({ distanceMeters: null, durationSeconds: null, message: "Distance unavailable" });
+
+    try {
+      const result = await distanceMatrix(origin, destination);
+      if (!result) return res.json({ distanceMeters: null, durationSeconds: null, message: "Distance unavailable" });
+      res.json(result);
+    } catch (err) {
+      console.error("[Maps] Distance Matrix failed", err);
+      res.status(502).json({ error: "Distance lookup failed" });
+    }
   });
 
   // ═══════════════════════════════════════════════════════════════
@@ -5814,11 +6193,11 @@ export async function registerRoutes(
     const cuLocP = (req as any).currentUser;
     if (cuLocP.role === "driver") {
       const myDriverLocP = storage.getDriverByUserId(cuLocP.id);
-      if (!myDriverLocP || myDriverLocP.id !== Number(req.params.id)) {
+      if (!myDriverLocP || myDriverLocP.id !== Number(String(req.params.id))) {
         return res.status(403).json({ error: "Access denied — can only update your own location" });
       }
     }
-    const driverId = Number(req.params.id);
+    const driverId = Number(String(req.params.id));
     const driver = storage.getDriver(driverId);
     if (!driver) return res.status(404).json({ error: "Driver not found" });
 
@@ -5850,8 +6229,8 @@ export async function registerRoutes(
   });
 
   // ── Get order tracking info (customer-facing) ──
-  app.get("/api/orders/:id/tracking", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+  app.get("/api/orders/:id/tracking", requireAuth(), async (req, res) => {
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // BOLA: customer can only track their own orders
@@ -5877,10 +6256,33 @@ export async function registerRoutes(
         driverInfo = {
           id: driver.id,
           name: driver.name,
-          vehicleInfo: driver.vehicleInfo,
-          photo: driver.photo,
+          vehicleInfo: [driver.vehicleType, driver.licensePlate].filter(Boolean).join(" • ") || null,
+          photo: driver.avatarUrl,
           // phone deliberately omitted for privacy
         };
+      }
+    }
+
+    let etaMinutes: number | null = null;
+    let etaMessage: string | undefined;
+    if (isDriverPhase) {
+      if (!isGoogleMapsConfigured()) {
+        etaMessage = "ETA unavailable";
+      } else if (driverLocation?.lat != null && driverLocation?.lng != null) {
+        const origin = `${driverLocation.lat},${driverLocation.lng}`;
+        const destination = ["driver_en_route_delivery", "arrived_delivery"].includes(order.status)
+          ? (order.deliveryAddress || order.pickupAddress)
+          : order.pickupAddress;
+        try {
+          const eta = await distanceMatrix(origin, destination);
+          etaMinutes = eta ? Math.ceil(eta.durationSeconds / 60) : null;
+          if (!eta) etaMessage = "ETA unavailable";
+        } catch (err) {
+          console.error("[Maps] ETA lookup failed", err);
+          etaMessage = "ETA unavailable";
+        }
+      } else {
+        etaMessage = "ETA unavailable";
       }
     }
 
@@ -5896,14 +6298,16 @@ export async function registerRoutes(
       driverInfo,
       pickup: { address: order.pickupAddress },
       delivery: { address: order.deliveryAddress },
-      eta: isDriverPhase ? "~15 min" : null,
+      eta: etaMinutes != null ? `~${etaMinutes} min` : null,
+      etaMinutes,
+      message: etaMessage,
       history,
     });
   });
 
   // ── Get driver location history (admin) ──
   app.get("/api/drivers/:id/location-history", requireAuth(["admin"]), (req, res) => {
-    const driverId = Number(req.params.id);
+    const driverId = Number(String(req.params.id));
     const limit = Number(req.query.limit) || 100;
     const history = storage.getDriverLocationHistory(driverId, limit);
     res.json(history);
@@ -5919,7 +6323,7 @@ export async function registerRoutes(
   ];
 
   app.post("/api/orders/:id/photos", requireAuth(), async (req, res) => {
-    const orderId = Number(req.params.id);
+    const orderId = Number(String(req.params.id));
     const order = storage.getOrder(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -5991,7 +6395,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/orders/:id/photos", requireAuth(), async (req, res) => {
-    const orderForPhotos = storage.getOrder(Number(req.params.id));
+    const orderForPhotos = storage.getOrder(Number(String(req.params.id)));
     if (!orderForPhotos) return res.status(404).json({ error: "Order not found" });
     const cu = (req as any).currentUser;
     const drPhoto = cu.role === "driver" ? storage.getDriverByUserId(cu.id) : null;
@@ -5999,7 +6403,7 @@ export async function registerRoutes(
     if (!getOrderOwnershipAllowed(orderForPhotos, cu, drPhoto, vnPhoto)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const photos = storage.getOrderPhotos(Number(req.params.id));
+    const photos = storage.getOrderPhotos(Number(String(req.params.id)));
     // Build summaries with R2 presigned URLs if available
     const summaries = await Promise.all(photos.map(async (p) => {
       let downloadUrl: string | undefined;
@@ -6020,7 +6424,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/orders/:id/photos/:photoId", requireAuth(), async (req, res) => {
-    const orderSingle = storage.getOrder(Number(req.params.id));
+    const orderSingle = storage.getOrder(Number(String(req.params.id)));
     if (!orderSingle) return res.status(404).json({ error: "Order not found" });
     const cuS = (req as any).currentUser;
     const drS = cuS.role === "driver" ? storage.getDriverByUserId(cuS.id) : null;
@@ -6028,8 +6432,8 @@ export async function registerRoutes(
     if (!getOrderOwnershipAllowed(orderSingle, cuS, drS, vnS)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const photos = storage.getOrderPhotos(Number(req.params.id));
-    const photo = photos.find(p => p.id === Number(req.params.photoId));
+    const photos = storage.getOrderPhotos(Number(String(req.params.id)));
+    const photo = photos.find(p => p.id === Number(String(req.params.photoId)));
     if (!photo) return res.status(404).json({ error: "Photo not found" });
     // If photo is in R2, generate presigned download URL
     if (photo.r2Key) {
@@ -6044,7 +6448,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/orders/:id/photos/type/:type", requireAuth(), (req, res) => {
-    const orderT = storage.getOrder(Number(req.params.id));
+    const orderT = storage.getOrder(Number(String(req.params.id)));
     if (!orderT) return res.status(404).json({ error: "Order not found" });
     const cuT = (req as any).currentUser;
     const drT = cuT.role === "driver" ? storage.getDriverByUserId(cuT.id) : null;
@@ -6052,7 +6456,7 @@ export async function registerRoutes(
     if (!getOrderOwnershipAllowed(orderT, cuT, drT, vnT)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const photos = storage.getOrderPhotosByType(Number(req.params.id), req.params.type);
+    const photos = storage.getOrderPhotosByType(Number(String(req.params.id)), String(req.params.type));
     res.json(photos);
   });
 
@@ -6088,7 +6492,7 @@ export async function registerRoutes(
   // ═══════════════════════════════════════════════════════════════
 
   app.delete("/api/users/:id/data", requireAuth(), (req, res) => {
-    const targetId = Number(req.params.id);
+    const targetId = Number(String(req.params.id));
     const currentUser = (req as any).currentUser;
 
     // Auth: user themselves or admin
@@ -6157,7 +6561,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/users/:id/data-export", requireAuth(), (req, res) => {
-    const targetId = Number(req.params.id);
+    const targetId = Number(String(req.params.id));
     const currentUser = (req as any).currentUser;
 
     // Auth: user themselves or admin
@@ -6202,7 +6606,7 @@ export async function registerRoutes(
       orders: exportOrders,
       messages: exportMessages.map(m => ({ id: m.id, content: m.content, timestamp: m.timestamp, orderId: m.orderId })),
       loyaltyTransactions: exportLoyalty,
-      chatSessions: exportChatSessions.map(cs => ({ id: cs.id, createdAt: cs.createdAt, summary: cs.summary })),
+      chatSessions: exportChatSessions.map(cs => ({ id: cs.id, createdAt: cs.createdAt, summary: cs.topic || cs.status })),
       notifications: exportNotifications.map(n => ({ id: n.id, title: n.title, body: n.body, createdAt: n.createdAt })),
       referrals: exportReferrals,
     });
@@ -6213,13 +6617,13 @@ export async function registerRoutes(
   // ═══════════════════════════════════════════════════════════════
 
   app.delete("/api/notifications/:id", requireAuth(), (req, res) => {
-    storage.deleteNotification(Number(req.params.id));
+    storage.deleteNotification(Number(String(req.params.id)));
     res.json({ success: true });
   });
 
   app.get("/api/notifications/category/:category", requireAuth(), (req, res) => {
     const currentUser = (req as any).currentUser;
-    const notifications = storage.getNotificationsByCategory(currentUser.id, req.params.category);
+    const notifications = storage.getNotificationsByCategory(currentUser.id, String(req.params.category));
     res.json(notifications);
   });
 
@@ -6248,7 +6652,7 @@ export async function registerRoutes(
   // ═══════════════════════════════════════════════════════════════
 
   app.post("/api/orders/:id/transition", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // BOLA: ownership check
@@ -6435,7 +6839,7 @@ export async function registerRoutes(
 
   // ── Get FSM info for an order ──
   app.get("/api/orders/:id/fsm", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const currentStatus = order.status;
@@ -6457,7 +6861,7 @@ export async function registerRoutes(
 
   // ── Get order status history ──
   app.get("/api/orders/:id/status-history", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // BOLA: ownership check
@@ -6472,7 +6876,7 @@ export async function registerRoutes(
       }
     }
 
-    const history = storage.getOrderStatusHistory(Number(req.params.id));
+    const history = storage.getOrderStatusHistory(Number(String(req.params.id)));
     res.json(history);
   });
 
@@ -6482,7 +6886,7 @@ export async function registerRoutes(
 
   // ── Get messages for an order ──
   app.get("/api/messages/:orderId", requireAuth(), (req, res) => {
-    const orderId = Number(req.params.orderId);
+    const orderId = Number(String(req.params.orderId));
     const order = storage.getOrder(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -6553,8 +6957,9 @@ export async function registerRoutes(
 
   // ── Mark message as read ──
   app.patch("/api/messages/:id/read", requireAuth(), (req, res) => {
+    const currentUser = (req as any).currentUser;
     // First get the message to check ownership
-    const existing = storage.getMessage(Number(req.params.id));
+    const existing = storage.getMessage(Number(String(req.params.id)));
     if (!existing) return res.status(404).json({ error: "Message not found" });
     // Verify the current user is a participant in this order
     if (existing.orderId) {
@@ -6563,7 +6968,7 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Forbidden" });
       }
     }
-    const message = storage.markMessageRead(Number(req.params.id));
+    const message = storage.markMessageRead(Number(String(req.params.id)));
     if (!message) return res.status(404).json({ error: "Message not found" });
 
     // Emit read receipt
@@ -6626,7 +7031,7 @@ export async function registerRoutes(
 
   // ── Generate receipt for an order ──
   app.get("/api/orders/:id/receipt", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(req.params.id));
+    const order = storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
     if (!["delivered", "completed"].includes(order.status)) {
       return res.status(400).json({ error: "Receipt only available for completed orders" });
@@ -6640,7 +7045,7 @@ export async function registerRoutes(
     // Parse line items from the order's details or from associated quote
     let lineItems: any[] = [];
     try {
-      const details = order.details ? JSON.parse(order.details as string) : {};
+      const details = order.preferences ? JSON.parse(order.preferences as string) : {};
       if (details.lineItems) lineItems = details.lineItems;
     } catch { /* ignore */ }
 
@@ -6754,11 +7159,13 @@ export async function registerRoutes(
     if (channel === "in_app" || channel === "push") {
       storage.createNotification({
         userId: Number(recipientId),
+        orderId: orderId ? Number(orderId) : null,
         type: templateName,
-        message: body,
-        data: JSON.stringify({ orderId, templateName, subject }),
+        title: subject || templateName,
+        body,
         read: 0,
-        timestamp: now(),
+        category: channel,
+        createdAt: now(),
       });
     }
 
@@ -6775,9 +7182,9 @@ export async function registerRoutes(
   });
 
   // ── Enhanced refund with reason codes and partial refund support ──
-  app.post("/api/payments/partial-refund", requireAuth(["admin", "manager"]), (req, res) => {
+  app.post("/api/payments/partial-refund", requireAuth(["admin", "manager"]), async (req, res) => {
     const { orderId, amount, reasonCode, notes } = req.body;
-    if (!orderId || !amount) return res.status(400).json({ error: "orderId and amount required" });
+    if (!orderId || amount === undefined) return res.status(400).json({ error: "orderId and amount required" });
 
     const validReasons = ["damaged_items", "late_delivery", "wrong_items", "quality_issue", "customer_request", "overcharge", "other"];
     if (reasonCode && !validReasons.includes(reasonCode)) {
@@ -6787,66 +7194,61 @@ export async function registerRoutes(
     const order = storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    const existingRefunds = storage.getPaymentTransactionsByOrder(Number(orderId))
-      .filter(t => t.type === "refund" && t.status === "completed");
-    const totalRefunded = existingRefunds.reduce((sum, t) => sum + (t.amount || 0), 0);
-    const orderTotal = order.finalPrice || order.total || 0;
-    const maxRefundable = orderTotal - totalRefunded;
-
-    if (amount > maxRefundable) {
-      return res.status(400).json({
-        error: `Refund amount $${amount} exceeds max refundable $${maxRefundable.toFixed(2)}`,
-        maxRefundable,
-        totalAlreadyRefunded: totalRefunded,
-      });
+    const result = await issueStripeRefundForOrder(order, Number(amount), reasonCode === "overcharge" ? "duplicate" : "requested_by_customer", `refund-${order.id}-${Date.now()}`);
+    if ("errorStatus" in result) {
+      return res.status(result.errorStatus as number).json(result);
     }
 
-    const ts_ = now();
-    const txn = storage.createPaymentTransaction({
-      orderId: Number(orderId),
-      type: "refund",
-      amount: Number(amount),
-      currency: "usd",
-      status: "completed",
-      recipientType: "platform",
-      metadata: JSON.stringify({ reasonCode, notes, partial: amount < orderTotal, demo: !hasStripe }),
-      createdAt: ts_,
-      completedAt: ts_,
-    });
-
-    // Update payment status
-    const newTotalRefunded = totalRefunded + Number(amount);
-    const newPaymentStatus = newTotalRefunded >= orderTotal ? "refunded" : "partially_refunded";
-    storage.updateOrder(order.id, { paymentStatus: newPaymentStatus });
-
-    storage.createOrderEvent({
-      orderId: order.id,
-      eventType: "refund_issued",
-      description: `Partial refund of $${Number(amount).toFixed(2)} issued. Reason: ${reasonCode || "not specified"}`,
-      timestamp: ts_,
-    });
-
     res.json({
-      refundId: txn.id,
-      amount: Number(amount),
+      refundId: result.txn.id,
+      stripeRefundId: result.stripeRefundId,
+      amount: result.amount,
+      amountCents: result.amountCents,
       reasonCode,
-      remainingRefundable: maxRefundable - Number(amount),
-      totalRefunded: newTotalRefunded,
-      paymentStatus: newPaymentStatus,
+      notes,
+      remainingRefundable: result.remainingRefundable,
+      totalRefunded: result.totalRefunded,
+      paymentStatus: result.paymentStatus,
       demoMode: !hasStripe,
     });
   });
 
   // ── Quote-to-payment bridge: create payment intent from accepted quote ──
-  app.post("/api/quotes/:id/create-payment", requireAuth(), (req, res) => {
-    const quote = storage.getQuote(Number(req.params.id));
+  app.post("/api/quotes/:id/create-payment", requireAuth(), async (req, res) => {
+    const quote = storage.getQuote(Number(String(req.params.id)));
     if (!quote) return res.status(404).json({ error: "Quote not found" });
     if (quote.status !== "accepted") {
       return res.status(400).json({ error: "Quote must be accepted before payment" });
     }
 
+    const currentUser = (req as any).currentUser;
+    if (quote.customerId !== currentUser.id && !isAdminOrManager(currentUser)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
     const amount = Number(quote.total);
-    const demoIntentId = `pi_quote_${quote.id}_${Date.now()}`;
+    const amountCents = dollarsToCents(amount);
+    if (amountCents <= 0) return res.status(400).json({ error: "Quote total must be positive" });
+
+    let paymentIntentId: string;
+    let clientSecret: string | null = null;
+    if (stripe) {
+      try {
+        const intent = await stripe.paymentIntents.create({
+          amount: amountCents,
+          currency: "usd",
+          metadata: { quoteId: String(quote.id), quoteNumber: quote.quoteNumber, customerId: String(quote.customerId || "") },
+        }, { idempotencyKey: `quote-${quote.id}-intent` });
+        paymentIntentId = intent.id;
+        clientSecret = intent.client_secret;
+      } catch (err: any) {
+        console.error("[Stripe] Quote payment intent creation failed:", err.message);
+        return res.status(500).json({ error: "Payment processing failed" });
+      }
+    } else {
+      paymentIntentId = `pi_quote_${quote.id}_${Date.now()}`;
+      clientSecret = `demo_secret_${paymentIntentId}`;
+    }
 
     // Update quote status to indicate payment initiated
     storage.updateQuote(quote.id, { status: "payment_pending", updatedAt: now() });
@@ -6854,9 +7256,10 @@ export async function registerRoutes(
     res.json({
       quoteId: quote.id,
       quoteNumber: quote.quoteNumber,
-      paymentIntentId: demoIntentId,
-      clientSecret: hasStripe ? null : `demo_secret_${demoIntentId}`,
+      paymentIntentId,
+      clientSecret,
       amount,
+      amountCents,
       demoMode: !hasStripe,
     });
   });
@@ -6938,7 +7341,7 @@ export async function registerRoutes(
   });
 
   app.put("/api/feature-flags/:flag", requireAuth(["admin"]), (req, res) => {
-    const flag = req.params.flag;
+    const flag = String(req.params.flag);
     if (!FEATURE_FLAGS[flag]) return res.status(404).json({ error: `Unknown feature flag: ${flag}` });
 
     const { enabled, rolloutPercent } = req.body;
@@ -6976,7 +7379,7 @@ export async function registerRoutes(
   // ── Structured logging helper ──
   app.get("/api/admin/audit-log", requireAuth(["admin"]), (req, res) => {
     const { limit, offset, action } = req.query;
-    const allLogs = storage.getPricingAuditLog(Number(limit) || 100, Number(offset) || 0);
+    const allLogs = storage.getPricingAuditLog(Number(limit) || 100);
     const filtered = action ? allLogs.filter((l: any) => l.action === action) : allLogs;
     res.json({
       total: filtered.length,
@@ -7003,6 +7406,7 @@ export async function registerRoutes(
       return res.status(400).json({ error: "Missing stripe-signature header" });
     }
 
+    let processedStripeEventId: string | null = null;
     try {
       // Use Stripe SDK constructEvent for proper signature verification with raw body
       const rawBody = (req as any).rawBody ? (req as any).rawBody.toString() : (typeof req.body === "string" ? req.body : JSON.stringify(req.body));
@@ -7034,19 +7438,31 @@ export async function registerRoutes(
           return res.status(400).json({ error: "Webhook timestamp too old" });
         }
         event = JSON.parse(rawBody);
-      }
+	      }
 
-      switch (event.type) {
-        case "payment_intent.succeeded": {
-          const pi = event.data?.object;
-          if (pi?.metadata?.orderId) {
-            const orderId = Number(pi.metadata.orderId);
-            const order = storage.getOrder(orderId);
-            if (order) {
-              storage.updateOrder(orderId, { paymentStatus: "captured" });
-              storage.createOrderEvent({
-                orderId, eventType: "payment_captured",
-                description: `Payment of $${(pi.amount / 100).toFixed(2)} confirmed via Stripe`,
+	      if (!event?.id || !event?.type) {
+	        return res.status(400).json({ error: "Invalid Stripe event" });
+	      }
+	      const shouldProcess = storage.recordStripeEvent(event.id, event.type);
+	      if (!shouldProcess) {
+	        return res.status(200).json({ received: true, duplicate: true });
+	      }
+	      processedStripeEventId = event.id;
+
+	      switch (event.type) {
+	        case "payment_intent.succeeded": {
+	          const pi = event.data?.object;
+	          if (pi?.metadata?.orderId) {
+	            const orderId = Number(pi.metadata.orderId);
+	            const order = storage.getOrder(orderId);
+	            if (order) {
+	              storage.updateOrder(orderId, { paymentStatus: "captured" });
+	              const chargeTxn = storage.getPaymentTransactionsByOrder(orderId)
+	                .find(t => t.type === "charge" && t.stripePaymentIntentId === pi.id);
+	              if (chargeTxn) storage.updatePaymentTransaction(chargeTxn.id, { status: "completed", completedAt: now() });
+	              storage.createOrderEvent({
+	                orderId, eventType: "payment_captured",
+	                description: `Payment of $${(pi.amount / 100).toFixed(2)} confirmed via Stripe`,
                 timestamp: now(),
               });
               // Trigger email notification
@@ -7083,13 +7499,16 @@ export async function registerRoutes(
         }
         default:
           console.log(`[Stripe Webhook] Unhandled event type: ${event.type}`);
-      }
+	      }
 
-      res.status(200).json({ received: true });
-    } catch (err: any) {
-      console.error("[Stripe Webhook] Error:", err.message);
-      res.status(400).json({ error: `Webhook Error: ${err.message}` });
-    }
+	      res.status(200).json({ received: true });
+	    } catch (err: any) {
+	      console.error("[Stripe Webhook] Error:", err.message);
+	      // Allow Stripe to retry events whose local processing failed after the
+	      // dedupe row was inserted.
+	      if (processedStripeEventId) storage.deleteStripeEvent(processedStripeEventId);
+	      res.status(400).json({ error: `Webhook Error: ${err.message}` });
+	    }
   });
 
   // ═══════════════════════════════════════════════════════════════
@@ -7180,7 +7599,7 @@ export async function registerRoutes(
   // ═══════════════════════════════════════════════════════════════
 
   app.get("/api/orders/:id/chain-of-custody", requireAuth(), (req, res) => {
-    const orderId = Number(req.params.id);
+    const orderId = Number(String(req.params.id));
     const order = storage.getOrder(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -7227,7 +7646,7 @@ export async function registerRoutes(
         timestamp: order.washCompletedAt,
         actor: order.vendorId ? `Vendor #${order.vendorId}` : "Unknown",
         weight: order.cleanWeight || null,
-        photoUrl: order.outputPhotoUrl || null,
+        photoUrl: order.intakePhotoUrl || null,
         weightDifference: order.weightDifference || null,
         status: "completed",
       });

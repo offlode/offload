@@ -1,6 +1,32 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+// Detect runtime environment:
+// 1. Native Capacitor (iOS/Android): location.protocol is "capacitor:" or "http:" with localhost — must use absolute API URL
+// 2. Deployed web: __PORT_5000__ is replaced by deploy_website with proxy path
+// 3. Local dev: __PORT_5000__ remains, falls back to relative "" (Vite proxy)
+const PRODUCTION_API = "https://api.offloadusa.com";
+
+function resolveApiBase(): string {
+  if (typeof window !== "undefined") {
+    // 1. Capacitor native runtime detection (most reliable)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cap = (window as any).Capacitor;
+    if (cap && typeof cap.isNativePlatform === "function" && cap.isNativePlatform()) {
+      return PRODUCTION_API;
+    }
+    // 2. Protocol-based detection for native shells
+    if (typeof location !== "undefined") {
+      const proto = location.protocol;
+      if (proto === "capacitor:" || proto === "ionic:" || proto === "file:") {
+        return PRODUCTION_API;
+      }
+    }
+  }
+  // 3. Web build: deploy_website replaces __PORT_5000__ at deploy time
+  return "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+}
+
+const API_BASE = resolveApiBase();
 
 // Module-level auth token store — set via setAuthToken() from auth context
 let _authToken: string | null = null;
@@ -35,13 +61,14 @@ export async function apiRequest(path: string, options?: RequestInit): Promise<R
     ...(options?.headers as Record<string, string>),
   };
 
-  // Inject Bearer token when authenticated
+  // Inject Bearer token for native clients; browser sessions also use the HTTP-only cookie
   if (_authToken) {
     headers["Authorization"] = `Bearer ${_authToken}`;
   }
 
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
+    credentials: "include",
     headers,
   });
   await throwIfResNotOk(res);
@@ -62,7 +89,7 @@ export const getQueryFn: <T>(options: {
       headers["Authorization"] = `Bearer ${_authToken}`;
     }
 
-    const res = await fetch(`${API_BASE}${path}`, { headers });
+    const res = await fetch(`${API_BASE}${path}`, { headers, credentials: "include" });
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
       return null;

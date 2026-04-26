@@ -6,8 +6,7 @@ const config: CapacitorConfig = {
   webDir: 'dist/public',
   server: {
     androidScheme: 'https',
-    // For development, uncomment the line below and set to your dev server URL:
-    // url: 'http://localhost:5000',
+    // Production: app loads local web assets, API calls go to api.offloadusa.com
   },
   plugins: {
     PushNotifications: {

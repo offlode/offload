@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { ArrowLeft, Eye, EyeOff } from "lucide-react";
-import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/contexts/auth-context";
 import { useToast } from "@/hooks/use-toast";
 import type { FieldError } from "@/lib/inline-validation";
 import { scrollToFirstError, fieldBorderClass } from "@/lib/inline-validation";
 import { InlineFieldError } from "@/components/field-error";
+import { AppleSignInButton } from "@/components/apple-sign-in-button";
 
 export default function RegisterPage() {
   const [, navigate] = useLocation();
@@ -258,6 +258,20 @@ export default function RegisterPage() {
             )}
           </button>
         </form>
+
+        {/* Sign in with Apple (native iOS only — only show for customer signups) */}
+        {role === "customer" && (
+          <>
+            <div className="flex items-center gap-3 w-full my-6">
+              <div className="flex-1 h-px bg-border" />
+              <span className="text-sm text-muted-foreground">or</span>
+              <div className="flex-1 h-px bg-border" />
+            </div>
+            <div className="w-full">
+              <AppleSignInButton onSuccess={(r) => navigate(r === "customer" ? "/" : `/${r}`)} />
+            </div>
+          </>
+        )}
 
         {/* Login Link */}
         <p className="mt-8 text-sm text-muted-foreground text-center">

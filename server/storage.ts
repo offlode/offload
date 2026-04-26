@@ -7,6 +7,28 @@ const sqlite = new Database("data.db");
 sqlite.pragma("journal_mode = WAL");
 const db = drizzle(sqlite, { schema });
 
+// Keep optional integration tables available in existing SQLite deployments.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS push_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    platform TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS stripe_processed_events (
+    event_id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    processed_at TEXT NOT NULL
+  );
+`);
+try {
+  sqlite.exec(`ALTER TABLE payment_transactions ADD COLUMN amount_cents INTEGER;`);
+} catch (err: any) {
+  if (!String(err?.message || "").includes("duplicate column name")) throw err;
+}
+
 export interface IStorage {
   // Users
   getUser(id: number): schema.User | undefined;
@@ -25,6 +47,7 @@ export interface IStorage {
   // Vendors
   getVendors(): schema.Vendor[];
   getVendor(id: number): schema.Vendor | undefined;
+  getVendorByUserId(userId: number): schema.Vendor | undefined;
   getActiveVendors(): schema.Vendor[];
   createVendor(data: schema.InsertVendor): schema.Vendor;
   updateVendor(id: number, data: Partial<schema.InsertVendor>): schema.Vendor | undefined;
@@ -82,7 +105,11 @@ export interface IStorage {
   // Notifications
   getNotificationsByUser(userId: number): schema.Notification[];
   getUnreadCount(userId: number): number;
+  getNotification(id: number): schema.Notification | undefined;
   createNotification(data: schema.InsertNotification): schema.Notification;
+  savePushToken(userId: number, token: string, platform: string): schema.PushToken;
+  deletePushToken(userId: number, token: string): void;
+  getPushTokensByUser(userId: number): schema.PushToken[];
   markNotificationRead(id: number): schema.Notification | undefined;
   markAllRead(userId: number): void;
   // Promo Codes
@@ -119,6 +146,7 @@ export interface IStorage {
   getOrderAddOns(orderId: number): schema.OrderAddOn[];
   createOrderAddOn(data: schema.InsertOrderAddOn): schema.OrderAddOn;
   // Payment Transactions
+  getPaymentTransactions(): schema.PaymentTransaction[];
   getPaymentTransactionsByOrder(orderId: number): schema.PaymentTransaction[];
   createPaymentTransaction(data: schema.InsertPaymentTransaction): schema.PaymentTransaction;
   updatePaymentTransaction(id: number, data: Partial<schema.InsertPaymentTransaction>): schema.PaymentTransaction | undefined;
@@ -174,6 +202,9 @@ export interface IStorage {
   storeIdempotencyKey(key: string, response: string, statusCode: number, expiresAt: string): void;
   getIdempotencyKey(key: string): { response: string; statusCode: number } | null;
   deleteExpiredIdempotencyKeys(): void;
+  // Stripe Webhook Events
+  recordStripeEvent(eventId: string, type: string): boolean;
+  deleteStripeEvent(eventId: string): void;
   // Promo Usage
   recordPromoUsage(promoId: number, userId: number, orderId: number): void;
   getPromoUsageByUser(promoId: number, userId: number): number;
@@ -214,6 +245,11 @@ class DatabaseStorage implements IStorage {
   // ─── Vendors ───
   getVendors() { return db.select().from(schema.vendors).all(); }
   getVendor(id: number) { return db.select().from(schema.vendors).where(eq(schema.vendors.id, id)).get(); }
+  getVendorByUserId(userId: number) {
+    const user = this.getUser(userId);
+    if (user?.vendorId) return this.getVendor(user.vendorId);
+    return db.select().from(schema.vendors).where(eq(schema.vendors.email, user?.email || "")).get();
+  }
   getActiveVendors() { return db.select().from(schema.vendors).where(eq(schema.vendors.status, "active")).all(); }
   createVendor(data: schema.InsertVendor) { return db.insert(schema.vendors).values(data).returning().get(); }
   updateVendor(id: number, data: Partial<schema.InsertVendor>) {
@@ -339,7 +375,26 @@ class DatabaseStorage implements IStorage {
       .where(and(eq(schema.notifications.userId, userId), eq(schema.notifications.read, 0))).get();
     return result?.count || 0;
   }
+  getNotification(id: number) {
+    return db.select().from(schema.notifications).where(eq(schema.notifications.id, id)).get();
+  }
   createNotification(data: schema.InsertNotification) { return db.insert(schema.notifications).values(data).returning().get(); }
+  savePushToken(userId: number, token: string, platform: string) {
+    const existing = db.select().from(schema.pushTokens).where(eq(schema.pushTokens.token, token)).get();
+    if (existing) {
+      return db.update(schema.pushTokens)
+        .set({ userId, platform, createdAt: new Date().toISOString() })
+        .where(eq(schema.pushTokens.id, existing.id))
+        .returning().get();
+    }
+    return db.insert(schema.pushTokens).values({ userId, token, platform, createdAt: new Date().toISOString() }).returning().get();
+  }
+  deletePushToken(userId: number, token: string) {
+    db.delete(schema.pushTokens).where(and(eq(schema.pushTokens.userId, userId), eq(schema.pushTokens.token, token))).run();
+  }
+  getPushTokensByUser(userId: number) {
+    return db.select().from(schema.pushTokens).where(eq(schema.pushTokens.userId, userId)).all();
+  }
   markNotificationRead(id: number) {
     return db.update(schema.notifications).set({ read: 1 }).where(eq(schema.notifications.id, id)).returning().get();
   }
@@ -412,6 +467,9 @@ class DatabaseStorage implements IStorage {
   createOrderAddOn(data: schema.InsertOrderAddOn) { return db.insert(schema.orderAddOns).values(data).returning().get(); }
 
   // ─── Payment Transactions ───
+  getPaymentTransactions() {
+    return db.select().from(schema.paymentTransactions).orderBy(desc(schema.paymentTransactions.createdAt)).all();
+  }
   getPaymentTransactionsByOrder(orderId: number) {
     return db.select().from(schema.paymentTransactions).where(eq(schema.paymentTransactions.orderId, orderId))
       .orderBy(desc(schema.paymentTransactions.createdAt)).all();
@@ -631,6 +689,19 @@ class DatabaseStorage implements IStorage {
   deleteExpiredIdempotencyKeys(): void {
     const now = new Date().toISOString();
     db.delete(schema.idempotencyKeys).where(sql`${schema.idempotencyKeys.expiresAt} < ${now}`).run();
+  }
+
+  // ─── Stripe Webhook Events ───
+  recordStripeEvent(eventId: string, type: string): boolean {
+    const result = db.insert(schema.stripeProcessedEvents).values({
+      eventId,
+      type,
+      processedAt: new Date().toISOString(),
+    }).onConflictDoNothing().run();
+    return result.changes > 0;
+  }
+  deleteStripeEvent(eventId: string): void {
+    db.delete(schema.stripeProcessedEvents).where(eq(schema.stripeProcessedEvents.eventId, eventId)).run();
   }
 
   // ─── Promo Usage ───
