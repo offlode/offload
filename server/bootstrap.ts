@@ -36,11 +36,16 @@ async function ensureAccount(account: BootstrapAccount) {
   try {
     const existing = storage.getUserByEmail(account.email);
     if (existing) {
-      // Verify role is correct; if not, do not silently change — log a warning
+      // For these two specific bootstrap accounts (reviewer@offloadusa.com and
+      // admin@offloadusa.com), it is safe and intended to upgrade the role to
+      // the expected one — they are owned by us, not customers.
       if (existing.role !== account.role) {
-        console.warn(
-          `[Bootstrap] ${account.email} exists with role=${existing.role}, expected ${account.role}. Leaving as-is to avoid privilege changes.`,
-        );
+        try {
+          storage.updateUser(existing.id, { role: account.role });
+          console.log(`[Bootstrap] Upgraded ${account.email} role: ${existing.role} → ${account.role}`);
+        } catch (e: any) {
+          console.warn(`[Bootstrap] Could not upgrade ${account.email} role:`, e?.message || e);
+        }
       }
       return;
     }
@@ -60,8 +65,38 @@ async function ensureAccount(account: BootstrapAccount) {
   }
 }
 
+function checkStripeMode() {
+  const key = process.env.STRIPE_SECRET_KEY || "";
+  if (!key) {
+    console.warn("[Bootstrap] STRIPE_SECRET_KEY not set — payment features will be disabled.");
+    return;
+  }
+  const isLive = key.startsWith("sk_live_");
+  const isTest = key.startsWith("sk_test_");
+  const env = process.env.NODE_ENV || "development";
+  if (env === "production" && isTest) {
+    console.warn(
+      "[Bootstrap] ⚠️  STRIPE_SECRET_KEY is a TEST key (sk_test_*) but NODE_ENV=production. " +
+        "Real money payments will NOT work. Set live keys in Render env to charge customers.",
+    );
+  } else if (env !== "production" && isLive) {
+    console.warn(
+      "[Bootstrap] ⚠️  STRIPE_SECRET_KEY is a LIVE key (sk_live_*) but NODE_ENV=" + env +
+        ". Live keys should only be used in production.",
+    );
+  } else if (isLive) {
+    console.log("[Bootstrap] Stripe is in LIVE mode — real payments enabled.");
+  } else if (isTest) {
+    console.log("[Bootstrap] Stripe is in TEST mode (sandbox).");
+  }
+  if (!process.env.STRIPE_WEBHOOK_SECRET) {
+    console.warn("[Bootstrap] STRIPE_WEBHOOK_SECRET not set — webhook signature verification will fail.");
+  }
+}
+
 export async function bootstrapAccounts() {
   console.log("[Bootstrap] Ensuring critical accounts exist...");
+  checkStripeMode();
   await ensureAccount({
     email: process.env.BOOTSTRAP_REVIEWER_EMAIL || "reviewer@offloadusa.com",
     password: process.env.BOOTSTRAP_REVIEWER_PASSWORD || "OffloadReview2026!",
