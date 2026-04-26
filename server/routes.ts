@@ -5981,6 +5981,34 @@ export async function registerRoutes(
     let stripeRefundId: string | null = null;
     if (stripe) {
       try {
+        // Verify with Stripe that the PaymentIntent is in a state where a
+        // refund of this size is actually possible. This catches edge cases
+        // where local state is out of sync with Stripe (e.g. dispute, prior
+        // out-of-band refund, uncaptured intent).
+        const pi = await stripe.paymentIntents.retrieve(chargeTxn.stripePaymentIntentId!, {
+          expand: ["latest_charge"],
+        });
+        if (pi.status !== "succeeded") {
+          return { errorStatus: 400, error: `Cannot refund: PaymentIntent status is ${pi.status}` };
+        }
+        const latestCharge: any = (pi as any).latest_charge;
+        if (!latestCharge || typeof latestCharge === "string") {
+          return { errorStatus: 400, error: "Cannot refund: PaymentIntent has no expanded charge" };
+        }
+        if (latestCharge.refunded === true) {
+          return { errorStatus: 400, error: "Cannot refund: charge is already fully refunded on Stripe" };
+        }
+        if (latestCharge.disputed === true) {
+          return { errorStatus: 400, error: "Cannot refund: charge has an active dispute" };
+        }
+        const stripeRemainingCents = Number(latestCharge.amount_captured || latestCharge.amount || 0) - Number(latestCharge.amount_refunded || 0);
+        if (amountCents > stripeRemainingCents) {
+          return {
+            errorStatus: 400,
+            error: "Refund amount exceeds Stripe-side remaining refundable amount",
+            stripeRemainingCents,
+          };
+        }
         const refund = await stripe.refunds.create({
           payment_intent: chargeTxn.stripePaymentIntentId!,
           amount: amountCents,
@@ -6617,7 +6645,14 @@ export async function registerRoutes(
   // ═══════════════════════════════════════════════════════════════
 
   app.delete("/api/notifications/:id", requireAuth(), (req, res) => {
-    storage.deleteNotification(Number(String(req.params.id)));
+    const currentUser = (req as any).currentUser;
+    const id = Number(String(req.params.id));
+    const n = storage.getNotification(id);
+    if (!n) return res.status(404).json({ error: "Notification not found" });
+    if (n.userId !== currentUser.id && !isAdminOrManager(currentUser)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    storage.deleteNotification(id);
     res.json({ success: true });
   });
 

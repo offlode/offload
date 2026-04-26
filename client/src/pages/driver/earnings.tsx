@@ -99,15 +99,8 @@ function StatCard({
   );
 }
 
-const FALLBACK_WEEKLY = [
-  { day: "Mon", earnings: 62.5, trips: 7 },
-  { day: "Tue", earnings: 85.0, trips: 10 },
-  { day: "Wed", earnings: 44.5, trips: 5 },
-  { day: "Thu", earnings: 97.0, trips: 11 },
-  { day: "Fri", earnings: 120.5, trips: 14 },
-  { day: "Sat", earnings: 78.0, trips: 9 },
-  { day: "Sun", earnings: 55.5, trips: 6 },
-];
+// No fabricated weekly data — use empty array, render empty-state when no data.
+const FALLBACK_WEEKLY: { day: string; earnings: number; trips: number }[] = [];
 
 export default function DriverEarnings() {
   const [, navigate] = useLocation();

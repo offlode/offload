@@ -94,33 +94,20 @@ export default function AdminFinancial() {
     queryKey: ["/api/admin/financial"],
   });
 
-  // Simulated data
-  const simData: FinancialData = {
+  // No fabricated fallbacks — show empty state when API has no data.
+  const emptyData: FinancialData = {
     summary: {
-      totalRevenue: 42580,
-      vendorPayouts: 27677,
-      driverPayouts: 5934,
-      platformRevenue: 8969,
-      commissionRate: 13,
+      totalRevenue: 0,
+      vendorPayouts: 0,
+      driverPayouts: 0,
+      platformRevenue: 0,
+      commissionRate: 0,
     },
-    vendorBreakdown: [
-      { id: 1, name: "Fresh & Clean Co.", orders: 214, grossRevenue: 14980, vendorPayout: 9737, platformFee: 1947, payoutStatus: "completed" },
-      { id: 2, name: "City Wash Center", orders: 156, grossRevenue: 10920, vendorPayout: 7098, platformFee: 1420, payoutStatus: "completed" },
-      { id: 3, name: "Sparkle Laundry", orders: 108, grossRevenue: 7560, vendorPayout: 4914, platformFee: 983, payoutStatus: "processing" },
-      { id: 4, name: "QuickWash Express", orders: 89, grossRevenue: 6230, vendorPayout: 4050, platformFee: 810, payoutStatus: "pending" },
-      { id: 5, name: "Metro Clean Hub", orders: 63, grossRevenue: 2890, vendorPayout: 1879, platformFee: 376, payoutStatus: "pending" },
-    ],
-    monthlyTrend: [
-      { month: "Aug", revenue: 5200, vendorPayouts: 3380, driverPayouts: 728, platformRevenue: 1092 },
-      { month: "Sep", revenue: 6100, vendorPayouts: 3965, driverPayouts: 854, platformRevenue: 1281 },
-      { month: "Oct", revenue: 7400, vendorPayouts: 4810, driverPayouts: 1036, platformRevenue: 1554 },
-      { month: "Nov", revenue: 8200, vendorPayouts: 5330, driverPayouts: 1148, platformRevenue: 1722 },
-      { month: "Dec", revenue: 9800, vendorPayouts: 6370, driverPayouts: 1372, platformRevenue: 2058 },
-      { month: "Jan", revenue: 5880, vendorPayouts: 3822, driverPayouts: 823, platformRevenue: 1235 },
-    ],
+    vendorBreakdown: [],
+    monthlyTrend: [],
   };
 
-  const displayData = data ?? simData;
+  const displayData = data ?? emptyData;
 
   return (
     <AdminLayout>

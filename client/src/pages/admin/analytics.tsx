@@ -87,50 +87,13 @@ export default function AdminAnalytics() {
     queryKey: ["/api/admin/analytics"],
   });
 
-  // Simulated data for display while API is pending/unavailable
-  const simulatedRevenue = [
-    { day: "Mon", revenue: 1240, orders: 18 },
-    { day: "Tue", revenue: 1890, orders: 27 },
-    { day: "Wed", revenue: 1560, orders: 22 },
-    { day: "Thu", revenue: 2100, orders: 31 },
-    { day: "Fri", revenue: 2780, orders: 41 },
-    { day: "Sat", revenue: 3200, orders: 48 },
-    { day: "Sun", revenue: 2450, orders: 36 },
-  ];
-
-  const simulatedKpis = {
-    totalRevenue: 15220,
-    totalOrders: 223,
-    avgOrderValue: 68.25,
-    platformCommission: 1978.6,
-  };
-
-  const simulatedStatusBreakdown = [
-    { name: "Delivered", value: 145 },
-    { name: "In Progress", value: 42 },
-    { name: "Pending", value: 21 },
-    { name: "Cancelled", value: 15 },
-  ];
-
-  const simulatedFunnel = [
-    { stage: "Registered", count: 1840, percentage: 100 },
-    { stage: "First Order", count: 1102, percentage: 60 },
-    { stage: "Repeat Customer", count: 551, percentage: 30 },
-    { stage: "Subscriber", count: 184, percentage: 10 },
-  ];
-
-  const simulatedVendors = [
-    { id: 1, name: "Fresh & Clean Co.", orders: 84, rating: 4.9, revenue: 5880, tier: "elite" },
-    { id: 2, name: "City Wash Center", orders: 61, rating: 4.7, revenue: 4270, tier: "premium" },
-    { id: 3, name: "Sparkle Laundry", orders: 43, rating: 4.6, revenue: 3010, tier: "premium" },
-    { id: 4, name: "QuickWash Express", orders: 35, rating: 4.3, revenue: 2450, tier: "standard" },
-  ];
-
-  const revenueData = data?.revenueByDay ?? simulatedRevenue;
-  const kpis = data?.kpis ?? simulatedKpis;
-  const statusBreakdown = data?.orderStatusBreakdown ?? simulatedStatusBreakdown;
-  const funnel = data?.acquisitionFunnel ?? simulatedFunnel;
-  const vendors = data?.topVendors ?? simulatedVendors;
+  // No fabricated fallbacks — show empty state when API returns nothing.
+  const emptyKpis = { totalRevenue: 0, totalOrders: 0, avgOrderValue: 0, platformCommission: 0 };
+  const revenueData = data?.revenueByDay ?? [];
+  const kpis = data?.kpis ?? emptyKpis;
+  const statusBreakdown = data?.orderStatusBreakdown ?? [];
+  const funnel = data?.acquisitionFunnel ?? [];
+  const vendors = data?.topVendors ?? [];
 
   const pieColors = [CHART_COLORS.teal, CHART_COLORS.primary, CHART_COLORS.amber, CHART_COLORS.red, CHART_COLORS.blue];
 

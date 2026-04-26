@@ -13,15 +13,13 @@
  *   BOOTSTRAP_ADMIN_PASSWORD    (default: OffloadAdmin2026!)
  */
 import { storage } from "./storage";
-import { scrypt, randomBytes } from "crypto";
-import { promisify } from "util";
+import { scryptSync, randomBytes } from "crypto";
 
-const scryptAsync = promisify(scrypt);
-
-async function hashPassword(password: string): Promise<string> {
+// Must match the format used by routes.ts hashPassword(): "scrypt:<salt>:<hash>"
+function hashPassword(pw: string): string {
   const salt = randomBytes(16).toString("hex");
-  const buf = (await scryptAsync(password, salt, 64)) as Buffer;
-  return `${buf.toString("hex")}.${salt}`;
+  const hash = scryptSync(pw, salt, 64).toString("hex");
+  return `scrypt:${salt}:${hash}`;
 }
 
 interface BootstrapAccount {
@@ -36,20 +34,29 @@ async function ensureAccount(account: BootstrapAccount) {
   try {
     const existing = storage.getUserByEmail(account.email);
     if (existing) {
-      // For these two specific bootstrap accounts (reviewer@offloadusa.com and
-      // admin@offloadusa.com), it is safe and intended to upgrade the role to
-      // the expected one — they are owned by us, not customers.
+      // Always re-hash the bootstrap password and force role correctness so
+      // these admin/reviewer accounts are guaranteed usable after every deploy.
+      const updates: any = {};
+      const newHash = hashPassword(account.password);
+      if (existing.password !== newHash) {
+        // (hashes always differ due to random salt — always reset)
+        updates.password = newHash;
+      }
       if (existing.role !== account.role) {
+        updates.role = account.role;
+      }
+      if (Object.keys(updates).length > 0) {
         try {
-          storage.updateUser(existing.id, { role: account.role });
-          console.log(`[Bootstrap] Upgraded ${account.email} role: ${existing.role} → ${account.role}`);
+          storage.updateUser(existing.id, updates);
+          const what = Object.keys(updates).join(", ");
+          console.log(`[Bootstrap] Refreshed ${account.email} (${what})`);
         } catch (e: any) {
-          console.warn(`[Bootstrap] Could not upgrade ${account.email} role:`, e?.message || e);
+          console.warn(`[Bootstrap] Could not refresh ${account.email}:`, e?.message || e);
         }
       }
       return;
     }
-    const passwordHash = await hashPassword(account.password);
+    const passwordHash = hashPassword(account.password);
     const username = account.email.split("@")[0] + "_bootstrap_" + Date.now();
     storage.createUser({
       username,
