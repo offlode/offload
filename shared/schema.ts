@@ -755,6 +755,24 @@ export const passwordResetTokens = pgTable("password_reset_tokens", {
   createdAt: text("created_at").notNull(),
 });
 
+// ─── Notification Rules ───
+export const notificationRules = pgTable("notification_rules", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),                       // e.g. "Customer: driver assigned"
+  trigger: text("trigger").notNull(),                 // matches order status
+  audience: text("audience").notNull(),               // customer | driver | vendor | admin
+  channels: text("channels").notNull(),               // JSON array of "in_app" | "email" | "sms" | "push"
+  titleTemplate: text("title_template").notNull(),
+  bodyTemplate: text("body_template").notNull(),
+  isActive: integer("is_active").default(1),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const insertNotificationRuleSchema = createInsertSchema(notificationRules).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertNotificationRule = z.infer<typeof insertNotificationRuleSchema>;
+export type NotificationRule = typeof notificationRules.$inferSelect;
+
 // ─── Promo Usage (per-user tracking) ───
 export const promoUsage = pgTable("promo_usage", {
   id: serial("id").primaryKey(),

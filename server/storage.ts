@@ -32,6 +32,19 @@ async function ensureExtraTables() {
       type TEXT NOT NULL,
       processed_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS notification_rules (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      trigger TEXT NOT NULL,
+      audience TEXT NOT NULL,
+      channels TEXT NOT NULL,
+      title_template TEXT NOT NULL,
+      body_template TEXT NOT NULL,
+      is_active INTEGER DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   // Add amount_cents column if missing (idempotent)
@@ -232,6 +245,13 @@ export interface IStorage {
   getPasswordResetToken(token: string): Promise<{ userId: number; token: string; expiresAt: string; usedAt: string | null } | undefined>;
   markPasswordResetTokenUsed(token: string): Promise<void>;
   cleanExpiredResetTokens(): Promise<void>;
+  // Notification Rules
+  getNotificationRules(): Promise<schema.NotificationRule[]>;
+  getNotificationRule(id: number): Promise<schema.NotificationRule | undefined>;
+  getNotificationRulesByTrigger(trigger: string): Promise<schema.NotificationRule[]>;
+  createNotificationRule(input: schema.InsertNotificationRule): Promise<schema.NotificationRule>;
+  updateNotificationRule(id: number, patch: Partial<schema.InsertNotificationRule>): Promise<schema.NotificationRule | undefined>;
+  deleteNotificationRule(id: number): Promise<boolean>;
 }
 
 class DatabaseStorage implements IStorage {
@@ -918,6 +938,40 @@ class DatabaseStorage implements IStorage {
   async cleanExpiredResetTokens(): Promise<void> {
     const now = new Date().toISOString();
     await db.delete(schema.passwordResetTokens).where(sql`${schema.passwordResetTokens.expiresAt} < ${now}`);
+  }
+
+  // ─── Notification Rules ───
+  async getNotificationRules(): Promise<schema.NotificationRule[]> {
+    return db.select().from(schema.notificationRules).orderBy(desc(schema.notificationRules.id));
+  }
+  async getNotificationRule(id: number): Promise<schema.NotificationRule | undefined> {
+    const [row] = await db.select().from(schema.notificationRules).where(eq(schema.notificationRules.id, id));
+    return row;
+  }
+  async getNotificationRulesByTrigger(trigger: string): Promise<schema.NotificationRule[]> {
+    return db.select().from(schema.notificationRules).where(
+      and(eq(schema.notificationRules.trigger, trigger), eq(schema.notificationRules.isActive, 1))
+    );
+  }
+  async createNotificationRule(input: schema.InsertNotificationRule): Promise<schema.NotificationRule> {
+    const now = new Date().toISOString();
+    const [row] = await db.insert(schema.notificationRules).values({
+      ...input,
+      createdAt: now,
+      updatedAt: now,
+    }).returning();
+    return row;
+  }
+  async updateNotificationRule(id: number, patch: Partial<schema.InsertNotificationRule>): Promise<schema.NotificationRule | undefined> {
+    const [row] = await db.update(schema.notificationRules)
+      .set({ ...patch, updatedAt: new Date().toISOString() })
+      .where(eq(schema.notificationRules.id, id))
+      .returning();
+    return row;
+  }
+  async deleteNotificationRule(id: number): Promise<boolean> {
+    const result = await db.delete(schema.notificationRules).where(eq(schema.notificationRules.id, id));
+    return (result.rowCount ?? 0) > 0;
   }
 }
 

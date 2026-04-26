@@ -10,7 +10,7 @@ import { isR2Enabled, uploadToR2, getPresignedDownloadUrl, getPresignedUploadUrl
 import { sendPushToUser } from "./push";
 import { sendSMS } from "./sms";
 import { distanceMatrix, isGoogleMapsConfigured } from "./maps";
-import { SLA_CONFIGS, WEIGHT_TOLERANCE, CONSENT_TIMEOUT_HOURS, LOYALTY_TIERS, SUBSCRIPTION_TIERS, PRICING_TIERS, DELIVERY_FEES, TAX_RATE as SCHEMA_TAX_RATE, QUOTE_VALIDITY_MINUTES, SERVICE_TYPE_MULTIPLIERS } from "@shared/schema";
+import { SLA_CONFIGS, WEIGHT_TOLERANCE, CONSENT_TIMEOUT_HOURS, LOYALTY_TIERS, SUBSCRIPTION_TIERS, PRICING_TIERS, DELIVERY_FEES, TAX_RATE as SCHEMA_TAX_RATE, QUOTE_VALIDITY_MINUTES, SERVICE_TYPE_MULTIPLIERS, insertNotificationRuleSchema } from "@shared/schema";
 import type { Order, Vendor, Driver, Quote } from "@shared/schema";
 import {
   VALID_TRANSITIONS as FSM_TRANSITIONS,
@@ -3170,6 +3170,55 @@ export async function registerRoutes(
     if (statusMessages[status]) {
       await notifyOrderUpdate(order, `Order ${status.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase())}`, statusMessages[status]);
       await sendOrderStatusSMS(order, status);
+    }
+
+    // Process custom notification rules
+    try {
+      const customRules = await storage.getNotificationRulesByTrigger(status);
+      for (const rule of customRules) {
+        if (!rule.isActive) continue;
+        let recipientUserId: number | null = null;
+        if (rule.audience === "customer") {
+          recipientUserId = order.customerId;
+        } else if (rule.audience === "driver" && order.driverId) {
+          const drv = await storage.getDriver(order.driverId);
+          recipientUserId = drv?.userId || null;
+        } else if (rule.audience === "vendor" && order.vendorId) {
+          const v = await storage.getVendor(order.vendorId);
+          recipientUserId = (v as any)?.userId || null;
+        } else if (rule.audience === "admin") {
+          const admins = await storage.getUsersByRole("admin");
+          recipientUserId = admins[0]?.id || 1;
+        }
+        if (!recipientUserId) continue;
+
+        const orderCustomerForRule = await storage.getUser(order.customerId);
+        const vars: Record<string, string> = {
+          orderNumber: (order as any).orderNumber || `#${order.id}`,
+          customerName: orderCustomerForRule?.name || "Customer",
+          status: status,
+          statusLabel: STATUS_LABELS[status] || status,
+        };
+        const renderTemplate = (t: string) => t.replace(/\{\{(\w+)\}\}/g, (_: string, k: string) => vars[k] || `{{${k}}}`);
+        const title = renderTemplate(rule.titleTemplate);
+        const body = renderTemplate(rule.bodyTemplate);
+
+        let channels: string[] = [];
+        try { channels = JSON.parse(rule.channels); } catch { channels = ["in_app"]; }
+
+        if (channels.includes("in_app") || channels.includes("push")) {
+          await notifyAndEmit(recipientUserId, order.id, "custom_rule", title, body, `/orders/${order.id}`);
+        }
+        if (channels.includes("email")) {
+          const recipientUser = await storage.getUser(recipientUserId);
+          if (recipientUser?.email) {
+            try { await sendOrderEmail(order, status); } catch (err) { console.error("[notif-rule email]", err); }
+          }
+        }
+        // SMS is best-effort (Twilio not yet configured); skip silently
+      }
+    } catch (ruleErr) {
+      console.error("[notif-rules] Error processing custom notification rules:", ruleErr);
     }
 
     // When delivered, send review request
@@ -7635,6 +7684,52 @@ export async function registerRoutes(
     }
 
     res.json({ sent: true, to: customEmail, template });
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  //  ADMIN NOTIFICATION RULES
+  // ═══════════════════════════════════════════════════════════════
+
+  app.get("/api/admin/notification-rules", requireAuth(["admin"]), async (_req, res) => {
+    try {
+      const rules = await storage.getNotificationRules();
+      res.json(rules);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to fetch notification rules" });
+    }
+  });
+
+  app.post("/api/admin/notification-rules", requireAuth(["admin"]), async (req, res) => {
+    try {
+      const parsed = insertNotificationRuleSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: "Validation error", details: parsed.error.flatten() });
+      const rule = await storage.createNotificationRule(parsed.data);
+      res.status(201).json(rule);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to create notification rule" });
+    }
+  });
+
+  app.patch("/api/admin/notification-rules/:id", requireAuth(["admin"]), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const rule = await storage.updateNotificationRule(id, req.body);
+      if (!rule) return res.status(404).json({ error: "Rule not found" });
+      res.json(rule);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to update notification rule" });
+    }
+  });
+
+  app.delete("/api/admin/notification-rules/:id", requireAuth(["admin"]), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const deleted = await storage.deleteNotificationRule(id);
+      if (!deleted) return res.status(404).json({ error: "Rule not found" });
+      res.json({ deleted: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to delete notification rule" });
+    }
   });
 
   // ═══════════════════════════════════════════════════════════════
