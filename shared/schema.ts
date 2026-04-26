@@ -1,10 +1,10 @@
-import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
+import { pgTable, text, integer, real, serial, doublePrecision } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
 // ─── Users ───
-export const users = sqliteTable("users", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
   username: text("username").notNull().unique(),
   password: text("password").notNull(),
   name: text("name").notNull(),
@@ -13,7 +13,7 @@ export const users = sqliteTable("users", {
   role: text("role").notNull().default("customer"), // customer | driver | laundromat | manager | admin
   avatarUrl: text("avatar_url"),
   memberSince: text("member_since"),
-  rating: real("rating").default(5.0),
+  rating: doublePrecision("rating").default(5.0),
   vendorId: integer("vendor_id"), // For staff: which vendor they belong to
   // Loyalty & Referrals
   loyaltyPoints: integer("loyalty_points").default(0),
@@ -21,7 +21,7 @@ export const users = sqliteTable("users", {
   referralCode: text("referral_code"),
   referredBy: integer("referred_by"),
   totalOrders: integer("total_orders").default(0),
-  totalSpent: real("total_spent").default(0),
+  totalSpent: doublePrecision("total_spent").default(0),
   // Preferences
   preferredDetergent: text("preferred_detergent").default("standard"), // standard | hypoallergenic | eco | fragrance_free
   preferredWashTemp: text("preferred_wash_temp").default("cold"), // cold | warm | hot
@@ -31,7 +31,7 @@ export const users = sqliteTable("users", {
   subscriptionStartDate: text("subscription_start_date"),
   subscriptionEndDate: text("subscription_end_date"),
   // Algorithmic churn risk score
-  churnRisk: real("churn_risk").default(0), // 0-1 probability
+  churnRisk: doublePrecision("churn_risk").default(0), // 0-1 probability
   lastActiveAt: text("last_active_at"),
   // Account credits (e.g. from SLA breach refunds)
   credits: integer("credits").default(0),
@@ -42,8 +42,8 @@ export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 
 // ─── Addresses ───
-export const addresses = sqliteTable("addresses", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const addresses = pgTable("addresses", {
+  id: serial("id").primaryKey(),
   userId: integer("user_id").notNull(),
   label: text("label").notNull(),
   street: text("street").notNull(),
@@ -53,8 +53,8 @@ export const addresses = sqliteTable("addresses", {
   zip: text("zip").notNull(),
   notes: text("notes"),
   isDefault: integer("is_default").default(0),
-  lat: real("lat"),
-  lng: real("lng"),
+  lat: doublePrecision("lat"),
+  lng: doublePrecision("lng"),
 });
 
 export const insertAddressSchema = createInsertSchema(addresses).omit({ id: true });
@@ -62,14 +62,14 @@ export type InsertAddress = z.infer<typeof insertAddressSchema>;
 export type Address = typeof addresses.$inferSelect;
 
 // ─── Vendors (Laundromats) ───
-export const vendors = sqliteTable("vendors", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const vendors = pgTable("vendors", {
+  id: serial("id").primaryKey(),
   name: text("name").notNull(),
   address: text("address").notNull(),
   city: text("city").notNull(),
   phone: text("phone"),
   email: text("email"),
-  rating: real("rating").default(4.5),
+  rating: doublePrecision("rating").default(4.5),
   reviewCount: integer("review_count").default(0),
   certified: integer("certified").default(1),
   capacity: integer("capacity").default(50),
@@ -78,18 +78,18 @@ export const vendors = sqliteTable("vendors", {
   capabilities: text("capabilities"), // JSON: wash types supported
   avatarUrl: text("avatar_url"),
   performanceTier: text("performance_tier").default("standard"), // standard | premium | elite
-  lat: real("lat"),
-  lng: real("lng"),
+  lat: doublePrecision("lat"),
+  lng: doublePrecision("lng"),
   // Payout tracking
-  payoutRate: real("payout_rate").default(0.65),
-  totalEarnings: real("total_earnings").default(0),
-  pendingPayout: real("pending_payout").default(0),
+  payoutRate: doublePrecision("payout_rate").default(0.65),
+  totalEarnings: doublePrecision("total_earnings").default(0),
+  pendingPayout: doublePrecision("pending_payout").default(0),
   // AI Scoring
-  aiHealthScore: real("ai_health_score").default(85), // 0-100
-  avgProcessingTime: real("avg_processing_time").default(180), // minutes
-  onTimeRate: real("on_time_rate").default(0.95), // 0-1
-  qualityScore: real("quality_score").default(4.5), // 1-5
-  disputeRate: real("dispute_rate").default(0.02), // 0-1
+  aiHealthScore: doublePrecision("ai_health_score").default(85), // 0-100
+  avgProcessingTime: doublePrecision("avg_processing_time").default(180), // minutes
+  onTimeRate: doublePrecision("on_time_rate").default(0.95), // 0-1
+  qualityScore: doublePrecision("quality_score").default(4.5), // 1-5
+  disputeRate: doublePrecision("dispute_rate").default(0.02), // 0-1
   // Operating hours (JSON: {mon: {open: "7:00", close: "22:00"}, ...})
   operatingHours: text("operating_hours"),
   // Services offered
@@ -98,7 +98,7 @@ export const vendors = sqliteTable("vendors", {
   offersComforters: integer("offers_comforters").default(0),
   offersCommercial: integer("offers_commercial").default(0),
   // Demand forecasting
-  avgDailyOrders: real("avg_daily_orders").default(10),
+  avgDailyOrders: doublePrecision("avg_daily_orders").default(10),
   peakDayOfWeek: text("peak_day_of_week").default("Monday"),
 });
 
@@ -107,23 +107,23 @@ export type InsertVendor = z.infer<typeof insertVendorSchema>;
 export type Vendor = typeof vendors.$inferSelect;
 
 // ─── Drivers ───
-export const drivers = sqliteTable("drivers", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const drivers = pgTable("drivers", {
+  id: serial("id").primaryKey(),
   userId: integer("user_id").notNull(),
   name: text("name").notNull(),
   phone: text("phone").notNull(),
   vehicleType: text("vehicle_type"),
   licensePlate: text("license_plate"),
   status: text("status").notNull().default("available"), // available | busy | offline
-  rating: real("rating").default(4.8),
+  rating: doublePrecision("rating").default(4.8),
   completedTrips: integer("completed_trips").default(0),
   avatarUrl: text("avatar_url"),
-  currentLat: real("current_lat"),
-  currentLng: real("current_lng"),
+  currentLat: doublePrecision("current_lat"),
+  currentLng: doublePrecision("current_lng"),
   // Payout tracking
-  payoutPerTrip: real("payout_per_trip").default(8.50),
-  totalEarnings: real("total_earnings").default(0),
-  pendingPayout: real("pending_payout").default(0),
+  payoutPerTrip: doublePrecision("payout_per_trip").default(8.50),
+  totalEarnings: doublePrecision("total_earnings").default(0),
+  pendingPayout: doublePrecision("pending_payout").default(0),
   todayTrips: integer("today_trips").default(0),
   // AI route optimization
   currentRouteJson: text("current_route_json"), // JSON: optimized route
@@ -131,9 +131,9 @@ export const drivers = sqliteTable("drivers", {
   maxTripsPerDay: integer("max_trips_per_day").default(15),
   preferredZones: text("preferred_zones"), // JSON: array of zip codes
   // Performance
-  onTimePickupRate: real("on_time_pickup_rate").default(0.95),
-  avgPickupTime: real("avg_pickup_time").default(12), // minutes
-  customerRatingAvg: real("customer_rating_avg").default(4.8),
+  onTimePickupRate: doublePrecision("on_time_pickup_rate").default(0.95),
+  avgPickupTime: doublePrecision("avg_pickup_time").default(12), // minutes
+  customerRatingAvg: doublePrecision("customer_rating_avg").default(4.8),
 });
 
 export const insertDriverSchema = createInsertSchema(drivers).omit({ id: true });
@@ -141,12 +141,12 @@ export type InsertDriver = z.infer<typeof insertDriverSchema>;
 export type Driver = typeof drivers.$inferSelect;
 
 // ─── Service Types ───
-export const serviceTypes = sqliteTable("service_types", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const serviceTypes = pgTable("service_types", {
+  id: serial("id").primaryKey(),
   name: text("name").notNull(), // wash_fold | dry_cleaning | comforters | alterations | commercial
   displayName: text("display_name").notNull(),
   description: text("description"),
-  basePrice: real("base_price").notNull(), // per unit (lb or item)
+  basePrice: doublePrecision("base_price").notNull(), // per unit (lb or item)
   unit: text("unit").notNull().default("lb"), // lb | item | load
   icon: text("icon"), // lucide icon name
   isActive: integer("is_active").default(1),
@@ -158,8 +158,8 @@ export type InsertServiceType = z.infer<typeof insertServiceTypeSchema>;
 export type ServiceType = typeof serviceTypes.$inferSelect;
 
 // ─── Orders ───
-export const orders = sqliteTable("orders", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const orders = pgTable("orders", {
+  id: serial("id").primaryKey(),
   orderNumber: text("order_number").notNull().unique(),
   customerId: integer("customer_id").notNull(),
   vendorId: integer("vendor_id"),
@@ -181,25 +181,25 @@ export const orders = sqliteTable("orders", {
   bags: text("bags").notNull(), // JSON
   preferences: text("preferences"), // JSON
   serviceType: text("service_type").default("wash_fold"), // wash_fold | dry_cleaning | comforters | mixed
-  subtotal: real("subtotal").default(0),
-  tax: real("tax").default(0),
-  deliveryFee: real("delivery_fee").default(0),
-  discount: real("discount").default(0), // loyalty/promo discount
-  tip: real("tip").default(0),
-  total: real("total").default(0),
+  subtotal: doublePrecision("subtotal").default(0),
+  tax: doublePrecision("tax").default(0),
+  deliveryFee: doublePrecision("delivery_fee").default(0),
+  discount: doublePrecision("discount").default(0), // loyalty/promo discount
+  tip: doublePrecision("tip").default(0),
+  total: doublePrecision("total").default(0),
   // Tier-based pricing
   pricingTierId: integer("pricing_tier_id"),
   tierName: text("tier_name"), // e.g. "medium_bag"
-  tierFlatPrice: real("tier_flat_price"), // snapshot of flat price at time of order
-  tierMaxWeight: real("tier_max_weight"), // snapshot of max weight for this tier
-  overageWeight: real("overage_weight").default(0), // lbs over the tier limit
-  overageCharge: real("overage_charge").default(0), // $ amount for overage
-  dirtyWeight: real("dirty_weight"), // weight at pickup (before washing)
-  cleanWeight: real("clean_weight"), // weight after wash/dry
-  weightDifference: real("weight_difference"), // dirty - clean
-  finalPrice: real("final_price"), // tierFlatPrice + overageCharge + addons - discount
-  intakeWeight: real("intake_weight"),
-  outputWeight: real("output_weight"),
+  tierFlatPrice: doublePrecision("tier_flat_price"), // snapshot of flat price at time of order
+  tierMaxWeight: doublePrecision("tier_max_weight"), // snapshot of max weight for this tier
+  overageWeight: doublePrecision("overage_weight").default(0), // lbs over the tier limit
+  overageCharge: doublePrecision("overage_charge").default(0), // $ amount for overage
+  dirtyWeight: doublePrecision("dirty_weight"), // weight at pickup (before washing)
+  cleanWeight: doublePrecision("clean_weight"), // weight after wash/dry
+  weightDifference: doublePrecision("weight_difference"), // dirty - clean
+  finalPrice: doublePrecision("final_price"), // tierFlatPrice + overageCharge + addons - discount
+  intakeWeight: doublePrecision("intake_weight"),
+  outputWeight: doublePrecision("output_weight"),
   weightDiscrepancy: integer("weight_discrepancy").default(0),
   certifiedOnly: integer("certified_only").default(1),
   customerNotes: text("customer_notes"),
@@ -210,18 +210,18 @@ export const orders = sqliteTable("orders", {
   slaDeadline: text("sla_deadline"),
   slaStatus: text("sla_status").default("on_track"),
   // Payouts
-  vendorPayout: real("vendor_payout").default(0),
-  driverPayout: real("driver_payout").default(0),
-  platformFee: real("platform_fee").default(0), // Offload's commission
+  vendorPayout: doublePrecision("vendor_payout").default(0),
+  driverPayout: doublePrecision("driver_payout").default(0),
+  platformFee: doublePrecision("platform_fee").default(0), // Offload's commission
   // Photos
   pickupPhotoUrl: text("pickup_photo_url"),
   deliveryPhotoUrl: text("delivery_photo_url"),
   intakePhotoUrl: text("intake_photo_url"),
   // AI features
-  aiMatchScore: real("ai_match_score"), // vendor match quality
+  aiMatchScore: doublePrecision("ai_match_score"), // vendor match quality
   aiPredictedETA: text("ai_predicted_eta"), // AI-estimated delivery time
   aiPricingTier: text("ai_pricing_tier"), // off_peak | normal | peak | surge
-  aiQualityScore: real("ai_quality_score"), // post-wash quality assessment
+  aiQualityScore: doublePrecision("ai_quality_score"), // post-wash quality assessment
   // Promo/Loyalty
   promoCode: text("promo_code"),
   loyaltyPointsEarned: integer("loyalty_points_earned").default(0),
@@ -248,8 +248,8 @@ export type InsertOrder = z.infer<typeof insertOrderSchema>;
 export type Order = typeof orders.$inferSelect;
 
 // ─── Order Events (Audit Trail) ───
-export const orderEvents = sqliteTable("order_events", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const orderEvents = pgTable("order_events", {
+  id: serial("id").primaryKey(),
   orderId: integer("order_id").notNull(),
   eventType: text("event_type").notNull(),
   description: text("description").notNull(),
@@ -257,8 +257,8 @@ export const orderEvents = sqliteTable("order_events", {
   actorId: integer("actor_id"),
   actorRole: text("actor_role"),
   photoUrl: text("photo_url"),
-  lat: real("lat"),
-  lng: real("lng"),
+  lat: doublePrecision("lat"),
+  lng: doublePrecision("lng"),
   timestamp: text("timestamp").notNull(),
 });
 
@@ -267,8 +267,8 @@ export type InsertOrderEvent = z.infer<typeof insertOrderEventSchema>;
 export type OrderEvent = typeof orderEvents.$inferSelect;
 
 // ─── Payment Methods ───
-export const paymentMethods = sqliteTable("payment_methods", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const paymentMethods = pgTable("payment_methods", {
+  id: serial("id").primaryKey(),
   userId: integer("user_id").notNull(),
   type: text("type").notNull(), // card | apple_pay | google_pay
   label: text("label").notNull(),
@@ -282,8 +282,8 @@ export type InsertPaymentMethod = z.infer<typeof insertPaymentMethodSchema>;
 export type PaymentMethod = typeof paymentMethods.$inferSelect;
 
 // ─── Consent Records ───
-export const consentRecords = sqliteTable("consent_records", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const consentRecords = pgTable("consent_records", {
+  id: serial("id").primaryKey(),
   orderId: integer("order_id").notNull(),
   consentType: text("consent_type").notNull(),
   description: text("description").notNull(),
@@ -292,7 +292,7 @@ export const consentRecords = sqliteTable("consent_records", {
   respondedAt: text("responded_at"),
   autoApproveAt: text("auto_approve_at"),
   requestedBy: integer("requested_by"),
-  additionalCharge: real("additional_charge").default(0),
+  additionalCharge: doublePrecision("additional_charge").default(0),
 });
 
 export const insertConsentSchema = createInsertSchema(consentRecords).omit({ id: true });
@@ -300,8 +300,8 @@ export type InsertConsent = z.infer<typeof insertConsentSchema>;
 export type ConsentRecord = typeof consentRecords.$inferSelect;
 
 // ─── Messages (In-app chat) ───
-export const messages = sqliteTable("messages", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const messages = pgTable("messages", {
+  id: serial("id").primaryKey(),
   orderId: integer("order_id"),
   conversationId: text("conversation_id"), // for non-order chats
   senderId: integer("sender_id").notNull(),
@@ -318,21 +318,21 @@ export type InsertMessage = z.infer<typeof insertMessageSchema>;
 export type Message = typeof messages.$inferSelect;
 
 // ─── Disputes ───
-export const disputes = sqliteTable("disputes", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const disputes = pgTable("disputes", {
+  id: serial("id").primaryKey(),
   orderId: integer("order_id").notNull(),
   customerId: integer("customer_id").notNull(),
   reason: text("reason").notNull(),
   description: text("description").notNull(),
   status: text("status").notNull().default("open"),
   resolution: text("resolution"),
-  creditAmount: real("credit_amount"),
-  refundAmount: real("refund_amount"),
+  creditAmount: doublePrecision("credit_amount"),
+  refundAmount: doublePrecision("refund_amount"),
   assignedTo: integer("assigned_to"),
   priority: text("priority").default("medium"),
   // AI analysis
   aiSuggestedResolution: text("ai_suggested_resolution"),
-  aiSentimentScore: real("ai_sentiment_score"), // -1 to 1
+  aiSentimentScore: doublePrecision("ai_sentiment_score"), // -1 to 1
   aiCategory: text("ai_category"), // missing_item | quality | timing | billing | other
   aiAutoResolvable: integer("ai_auto_resolvable").default(0),
   photoEvidence: text("photo_evidence"), // JSON: array of photo URLs
@@ -345,8 +345,8 @@ export type InsertDispute = z.infer<typeof insertDisputeSchema>;
 export type Dispute = typeof disputes.$inferSelect;
 
 // ─── Reviews / Ratings ───
-export const reviews = sqliteTable("reviews", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const reviews = pgTable("reviews", {
+  id: serial("id").primaryKey(),
   orderId: integer("order_id").notNull(),
   customerId: integer("customer_id").notNull(),
   vendorId: integer("vendor_id"),
@@ -370,8 +370,8 @@ export type InsertReview = z.infer<typeof insertReviewSchema>;
 export type Review = typeof reviews.$inferSelect;
 
 // ─── Notifications ───
-export const notifications = sqliteTable("notifications", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const notifications = pgTable("notifications", {
+  id: serial("id").primaryKey(),
   userId: integer("user_id").notNull(),
   orderId: integer("order_id"),
   type: text("type").notNull(),
@@ -390,8 +390,8 @@ export type InsertNotification = z.infer<typeof insertNotificationSchema>;
 export type Notification = typeof notifications.$inferSelect;
 
 // ─── Push Tokens ───
-export const pushTokens = sqliteTable("push_tokens", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const pushTokens = pgTable("push_tokens", {
+  id: serial("id").primaryKey(),
   userId: integer("user_id").notNull(),
   token: text("token").notNull().unique(),
   platform: text("platform").notNull(),
@@ -403,12 +403,12 @@ export type InsertPushToken = z.infer<typeof insertPushTokenSchema>;
 export type PushToken = typeof pushTokens.$inferSelect;
 
 // ─── Promo Codes ───
-export const promoCodes = sqliteTable("promo_codes", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const promoCodes = pgTable("promo_codes", {
+  id: serial("id").primaryKey(),
   code: text("code").notNull().unique(),
   type: text("type").notNull(), // percentage | fixed | free_delivery
-  value: real("value").notNull(), // % off or $ amount
-  minOrderAmount: real("min_order_amount").default(0),
+  value: doublePrecision("value").notNull(), // % off or $ amount
+  minOrderAmount: doublePrecision("min_order_amount").default(0),
   maxUses: integer("max_uses").default(0), // 0 = unlimited
   usedCount: integer("used_count").default(0),
   isActive: integer("is_active").default(1),
@@ -421,13 +421,13 @@ export type InsertPromoCode = z.infer<typeof insertPromoCodeSchema>;
 export type PromoCode = typeof promoCodes.$inferSelect;
 
 // ─── Referrals ───
-export const referrals = sqliteTable("referrals", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const referrals = pgTable("referrals", {
+  id: serial("id").primaryKey(),
   referrerId: integer("referrer_id").notNull(),
   refereeId: integer("referee_id").notNull(),
   status: text("status").notNull().default("pending"), // pending | completed | rewarded
-  referrerReward: real("referrer_reward").default(10), // $ credit
-  refereeReward: real("referee_reward").default(10), // $ credit
+  referrerReward: doublePrecision("referrer_reward").default(10), // $ credit
+  refereeReward: doublePrecision("referee_reward").default(10), // $ credit
   completedOrderId: integer("completed_order_id"), // first order by referee
   createdAt: text("created_at").notNull(),
   completedAt: text("completed_at"),
@@ -438,8 +438,8 @@ export type InsertReferral = z.infer<typeof insertReferralSchema>;
 export type Referral = typeof referrals.$inferSelect;
 
 // ─── Loyalty Transactions ───
-export const loyaltyTransactions = sqliteTable("loyalty_transactions", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const loyaltyTransactions = pgTable("loyalty_transactions", {
+  id: serial("id").primaryKey(),
   userId: integer("user_id").notNull(),
   orderId: integer("order_id"),
   type: text("type").notNull(), // earned | redeemed | bonus | referral | expired
@@ -453,8 +453,8 @@ export type InsertLoyaltyTransaction = z.infer<typeof insertLoyaltyTransactionSc
 export type LoyaltyTransaction = typeof loyaltyTransactions.$inferSelect;
 
 // ─── AI Chat Sessions ───
-export const chatSessions = sqliteTable("chat_sessions", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const chatSessions = pgTable("chat_sessions", {
+  id: serial("id").primaryKey(),
   userId: integer("user_id").notNull(),
   orderId: integer("order_id"),
   status: text("status").notNull().default("active"), // active | resolved | escalated
@@ -471,10 +471,10 @@ export type InsertChatSession = z.infer<typeof insertChatSessionSchema>;
 export type ChatSession = typeof chatSessions.$inferSelect;
 
 // ─── Vendor Payouts (ledger) ───
-export const vendorPayouts = sqliteTable("vendor_payouts", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const vendorPayouts = pgTable("vendor_payouts", {
+  id: serial("id").primaryKey(),
   vendorId: integer("vendor_id").notNull(),
-  amount: real("amount").notNull(),
+  amount: doublePrecision("amount").notNull(),
   status: text("status").notNull().default("pending"), // pending | processing | completed | failed
   periodStart: text("period_start").notNull(),
   periodEnd: text("period_end").notNull(),
@@ -488,13 +488,13 @@ export type InsertVendorPayout = z.infer<typeof insertVendorPayoutSchema>;
 export type VendorPayout = typeof vendorPayouts.$inferSelect;
 
 // ─── Pricing Tiers ───
-export const pricingTiers = sqliteTable("pricing_tiers", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const pricingTiers = pgTable("pricing_tiers", {
+  id: serial("id").primaryKey(),
   name: text("name").notNull().unique(), // small_bag | medium_bag | large_bag | xl_bag
   displayName: text("display_name").notNull(),
-  maxWeight: real("max_weight").notNull(), // lbs
-  flatPrice: real("flat_price").notNull(),
-  overageRate: real("overage_rate").notNull(), // per lb
+  maxWeight: doublePrecision("max_weight").notNull(), // lbs
+  flatPrice: doublePrecision("flat_price").notNull(),
+  overageRate: doublePrecision("overage_rate").notNull(), // per lb
   description: text("description"),
   icon: text("icon"),
   isActive: integer("is_active").default(1),
@@ -506,11 +506,11 @@ export type InsertPricingTier = z.infer<typeof insertPricingTierSchema>;
 export type PricingTier = typeof pricingTiers.$inferSelect;
 
 // ─── Add-Ons ───
-export const addOns = sqliteTable("add_ons", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const addOns = pgTable("add_ons", {
+  id: serial("id").primaryKey(),
   name: text("name").notNull().unique(),
   displayName: text("display_name").notNull(),
-  price: real("price").notNull(),
+  price: doublePrecision("price").notNull(),
   description: text("description"),
   category: text("category").notNull().default("service"), // detergent | treatment | service
   isActive: integer("is_active").default(1),
@@ -521,13 +521,13 @@ export type InsertAddOn = z.infer<typeof insertAddOnSchema>;
 export type AddOn = typeof addOns.$inferSelect;
 
 // ─── Order Add-Ons (junction) ───
-export const orderAddOns = sqliteTable("order_add_ons", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const orderAddOns = pgTable("order_add_ons", {
+  id: serial("id").primaryKey(),
   orderId: integer("order_id").notNull(),
   addOnId: integer("add_on_id").notNull(),
   quantity: integer("quantity").notNull().default(1),
-  unitPrice: real("unit_price").notNull(),
-  total: real("total").notNull(),
+  unitPrice: doublePrecision("unit_price").notNull(),
+  total: doublePrecision("total").notNull(),
 });
 
 export const insertOrderAddOnSchema = createInsertSchema(orderAddOns).omit({ id: true });
@@ -535,11 +535,11 @@ export type InsertOrderAddOn = z.infer<typeof insertOrderAddOnSchema>;
 export type OrderAddOn = typeof orderAddOns.$inferSelect;
 
 // ─── Payment Transactions (Stripe Connect) ───
-export const paymentTransactions = sqliteTable("payment_transactions", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const paymentTransactions = pgTable("payment_transactions", {
+  id: serial("id").primaryKey(),
   orderId: integer("order_id").notNull(),
   type: text("type").notNull(), // charge | refund | payout_vendor | payout_driver
-  amount: real("amount").notNull(),
+  amount: doublePrecision("amount").notNull(),
   amountCents: integer("amount_cents"),
   currency: text("currency").default("usd"),
   status: text("status").default("pending"), // pending | processing | completed | failed
@@ -547,7 +547,7 @@ export const paymentTransactions = sqliteTable("payment_transactions", {
   stripeTransferId: text("stripe_transfer_id"),
   recipientType: text("recipient_type"), // platform | vendor | driver
   recipientId: integer("recipient_id"),
-  platformFee: real("platform_fee"),
+  platformFee: doublePrecision("platform_fee"),
   metadata: text("metadata"), // JSON
   createdAt: text("created_at").notNull(),
   completedAt: text("completed_at"),
@@ -558,8 +558,8 @@ export type InsertPaymentTransaction = z.infer<typeof insertPaymentTransactionSc
 export type PaymentTransaction = typeof paymentTransactions.$inferSelect;
 
 // ─── Stripe Connect Accounts ───
-export const stripeAccounts = sqliteTable("stripe_accounts", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const stripeAccounts = pgTable("stripe_accounts", {
+  id: serial("id").primaryKey(),
   userId: integer("user_id").notNull(),
   userType: text("user_type").notNull(), // vendor | driver
   stripeAccountId: text("stripe_account_id"), // acct_xxx
@@ -575,15 +575,15 @@ export type InsertStripeAccount = z.infer<typeof insertStripeAccountSchema>;
 export type StripeAccount = typeof stripeAccounts.$inferSelect;
 
 // ─── Driver Location History ───
-export const driverLocationHistory = sqliteTable("driver_location_history", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const driverLocationHistory = pgTable("driver_location_history", {
+  id: serial("id").primaryKey(),
   driverId: integer("driver_id").notNull(),
   orderId: integer("order_id"),
-  lat: real("lat").notNull(),
-  lng: real("lng").notNull(),
-  speed: real("speed"),
-  heading: real("heading"),
-  accuracy: real("accuracy"),
+  lat: doublePrecision("lat").notNull(),
+  lng: doublePrecision("lng").notNull(),
+  speed: doublePrecision("speed"),
+  heading: doublePrecision("heading"),
+  accuracy: doublePrecision("accuracy"),
   timestamp: text("timestamp").notNull(),
 });
 
@@ -592,14 +592,14 @@ export type InsertDriverLocationHistory = z.infer<typeof insertDriverLocationHis
 export type DriverLocationHistory = typeof driverLocationHistory.$inferSelect;
 
 // ─── Order Photos ───
-export const orderPhotos = sqliteTable("order_photos", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const orderPhotos = pgTable("order_photos", {
+  id: serial("id").primaryKey(),
   orderId: integer("order_id").notNull(),
   type: text("type").notNull(), // pickup_proof | delivery_proof | intake_before | intake_after | damage | quality_check
   photoData: text("photo_data").notNull(), // base64 encoded (MVP; would be S3 URL in production)
   r2Key: text("r2_key"), // Cloudflare R2 object key (when using R2 storage)
-  lat: real("lat"),
-  lng: real("lng"),
+  lat: doublePrecision("lat"),
+  lng: doublePrecision("lng"),
   capturedBy: integer("captured_by").notNull(),
   capturedByRole: text("captured_by_role").notNull(),
   notes: text("notes"),
@@ -611,16 +611,16 @@ export type InsertOrderPhoto = z.infer<typeof insertOrderPhotoSchema>;
 export type OrderPhoto = typeof orderPhotos.$inferSelect;
 
 // ─── Order Status History ───
-export const orderStatusHistory = sqliteTable("order_status_history", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const orderStatusHistory = pgTable("order_status_history", {
+  id: serial("id").primaryKey(),
   orderId: integer("order_id").notNull(),
   fromStatus: text("from_status").notNull(),
   toStatus: text("to_status").notNull(),
   actorId: integer("actor_id"),
   actorRole: text("actor_role"),
   notes: text("notes"),
-  lat: real("lat"),
-  lng: real("lng"),
+  lat: doublePrecision("lat"),
+  lng: doublePrecision("lng"),
   timestamp: text("timestamp").notNull(),
 });
 
@@ -629,8 +629,8 @@ export type InsertOrderStatusHistory = z.infer<typeof insertOrderStatusHistorySc
 export type OrderStatusHistory = typeof orderStatusHistory.$inferSelect;
 
 // ─── Quotes ───
-export const quotes = sqliteTable("quotes", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const quotes = pgTable("quotes", {
+  id: serial("id").primaryKey(),
   quoteNumber: text("quote_number").notNull().unique(),
   customerId: integer("customer_id"), // null for anonymous website quotes
   sessionId: text("session_id"), // for anonymous quotes from website
@@ -640,31 +640,31 @@ export const quotes = sqliteTable("quotes", {
   pickupCity: text("pickup_city"),
   pickupState: text("pickup_state"),
   pickupZip: text("pickup_zip"),
-  pickupLat: real("pickup_lat"),
-  pickupLng: real("pickup_lng"),
+  pickupLat: doublePrecision("pickup_lat"),
+  pickupLng: doublePrecision("pickup_lng"),
   deliveryAddress: text("delivery_address"),
   // Service selection
   serviceType: text("service_type").notNull().default("wash_fold"),
   tierName: text("tier_name").notNull(), // small_bag | medium_bag | large_bag | xl_bag
-  tierFlatPrice: real("tier_flat_price").notNull(),
-  tierMaxWeight: real("tier_max_weight").notNull(),
-  overageRate: real("overage_rate").notNull(),
+  tierFlatPrice: doublePrecision("tier_flat_price").notNull(),
+  tierMaxWeight: doublePrecision("tier_max_weight").notNull(),
+  overageRate: doublePrecision("overage_rate").notNull(),
   deliverySpeed: text("delivery_speed").notNull().default("48h"),
   // Vendor info
   vendorId: integer("vendor_id"), // null = auto-assign nearest
   vendorName: text("vendor_name"),
   isPreferredVendor: integer("is_preferred_vendor").default(0),
   // Price breakdown
-  laundryServicePrice: real("laundry_service_price").notNull(),
-  speedSurcharge: real("speed_surcharge").default(0),
-  deliveryFee: real("delivery_fee").default(0),
-  preferredVendorSurcharge: real("preferred_vendor_surcharge").default(0),
-  addOnsTotal: real("add_ons_total").default(0),
-  subtotal: real("subtotal").notNull(),
-  taxRate: real("tax_rate").notNull(),
-  taxAmount: real("tax_amount").notNull(),
-  discount: real("discount").default(0),
-  total: real("total").notNull(),
+  laundryServicePrice: doublePrecision("laundry_service_price").notNull(),
+  speedSurcharge: doublePrecision("speed_surcharge").default(0),
+  deliveryFee: doublePrecision("delivery_fee").default(0),
+  preferredVendorSurcharge: doublePrecision("preferred_vendor_surcharge").default(0),
+  addOnsTotal: doublePrecision("add_ons_total").default(0),
+  subtotal: doublePrecision("subtotal").notNull(),
+  taxRate: doublePrecision("tax_rate").notNull(),
+  taxAmount: doublePrecision("tax_amount").notNull(),
+  discount: doublePrecision("discount").default(0),
+  total: doublePrecision("total").notNull(),
   // Itemized line items and add-ons as JSON
   lineItemsJson: text("line_items_json"),
   addOnsJson: text("add_ons_json"),
@@ -673,7 +673,7 @@ export const quotes = sqliteTable("quotes", {
   lockedAt: text("locked_at"),
   // Promo
   promoCode: text("promo_code"),
-  promoDiscount: real("promo_discount").default(0),
+  promoDiscount: doublePrecision("promo_discount").default(0),
   // Conversion tracking
   orderId: integer("order_id"),
   // Idempotency
@@ -688,8 +688,8 @@ export type InsertQuote = z.infer<typeof insertQuoteSchema>;
 export type Quote = typeof quotes.$inferSelect;
 
 // ─── Pricing Config (admin-configurable) ───
-export const pricingConfig = sqliteTable("pricing_config", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const pricingConfig = pgTable("pricing_config", {
+  id: serial("id").primaryKey(),
   key: text("key").notNull().unique(),
   value: text("value").notNull(), // JSON
   category: text("category").notNull(), // service_tiers | delivery_fees | speed_surcharges | logistics | tax | general
@@ -703,8 +703,8 @@ export type InsertPricingConfig = z.infer<typeof insertPricingConfigSchema>;
 export type PricingConfig = typeof pricingConfig.$inferSelect;
 
 // ─── Pricing Audit Log ───
-export const pricingAuditLog = sqliteTable("pricing_audit_log", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const pricingAuditLog = pgTable("pricing_audit_log", {
+  id: serial("id").primaryKey(),
   action: text("action").notNull(), // config_change | quote_created | quote_locked | quote_expired | price_override
   details: text("details").notNull(), // JSON
   actorId: integer("actor_id"),
@@ -717,7 +717,7 @@ export type InsertPricingAuditLog = z.infer<typeof insertPricingAuditLogSchema>;
 export type PricingAuditLog = typeof pricingAuditLog.$inferSelect;
 
 // ─── Sessions (DB-backed) ───
-export const sessions = sqliteTable("sessions", {
+export const sessions = pgTable("sessions", {
   token: text("token").primaryKey(),
   userId: integer("user_id").notNull(),
   role: text("role").notNull(),
@@ -726,7 +726,7 @@ export const sessions = sqliteTable("sessions", {
 });
 
 // ─── Idempotency Keys (DB-backed) ───
-export const idempotencyKeys = sqliteTable("idempotency_keys", {
+export const idempotencyKeys = pgTable("idempotency_keys", {
   key: text("key").primaryKey(),
   response: text("response").notNull(), // JSON stringified response
   statusCode: integer("status_code").notNull(),
@@ -735,7 +735,7 @@ export const idempotencyKeys = sqliteTable("idempotency_keys", {
 });
 
 // ─── Stripe Webhook Processed Events ───
-export const stripeProcessedEvents = sqliteTable("stripe_processed_events", {
+export const stripeProcessedEvents = pgTable("stripe_processed_events", {
   eventId: text("event_id").primaryKey(),
   type: text("type").notNull(),
   processedAt: text("processed_at").notNull(),
@@ -746,8 +746,8 @@ export type InsertStripeProcessedEvent = z.infer<typeof insertStripeProcessedEve
 export type StripeProcessedEvent = typeof stripeProcessedEvents.$inferSelect;
 
 // ─── Password Reset Tokens ───
-export const passwordResetTokens = sqliteTable("password_reset_tokens", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const passwordResetTokens = pgTable("password_reset_tokens", {
+  id: serial("id").primaryKey(),
   userId: integer("user_id").notNull(),
   token: text("token").notNull().unique(),
   expiresAt: text("expires_at").notNull(),
@@ -756,8 +756,8 @@ export const passwordResetTokens = sqliteTable("password_reset_tokens", {
 });
 
 // ─── Promo Usage (per-user tracking) ───
-export const promoUsage = sqliteTable("promo_usage", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const promoUsage = pgTable("promo_usage", {
+  id: serial("id").primaryKey(),
   promoId: integer("promo_id").notNull(),
   userId: integer("user_id").notNull(),
   orderId: integer("order_id"),

@@ -95,28 +95,28 @@ function clearSessionCookie(res: Response): void {
   res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; HttpOnly${secure}; SameSite=Lax; Path=/; Max-Age=0`);
 }
 
-function createSession(userId: number, role: string): string {
+async function createSession(userId: number, role: string): Promise<string> {
   const token = randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + SESSION_DURATION_MS).toISOString();
-  storage.createSession(token, userId, role, expiresAt);
+  await storage.createSession(token, userId, role, expiresAt);
   return token;
 }
 
-function getSession(token: string): SessionData | null {
-  const session = storage.getSession(token);
+async function getSession(token: string): Promise<SessionData | null> {
+  const session = await storage.getSession(token);
   if (!session) return null;
   return { userId: session.userId, role: session.role };
 }
 
-function destroySession(token: string): void {
-  storage.deleteSession(token);
+async function destroySession(token: string): Promise<void> {
+  await storage.deleteSession(token);
 }
 
 // Clean up expired sessions, idempotency keys, and reset tokens every hour
 setInterval(() => {
-  storage.deleteExpiredSessions();
-  storage.deleteExpiredIdempotencyKeys();
-  storage.cleanExpiredResetTokens();
+  storage.deleteExpiredSessions().catch(console.error);
+  storage.deleteExpiredIdempotencyKeys().catch(console.error);
+  storage.cleanExpiredResetTokens().catch(console.error);
 }, 60 * 60 * 1000);
 
 // ════════════════════════════════════════════════════════════════
@@ -211,7 +211,7 @@ interface QuotePriceBreakdown {
   deliverySpeed: string;
 }
 
-function calculateQuotePrice(input: {
+async function calculateQuotePrice(input: {
   tierName: string;
   deliverySpeed: string;
   serviceType?: string;
@@ -220,7 +220,7 @@ function calculateQuotePrice(input: {
   pickupLng?: number;
   addOns?: Array<{ id: number; qty: number }>;
   promoCode?: string;
-}): QuotePriceBreakdown {
+}): Promise<QuotePriceBreakdown> {
   // 1. Resolve tier
   const normalizedTier = TIER_NAME_MAP[input.tierName] || input.tierName;
   const tier = PRICING_TIERS[normalizedTier as keyof typeof PRICING_TIERS];
@@ -244,10 +244,10 @@ function calculateQuotePrice(input: {
   // 5. Preferred vendor surcharge
   let preferredVendorSurcharge = 0;
   if (input.vendorId && input.pickupLat && input.pickupLng) {
-    const selectedVendor = storage.getVendor(input.vendorId);
+    const selectedVendor = await storage.getVendor(input.vendorId);
     if (selectedVendor && selectedVendor.lat && selectedVendor.lng) {
       // Find nearest eligible vendor for comparison
-      const activeVendors = storage.getActiveVendors().filter(v => v.lat && v.lng);
+      const activeVendors = (await storage.getActiveVendors()).filter(v => v.lat && v.lng);
       if (activeVendors.length > 0) {
         const nearestDist = Math.min(...activeVendors.map(v => distanceMiles(input.pickupLat!, input.pickupLng!, v.lat!, v.lng!)));
         const selectedDist = distanceMiles(input.pickupLat, input.pickupLng, selectedVendor.lat, selectedVendor.lng);
@@ -262,7 +262,7 @@ function calculateQuotePrice(input: {
   const addOnItems: Array<{ id: number; name: string; price: number; qty: number }> = [];
   if (input.addOns && input.addOns.length > 0) {
     for (const ao of input.addOns) {
-      const addon = storage.getAddOn(ao.id);
+      const addon = await storage.getAddOn(ao.id);
       if (addon) {
         const lineTotal = Math.round(addon.price * ao.qty * 100) / 100;
         addOnsTotal += lineTotal;
@@ -280,7 +280,7 @@ function calculateQuotePrice(input: {
   // 9. Promo discount
   let discount = 0;
   if (input.promoCode) {
-    const promo = storage.getPromoCode(input.promoCode);
+    const promo = await storage.getPromoCode(input.promoCode);
     if (promo && promo.isActive && (!promo.expiresAt || new Date(promo.expiresAt) > new Date())) {
       if (!promo.minOrderAmount || (subtotal + taxAmount) >= promo.minOrderAmount) {
         if (!promo.maxUses || (promo.usedCount ?? 0) < promo.maxUses) {
@@ -421,8 +421,8 @@ function scoreDriver(driver: Driver, pickupLat: number, pickupLng: number): numb
   return Math.round(score * 10) / 10;
 }
 
-function findBestVendor(order: Order, pickupLat: number, pickupLng: number): Vendor | null {
-  const activeVendors = storage.getActiveVendors();
+async function findBestVendor(order: Order, pickupLat: number, pickupLng: number): Promise<Vendor | null> {
+  const activeVendors = await storage.getActiveVendors();
   if (activeVendors.length === 0) return null;
 
   const scored = activeVendors
@@ -443,8 +443,8 @@ function findBestVendor(order: Order, pickupLat: number, pickupLng: number): Ven
   return scored.length > 0 ? scored[0].vendor : null;
 }
 
-function findBestDriver(pickupLat: number, pickupLng: number): Driver | null {
-  const available = storage.getAvailableDrivers();
+async function findBestDriver(pickupLat: number, pickupLng: number): Promise<Driver | null> {
+  const available = await storage.getAvailableDrivers();
   if (available.length === 0) return null;
 
   const scored = available
@@ -481,8 +481,8 @@ function checkSLAStatus(order: Order): "on_track" | "at_risk" | "breached" {
 //  NOTIFICATION HELPERS
 // ════════════════════════════════════════════════════════════════
 
-function notifyUser(userId: number, orderId: number | null, type: string, title: string, body: string, actionUrl?: string) {
-  storage.createNotification({
+async function notifyUser(userId: number, orderId: number | null, type: string, title: string, body: string, actionUrl?: string) {
+  await storage.createNotification({
     userId,
     orderId,
     type,
@@ -493,14 +493,14 @@ function notifyUser(userId: number, orderId: number | null, type: string, title:
   });
 }
 
-function notifyOrderUpdate(order: Order, title: string, body: string) {
+async function notifyOrderUpdate(order: Order, title: string, body: string) {
   // Notify customer
-  notifyUser(order.customerId, order.id, "order_update", title, body, `/orders/${order.id}`);
+  await notifyUser(order.customerId, order.id, "order_update", title, body, `/orders/${order.id}`);
   void sendPushToUser(order.customerId, title, body, { orderId: order.id, type: "order_update" });
 }
 
-function sendOrderStatusSMS(order: Order, status: string) {
-  const user = storage.getUser(order.customerId);
+async function sendOrderStatusSMS(order: Order, status: string): Promise<void> {
+  const user = await storage.getUser(order.customerId);
   if (!user?.phone) return;
   const orderNumber = (order as any).orderNumber || order.id;
   void sendSMS(user.phone, `Your Offload order #${orderNumber} is now ${status.replace(/_/g, " ")}`);
@@ -527,8 +527,8 @@ function emitNotification(userId: number, notification: any) {
 }
 
 // Enhanced notifyUser that also emits via Socket.io
-function notifyAndEmit(userId: number, orderId: number | null, type: string, title: string, body: string, actionUrl?: string) {
-  const notification = storage.createNotification({
+async function notifyAndEmit(userId: number, orderId: number | null, type: string, title: string, body: string, actionUrl?: string) {
+  const notification = await storage.createNotification({
     userId,
     orderId,
     type,
@@ -560,31 +560,31 @@ function getOrderOwnershipAllowed(order: any, user: any, driverRecord?: any, ven
 //  FINANCIAL ENGINE
 // ════════════════════════════════════════════════════════════════
 
-function calculatePayouts(order: Order) {
-  const vendor = order.vendorId ? storage.getVendor(order.vendorId) : null;
+async function calculatePayouts(order: Order) {
+  const vendor = order.vendorId ? await storage.getVendor(order.vendorId) : null;
   const payoutRate = (vendor as any)?.payoutRate || 0.65;
   const vendorPayout = Math.round((order.subtotal || 0) * payoutRate * 100) / 100;
   const driverPayout = 8.50 * 2; // $8.50 per trip (pickup + delivery = 2 trips)
   return { vendorPayout, driverPayout };
 }
 
-function processPaymentCapture(order: Order): { alreadyCaptured: boolean; success?: boolean } {
+async function processPaymentCapture(order: Order): Promise<{ alreadyCaptured: boolean; success?: boolean }> {
   if (order.paymentStatus === "captured") return { alreadyCaptured: true };
   // In a real system, this would call Stripe/payment gateway
   // For now, we simulate the capture
-  storage.updateOrder(order.id, {
+  await storage.updateOrder(order.id, {
     paymentStatus: "captured",
   });
 
   // Calculate and record payouts
-  const { vendorPayout, driverPayout } = calculatePayouts(order);
-  storage.updateOrder(order.id, { vendorPayout, driverPayout });
+  const { vendorPayout, driverPayout } = await calculatePayouts(order);
+  await storage.updateOrder(order.id, { vendorPayout, driverPayout });
 
   // Update vendor earnings
   if (order.vendorId) {
-    const vendor = storage.getVendor(order.vendorId);
+    const vendor = await storage.getVendor(order.vendorId);
     if (vendor) {
-      storage.updateVendor(vendor.id, {
+      await storage.updateVendor(vendor.id, {
         totalEarnings: (vendor.totalEarnings || 0) + vendorPayout,
         pendingPayout: (vendor.pendingPayout || 0) + vendorPayout,
       });
@@ -593,9 +593,9 @@ function processPaymentCapture(order: Order): { alreadyCaptured: boolean; succes
 
   // Update driver earnings
   if (order.driverId) {
-    const driver = storage.getDriver(order.driverId);
+    const driver = await storage.getDriver(order.driverId);
     if (driver) {
-      storage.updateDriver(driver.id, {
+      await storage.updateDriver(driver.id, {
         totalEarnings: (driver.totalEarnings || 0) + driverPayout,
         pendingPayout: (driver.pendingPayout || 0) + driverPayout,
         completedTrips: (driver.completedTrips || 0) + 1,
@@ -617,8 +617,8 @@ function getLoyaltyTier(points: number): string {
   return "bronze";
 }
 
-function awardLoyaltyPoints(userId: number, orderId: number, orderTotal: number) {
-  const user = storage.getUser(userId);
+async function awardLoyaltyPoints(userId: number, orderId: number, orderTotal: number) {
+  const user = await storage.getUser(userId);
   if (!user) return;
 
   // Base points: 10 per $1 spent
@@ -637,14 +637,14 @@ function awardLoyaltyPoints(userId: number, orderId: number, orderTotal: number)
   const newTotal = (user.loyaltyPoints || 0) + finalPoints;
   const newTier = getLoyaltyTier(newTotal);
 
-  storage.updateUser(userId, {
+  await storage.updateUser(userId, {
     loyaltyPoints: newTotal,
     loyaltyTier: newTier,
     totalOrders: (user.totalOrders || 0) + 1,
     totalSpent: (user.totalSpent || 0) + orderTotal,
   });
 
-  storage.createLoyaltyTransaction({
+  await storage.createLoyaltyTransaction({
     userId,
     orderId,
     type: "earned",
@@ -653,11 +653,11 @@ function awardLoyaltyPoints(userId: number, orderId: number, orderTotal: number)
     createdAt: now(),
   });
 
-  storage.updateOrder(orderId, { loyaltyPointsEarned: finalPoints });
+  await storage.updateOrder(orderId, { loyaltyPointsEarned: finalPoints });
 
   // Tier upgrade notification
   if (newTier !== tier) {
-    notifyUser(userId, null, "loyalty",
+    await notifyUser(userId, null, "loyalty",
       `Tier Upgrade: ${newTier.charAt(0).toUpperCase() + newTier.slice(1)}!`,
       `Congratulations! You've been upgraded to ${newTier} tier with ${newTotal} points.`,
       "/profile"
@@ -703,8 +703,8 @@ function getSurgePricingTier(pickupTime?: string): { tier: string; multiplier: n
   return { tier: "normal", multiplier: 1.0, reason: "Standard pricing" };
 }
 
-function getDemandMultiplier(serviceType: string): number {
-  const vendors = storage.getActiveVendors();
+async function getDemandMultiplier(serviceType: string): Promise<number> {
+  const vendors = await storage.getActiveVendors();
   if (vendors.length === 0) return 1.0;
 
   const totalCapacity = vendors.reduce((sum, v) => sum + (v.capacity || 50), 0);
@@ -754,10 +754,10 @@ function detectIntent(message: string): ChatIntent {
   return "general";
 }
 
-function generateAIResponse(intent: ChatIntent, userId: number, message: string): { response: string; resolved: boolean; escalate: boolean } {
+async function generateAIResponse(intent: ChatIntent, userId: number, message: string): Promise<{ response: string; resolved: boolean; escalate: boolean }> {
   switch (intent) {
     case "order_status": {
-      const userOrders = storage.getOrdersByCustomer(userId);
+      const userOrders = await storage.getOrdersByCustomer(userId);
       const activeOrders = userOrders.filter(o => !["delivered", "cancelled"].includes(o.status));
       if (activeOrders.length === 0) {
         const lastDelivered = userOrders.find(o => o.status === "delivered");
@@ -804,7 +804,7 @@ function generateAIResponse(intent: ChatIntent, userId: number, message: string)
     }
 
     case "cancel": {
-      const activeOrders = storage.getOrdersByCustomer(userId).filter(o =>
+      const activeOrders = (await storage.getOrdersByCustomer(userId)).filter(o =>
         ["pending", "scheduled", "driver_assigned"].includes(o.status)
       );
       if (activeOrders.length > 0) {
@@ -838,7 +838,7 @@ function generateAIResponse(intent: ChatIntent, userId: number, message: string)
     }
 
     case "loyalty": {
-      const user = storage.getUser(userId);
+      const user = await storage.getUser(userId);
       const points = user?.loyaltyPoints || 0;
       const tier = user?.loyaltyTier || "bronze";
       const tierInfo = LOYALTY_TIERS[tier as keyof typeof LOYALTY_TIERS];
@@ -914,19 +914,19 @@ function calculateVendorHealthScore(vendor: Vendor): {
 //  FRAUD DETECTION ENGINE
 // ════════════════════════════════════════════════════════════════
 
-function calculateFraudRisk(orderId: number): {
+async function calculateFraudRisk(orderId: number): Promise<{
   riskScore: number;
   flags: string[];
   autoFlagged: boolean;
-} {
-  const order = storage.getOrder(orderId);
+}> {
+  const order = await storage.getOrder(orderId);
   if (!order) return { riskScore: 0, flags: [], autoFlagged: false };
 
   const flags: string[] = [];
   let riskScore = 0;
 
   // 1. New account with high-value order
-  const customer = storage.getUser(order.customerId);
+  const customer = await storage.getUser(order.customerId);
   if (customer) {
     const memberSince = customer.memberSince ? new Date(customer.memberSince) : new Date();
     const daysSinceMember = (Date.now() - memberSince.getTime()) / (1000 * 60 * 60 * 24);
@@ -940,7 +940,7 @@ function calculateFraudRisk(orderId: number): {
   }
 
   // 2. Unusual order frequency
-  const recentOrders = storage.getOrdersByCustomer(order.customerId);
+  const recentOrders = await storage.getOrdersByCustomer(order.customerId);
   const last24h = recentOrders.filter(o => {
     const created = new Date(o.createdAt);
     return (Date.now() - created.getTime()) < 24 * 60 * 60 * 1000;
@@ -964,7 +964,7 @@ function calculateFraudRisk(orderId: number): {
   }
 
   // 4. Multiple addresses in short time (possible fraud indicator)
-  const customerAddresses = storage.getAddressesByUser(order.customerId);
+  const customerAddresses = await storage.getAddressesByUser(order.customerId);
   if (customerAddresses.length > 5 && customer) {
     const memberSince = customer.memberSince ? new Date(customer.memberSince) : new Date();
     const daysSinceMember = (Date.now() - memberSince.getTime()) / (1000 * 60 * 60 * 24);
@@ -1003,17 +1003,17 @@ function calculateFraudRisk(orderId: number): {
 //  PREDICTIVE ETA ENGINE
 // ════════════════════════════════════════════════════════════════
 
-function calculatePredictiveETA(orderId: number): {
+async function calculatePredictiveETA(orderId: number): Promise<{
   phases: Array<{ phase: string; estimatedMinutes: number; estimatedAt: string }>;
   totalEstimatedMinutes: number;
   estimatedDelivery: string;
-} {
-  const order = storage.getOrder(orderId);
+}> {
+  const order = await storage.getOrder(orderId);
   if (!order) return { phases: [], totalEstimatedMinutes: 0, estimatedDelivery: new Date().toISOString() };
 
-  const vendor = order.vendorId ? storage.getVendor(order.vendorId) : null;
-  const driver = order.driverId ? storage.getDriver(order.driverId) : null;
-  const addr = storage.getAddress(order.pickupAddressId);
+  const vendor = order.vendorId ? await storage.getVendor(order.vendorId) : null;
+  const driver = order.driverId ? await storage.getDriver(order.driverId) : null;
+  const addr = await storage.getAddress(order.pickupAddressId);
 
   const now_ = new Date();
   const hour = now_.getHours();
@@ -1111,14 +1111,14 @@ const validTransitions: Record<string, string[]> = {
 // ════════════════════════════════════════════════════════════════
 
 function requireAuth(allowedRoles?: string[]) {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
     // Accept bearer tokens for native clients and HTTP-only cookies for browser sessions
     const token = getSessionTokenFromRequest(req);
 
     let userId: number | null = null;
 
     if (token) {
-      const session = getSession(token);
+      const session = await getSession(token);
       if (!session) {
         return res.status(401).json({ error: "Session expired or invalid" });
       }
@@ -1129,7 +1129,7 @@ function requireAuth(allowedRoles?: string[]) {
       return res.status(401).json({ error: "Authentication required" });
     }
 
-    const user = storage.getUser(userId);
+    const user = await storage.getUser(userId);
     if (!user) {
       return res.status(401).json({ error: "Invalid user" });
     }
@@ -1145,18 +1145,18 @@ function requireAuth(allowedRoles?: string[]) {
 //  BACKGROUND TASKS (consent timeout, SLA checks)
 // ════════════════════════════════════════════════════════════════
 
-function startBackgroundTasks() {
+async function startBackgroundTasks() {
   // Check consent timeouts every 60 seconds
-  setInterval(() => {
-    const pending = storage.getPendingConsents();
+  setInterval(async () => {
+    const pending = await storage.getPendingConsents();
     for (const consent of pending) {
       if (consent.autoApproveAt && new Date(consent.autoApproveAt) < new Date()) {
-        storage.updateConsent(consent.id, {
+        await storage.updateConsent(consent.id, {
           status: "auto_approved",
           respondedAt: now(),
         });
         // Log event
-        storage.createOrderEvent({
+        await storage.createOrderEvent({
           orderId: consent.orderId,
           eventType: "consent_auto_approved",
           description: `Consent auto-approved: ${consent.consentType} — ${consent.description}`,
@@ -1164,9 +1164,9 @@ function startBackgroundTasks() {
           timestamp: now(),
         });
         // Notify customer
-        const order = storage.getOrder(consent.orderId);
+        const order = await storage.getOrder(consent.orderId);
         if (order) {
-          notifyUser(order.customerId, order.id, "consent_request",
+          await notifyUser(order.customerId, order.id, "consent_request",
             "Consent Auto-Approved",
             `Your consent for "${consent.description}" was auto-approved after the timeout period.`,
             `/orders/${order.id}`
@@ -1177,30 +1177,30 @@ function startBackgroundTasks() {
   }, 60000);
 
   // Check SLA status every 2 minutes
-  setInterval(() => {
-    const activeOrders = storage.getActiveOrders();
+  setInterval(async () => {
+    const activeOrders = await storage.getActiveOrders();
     for (const order of activeOrders) {
       if (order.slaDeadline && order.status !== "cancelled") {
         const slaStatus = checkSLAStatus(order);
         if (slaStatus !== order.slaStatus) {
-          storage.updateOrder(order.id, { slaStatus });
+          await storage.updateOrder(order.id, { slaStatus });
 
           if (slaStatus === "at_risk") {
-            notifyOrderUpdate(order, "Order At Risk",
+            await notifyOrderUpdate(order, "Order At Risk",
               `Order ${order.orderNumber} is approaching its SLA deadline.`);
             // Notify admin
-            const admins = storage.getUsersByRole("admin");
-            admins.forEach(admin => {
-              notifyUser(admin.id, order.id, "sla_warning",
+            const admins = await storage.getUsersByRole("admin");
+            for (const admin of admins) {
+              await notifyUser(admin.id, order.id, "sla_warning",
                 "SLA Warning",
                 `Order ${order.orderNumber} is at risk of breaching SLA.`,
                 `/admin/orders`
               );
-            });
+            }
           } else if (slaStatus === "breached") {
-            notifyOrderUpdate(order, "Order Delayed",
+            await notifyOrderUpdate(order, "Order Delayed",
               `Order ${order.orderNumber} has exceeded its expected delivery time. We're working on it.`);
-            storage.createOrderEvent({
+            await storage.createOrderEvent({
               orderId: order.id,
               eventType: "sla_breached",
               description: "SLA deadline has been breached",
@@ -1212,24 +1212,24 @@ function startBackgroundTasks() {
             // Credit = delivery fee paid for this order (refund the speed premium)
             const deliveryFee = order.deliveryFee || 0;
             if (deliveryFee > 0 && !(order.customerNotes || "").includes("SLA_CREDIT_ISSUED")) {
-              const customer = storage.getUser(order.customerId);
+              const customer = await storage.getUser(order.customerId);
               if (customer) {
                 const currentCredits = customer.credits || 0;
-                storage.updateUser(order.customerId, { credits: currentCredits + deliveryFee });
-                storage.createOrderEvent({
+                await storage.updateUser(order.customerId, { credits: currentCredits + deliveryFee });
+                await storage.createOrderEvent({
                   orderId: order.id,
                   eventType: "sla_credit_issued",
                   description: `SLA breach credit of $${(deliveryFee / 100).toFixed(2)} issued to customer account`,
                   actorRole: "system",
                   timestamp: now(),
                 });
-                notifyUser(order.customerId, order.id, "sla_credit",
+                await notifyUser(order.customerId, order.id, "sla_credit",
                   "Delivery Credit Issued",
                   `We're sorry your order was delayed. A $${(deliveryFee / 100).toFixed(2)} credit has been applied to your account.`,
                   `/orders/${order.id}`
                 );
                 // Mark credit issued to prevent duplicates
-                storage.updateOrder(order.id, { customerNotes: `${order.customerNotes || ""}\n[SLA_CREDIT_ISSUED:${deliveryFee}]` } as any);
+                await storage.updateOrder(order.id, { customerNotes: `${order.customerNotes || ""}\n[SLA_CREDIT_ISSUED:${deliveryFee}]` } as any);
               }
             }
           }
@@ -1288,15 +1288,15 @@ setInterval(() => {
 
 // ── IDEMPOTENCY KEY CACHE (DB-backed) ──
 
-function getIdempotentResponse(key: string): { response: any; statusCode: number } | null {
-  const cached = storage.getIdempotencyKey(key);
+async function getIdempotentResponse(key: string): Promise<{ response: any; statusCode: number } | null> {
+  const cached = await storage.getIdempotencyKey(key);
   if (!cached) return null;
   return { response: JSON.parse(cached.response), statusCode: cached.statusCode };
 }
 
-function setIdempotentResponse(key: string, response: any, statusCode: number): void {
+async function setIdempotentResponse(key: string, response: any, statusCode: number): Promise<void> {
   const expiresAt = new Date(Date.now() + 86400000).toISOString(); // 24h
-  storage.storeIdempotencyKey(key, JSON.stringify(response), statusCode, expiresAt);
+  await storage.storeIdempotencyKey(key, JSON.stringify(response), statusCode, expiresAt);
 }
 
 
@@ -1323,10 +1323,10 @@ export async function registerRoutes(
 
   // ── Ensure Super Admin exists ──
   const superAdminEmail = "chaimfischer2@gmail.com";
-  const existingSuperAdmin = storage.getUserByEmail(superAdminEmail);
+  const existingSuperAdmin = await storage.getUserByEmail(superAdminEmail);
   if (!existingSuperAdmin) {
     const randomPw = randomBytes(32).toString("hex");
-    storage.createUser({
+    await storage.createUser({
       username: superAdminEmail,
       email: superAdminEmail,
       name: "Chaim Fischer",
@@ -1337,14 +1337,14 @@ export async function registerRoutes(
     });
     console.log(`[Seed] Super admin created: ${superAdminEmail} (use forgot-password to set password)`);
   } else if (existingSuperAdmin.role !== "admin") {
-    storage.updateUser(existingSuperAdmin.id, { role: "admin" });
+    await storage.updateUser(existingSuperAdmin.id, { role: "admin" });
     console.log(`[Seed] Upgraded ${superAdminEmail} to admin role`);
   }
 
   // Seed WELCOME20 promo code if it doesn't exist
-  const welcome = storage.getPromoCode("WELCOME20");
+  const welcome = await storage.getPromoCode("WELCOME20");
   if (!welcome) {
-    storage.createPromoCode({
+    await storage.createPromoCode({
       code: "WELCOME20",
       type: "percentage",
       value: 20,
@@ -1359,10 +1359,10 @@ export async function registerRoutes(
 
   // Seed super admin: chaimfischer2@gmail.com
   const adminEmail = "chaimfischer2@gmail.com";
-  const existingAdmin = storage.getUserByEmail(adminEmail);
+  const existingAdmin = await storage.getUserByEmail(adminEmail);
   if (!existingAdmin) {
     const randomPw = randomBytes(32).toString("hex");
-    storage.createUser({
+    await storage.createUser({
       username: adminEmail,
       password: hashPassword(randomPw),
       name: "Chaim Fischer",
@@ -1453,10 +1453,10 @@ export async function registerRoutes(
   });
 
   // ── IDEMPOTENCY MIDDLEWARE ──
-  app.use("/api/", (req, res, next) => {
+  app.use("/api/", async (req, res, next) => {
     if ((req.method === "POST" || req.method === "PATCH") && req.headers["idempotency-key"]) {
       const key = req.headers["idempotency-key"] as string;
-      const cached = getIdempotentResponse(key);
+      const cached = await getIdempotentResponse(key);
       if (cached) {
         return res.status(cached.statusCode).json(cached.response);
       }
@@ -1482,12 +1482,12 @@ export async function registerRoutes(
   //  AUTH
   // ─────────────────────────────────────────────────────────
 
-  app.post("/api/auth/register", (req, res) => {
+  app.post("/api/auth/register", async (req, res) => {
     const { name, email, phone, password, referralCode } = req.body;
     if (!name || !email || !password) {
       return res.status(400).json({ error: "Missing required fields" });
     }
-    const existingUser = storage.getUserByEmail(email);
+    const existingUser = await storage.getUserByEmail(email);
     if (existingUser) {
       return res.status(409).json({ error: "Email already in use" });
     }
@@ -1499,12 +1499,12 @@ export async function registerRoutes(
     let referrerId: number | undefined;
     if (referralCode) {
       // Find user with this referral code by searching all users
-      const allUsers = storage.getUsersByRole("customer");
+      const allUsers = await storage.getUsersByRole("customer");
       const referrer = allUsers.find(u => u.referralCode === referralCode);
       if (referrer) referrerId = referrer.id;
     }
 
-    const user = storage.createUser({
+    const user = await storage.createUser({
       username: email.split("@")[0] + "_" + Date.now(),
       password: hashPassword(password),
       name,
@@ -1520,7 +1520,7 @@ export async function registerRoutes(
 
     // If referred, create referral record
     if (referrerId) {
-      storage.createReferral({
+      await storage.createReferral({
         referrerId,
         refereeId: user.id,
         status: "pending",
@@ -1529,7 +1529,7 @@ export async function registerRoutes(
         createdAt: now(),
       });
       // Bonus points for referee
-      storage.createLoyaltyTransaction({
+      await storage.createLoyaltyTransaction({
         userId: user.id,
         type: "referral",
         points: 100,
@@ -1539,14 +1539,14 @@ export async function registerRoutes(
     }
 
     // Welcome notification
-    notifyUser(user.id, null, "system", "Welcome to Offload!", `Hey ${name}, welcome aboard! Your account is set up and ready to go.`, "/");
+    await notifyUser(user.id, null, "system", "Welcome to Offload!", `Hey ${name}, welcome aboard! Your account is set up and ready to go.`, "/");
 
-    const token = createSession(user.id, user.role);
+    const token = await createSession(user.id, user.role);
     setSessionCookie(res, token);
     res.status(201).json({ user: { ...user, password: undefined }, token });
   });
 
-  app.post("/api/auth/login", (req, res) => {
+  app.post("/api/auth/login", async (req, res) => {
     const ip = req.ip || req.socket.remoteAddress || "unknown";
     if (!checkLoginRateLimit(ip)) {
       return res.status(429).json({ error: "Too many login attempts. Try again in 15 minutes." });
@@ -1556,14 +1556,14 @@ export async function registerRoutes(
     if (!email || !password) {
       return res.status(400).json({ error: "Missing email or password" });
     }
-    const user = storage.getUserByEmail(email);
+    const user = await storage.getUserByEmail(email);
     if (!user || !verifyPassword(password, user.password)) {
       recordLoginAttempt(ip);
       return res.status(401).json({ error: "Invalid credentials" });
     }
     // Create server-side session and return token
-    const token = createSession(user.id, user.role);
-    storage.updateUser(user.id, { lastActiveAt: now() });
+    const token = await createSession(user.id, user.role);
+    await storage.updateUser(user.id, { lastActiveAt: now() });
     setSessionCookie(res, token);
     res.json({ user: { ...user, password: undefined }, token });
   });
@@ -1624,7 +1624,7 @@ export async function registerRoutes(
       const effectiveEmail = email || `apple_${sub.replace(/[^a-zA-Z0-9]/g, "").substring(0, 24)}@privaterelay.appleid.com`;
 
       // Try finding existing user by email first, then by appleSub if we tracked it
-      let user = storage.getUserByEmail(effectiveEmail);
+      let user = await storage.getUserByEmail(effectiveEmail);
 
       if (!user) {
         // Create new account — customer role, no password (Apple-only)
@@ -1632,7 +1632,7 @@ export async function registerRoutes(
           ? `${fullName.givenName || ""} ${fullName.familyName || ""}`.trim()
           : (effectiveEmail.split("@")[0] || "Apple User");
         const username = `apple_${sub.substring(0, 16)}_${Date.now()}`;
-        user = storage.createUser({
+        user = await storage.createUser({
           username,
           password: hashPassword(randomBytes(32).toString("hex")), // unguessable random
           name: displayName,
@@ -1644,12 +1644,12 @@ export async function registerRoutes(
           loyaltyTier: "bronze",
           referralCode: displayName.toUpperCase().replace(/\s+/g, "-").substring(0, 8) + "-" + Date.now().toString(36).toUpperCase().substring(0, 4),
         });
-        notifyUser(user.id, null, "system", "Welcome to Offload!", `Hey ${displayName}, welcome aboard. Your account is ready.`, "/");
+        await notifyUser(user.id, null, "system", "Welcome to Offload!", `Hey ${displayName}, welcome aboard. Your account is ready.`, "/");
       } else {
-        storage.updateUser(user.id, { lastActiveAt: now() });
+        await storage.updateUser(user.id, { lastActiveAt: now() });
       }
 
-      const token = createSession(user.id, user.role);
+      const token = await createSession(user.id, user.role);
       setSessionCookie(res, token);
       res.json({ user: { ...user, password: undefined }, token });
     } catch (err: any) {
@@ -1658,15 +1658,15 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/auth/logout", (req, res) => {
+  app.post("/api/auth/logout", async (req, res) => {
     const token = getSessionTokenFromRequest(req);
-    if (token) destroySession(token);
+    if (token) await destroySession(token);
     clearSessionCookie(res);
     res.json({ success: true });
   });
 
   // ── Forgot Password ──
-  app.post("/api/auth/forgot-password", (req, res) => {
+  app.post("/api/auth/forgot-password", async (req, res) => {
     const { email } = req.body;
     if (!email) {
       return res.status(400).json({ error: "Email is required" });
@@ -1675,7 +1675,7 @@ export async function registerRoutes(
     // Always return 200 to avoid leaking whether email exists
     const successMsg = { message: "If an account with that email exists, a password reset link has been sent." };
 
-    const user = storage.getUserByEmail(email);
+    const user = await storage.getUserByEmail(email);
     if (!user) {
       return res.json(successMsg);
     }
@@ -1684,7 +1684,7 @@ export async function registerRoutes(
     const resetToken = randomBytes(32).toString("hex");
     const expiresAt = new Date(Date.now() + 3600000).toISOString(); // 1 hour
 
-    storage.createPasswordResetToken(user.id, resetToken, expiresAt);
+    await storage.createPasswordResetToken(user.id, resetToken, expiresAt);
 
     // Send email via Resend
     if (process.env.RESEND_API_KEY) {
@@ -1721,7 +1721,7 @@ export async function registerRoutes(
   });
 
   // ── Reset Password ──
-  app.post("/api/auth/reset-password", (req, res) => {
+  app.post("/api/auth/reset-password", async (req, res) => {
     const { token, password } = req.body;
     if (!token || !password) {
       return res.status(400).json({ error: "Token and new password are required" });
@@ -1730,7 +1730,7 @@ export async function registerRoutes(
       return res.status(400).json({ error: "Password must be at least 8 characters" });
     }
 
-    const resetRecord = storage.getPasswordResetToken(token);
+    const resetRecord = await storage.getPasswordResetToken(token);
     if (!resetRecord) {
       return res.status(400).json({ error: "Invalid or expired reset link. Please request a new one." });
     }
@@ -1743,13 +1743,13 @@ export async function registerRoutes(
 
     // Update password
     const hashedPassword = hashPassword(password);
-    storage.updateUser(resetRecord.userId, { password: hashedPassword });
+    await storage.updateUser(resetRecord.userId, { password: hashedPassword });
 
     // Mark token as used
-    storage.markPasswordResetTokenUsed(token);
+    await storage.markPasswordResetTokenUsed(token);
 
     // Invalidate all existing sessions for this user
-    storage.deleteSessionsByUser(resetRecord.userId);
+    await storage.deleteSessionsByUser(resetRecord.userId);
 
     res.json({ message: "Password has been reset successfully. You can now log in." });
   });
@@ -1764,17 +1764,17 @@ export async function registerRoutes(
   //  USERS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/users/:id", requireAuth(), (req, res) => {
+  app.get("/api/users/:id", requireAuth(), async (req, res) => {
     const currentUserP = (req as any).currentUser;
     if (currentUserP.role !== "admin" && currentUserP.role !== "manager" && currentUserP.id !== Number(String(req.params.id))) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const user = storage.getUser(Number(String(req.params.id)));
+    const user = await storage.getUser(Number(String(req.params.id)));
     if (!user) return res.status(404).json({ error: "User not found" });
     res.json({ ...user, password: undefined });
   });
 
-  app.patch("/api/users/:id", requireAuth(), (req, res) => {
+  app.patch("/api/users/:id", requireAuth(), async (req, res) => {
     const currentUserU = (req as any).currentUser;
     const targetId = Number(String(req.params.id));
     if (targetId !== currentUserU.id && !["admin","manager"].includes(currentUserU.role)) {
@@ -1786,7 +1786,7 @@ export async function registerRoutes(
     if (["admin","manager"].includes(currentUserU.role)) {
       if (req.body.role) updateData.role = req.body.role;
     }
-    const updated = storage.updateUser(targetId, updateData);
+    const updated = await storage.updateUser(targetId, updateData);
     if (!updated) return res.status(404).json({ error: "User not found" });
     res.json({ ...updated, password: undefined });
   });
@@ -1795,53 +1795,53 @@ export async function registerRoutes(
   //  PRICING TIERS & ADD-ONS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/pricing-tiers", (_req, res) => {
-    res.json(storage.getPricingTiers());
+  app.get("/api/pricing-tiers", async (_req, res) => {
+    res.json(await storage.getPricingTiers());
   });
 
-  app.get("/api/add-ons", (_req, res) => {
-    res.json(storage.getAddOns());
+  app.get("/api/add-ons", async (_req, res) => {
+    res.json(await storage.getAddOns());
   });
 
   // ─────────────────────────────────────────────────────────
   //  VENDORS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/vendors", requireAuth(), (_req, res) => {
-    res.json(storage.getVendors());
+  app.get("/api/vendors", requireAuth(), async (_req, res) => {
+    res.json(await storage.getVendors());
   });
 
-  app.get("/api/vendors/:id", requireAuth(["admin", "manager", "laundromat", "vendor"]), (req, res) => {
-    const v = storage.getVendor(Number(String(req.params.id)));
+  app.get("/api/vendors/:id", requireAuth(["admin", "manager", "laundromat", "vendor"]), async (req, res) => {
+    const v = await storage.getVendor(Number(String(req.params.id)));
     if (!v) return res.status(404).json({ error: "Vendor not found" });
     res.json(v);
   });
 
-  app.get("/api/vendors/:id/stats", requireAuth(["admin", "manager", "laundromat", "vendor"]), (req, res) => {
+  app.get("/api/vendors/:id/stats", requireAuth(["admin", "manager", "laundromat", "vendor"]), async (req, res) => {
     const currentUser = (req as any).currentUser;
     if (currentUser.role === "laundromat" || currentUser.role === "vendor") {
-      const vendor = storage.getVendor(Number(String(req.params.id)));
-      if (!vendor || storage.getVendorByUserId(currentUser.id)?.id !== vendor.id) {
+      const vendor = await storage.getVendor(Number(String(req.params.id)));
+      if (!vendor || (await storage.getVendorByUserId(currentUser.id))?.id !== vendor.id) {
         return res.status(403).json({ error: "Access denied" });
       }
     }
-    res.json(storage.getVendorStats(Number(String(req.params.id))));
+    res.json(await storage.getVendorStats(Number(String(req.params.id))));
   });
 
-  app.post("/api/vendors", requireAuth(["admin", "manager"]), (req, res) => {
-    const vendor = storage.createVendor(req.body);
+  app.post("/api/vendors", requireAuth(["admin", "manager"]), async (req, res) => {
+    const vendor = await storage.createVendor(req.body);
     res.status(201).json(vendor);
   });
 
-  app.patch("/api/vendors/:id", requireAuth(["admin", "manager", "laundromat", "vendor"]), (req, res) => {
+  app.patch("/api/vendors/:id", requireAuth(["admin", "manager", "laundromat", "vendor"]), async (req, res) => {
     const currentUser = (req as any).currentUser;
     if (currentUser.role === "laundromat" || currentUser.role === "vendor") {
-      const vendor = storage.getVendor(Number(String(req.params.id)));
-      if (!vendor || storage.getVendorByUserId(currentUser.id)?.id !== vendor.id) {
+      const vendor = await storage.getVendor(Number(String(req.params.id)));
+      if (!vendor || (await storage.getVendorByUserId(currentUser.id))?.id !== vendor.id) {
         return res.status(403).json({ error: "Access denied" });
       }
     }
-    const updated = storage.updateVendor(Number(String(req.params.id)), req.body);
+    const updated = await storage.updateVendor(Number(String(req.params.id)), req.body);
     if (!updated) return res.status(404).json({ error: "Vendor not found" });
     res.json(updated);
   });
@@ -1850,28 +1850,28 @@ export async function registerRoutes(
   //  DRIVERS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/drivers", requireAuth(["admin", "manager"]), (_req, res) => {
-    res.json(storage.getDrivers());
+  app.get("/api/drivers", requireAuth(["admin", "manager"]), async (_req, res) => {
+    res.json(await storage.getDrivers());
   });
 
-  app.get("/api/drivers/user/:userId", requireAuth(["driver", "admin", "manager"]), (req, res) => {
-    const d = storage.getDriverByUserId(Number(String(req.params.userId)));
+  app.get("/api/drivers/user/:userId", requireAuth(["driver", "admin", "manager"]), async (req, res) => {
+    const d = await storage.getDriverByUserId(Number(String(req.params.userId)));
     if (!d) return res.status(404).json({ error: "Driver not found" });
     res.json(d);
   });
 
-  app.get("/api/drivers/:id", requireAuth(), (req, res) => {
-    const d = storage.getDriver(Number(String(req.params.id)));
+  app.get("/api/drivers/:id", requireAuth(), async (req, res) => {
+    const d = await storage.getDriver(Number(String(req.params.id)));
     if (!d) return res.status(404).json({ error: "Driver not found" });
     res.json(d);
   });
 
-  app.get("/api/drivers/:id/stats", requireAuth(["driver", "admin", "manager"]), (req, res) => {
-    res.json(storage.getDriverStats(Number(String(req.params.id))));
+  app.get("/api/drivers/:id/stats", requireAuth(["driver", "admin", "manager"]), async (req, res) => {
+    res.json(await storage.getDriverStats(Number(String(req.params.id))));
   });
 
-  app.post("/api/drivers", requireAuth(["admin", "manager"]), (req, res) => {
-    const driverUser = storage.createUser({
+  app.post("/api/drivers", requireAuth(["admin", "manager"]), async (req, res) => {
+    const driverUser = await storage.createUser({
       username: req.body.name.toLowerCase().replace(/\s/g, "_") + "_driver",
       password: hashPassword("driver123"),
       name: req.body.name,
@@ -1879,38 +1879,38 @@ export async function registerRoutes(
       phone: req.body.phone,
       role: "driver",
     });
-    const driver = storage.createDriver({
+    const driver = await storage.createDriver({
       ...req.body,
       userId: driverUser.id,
     });
     res.status(201).json(driver);
   });
 
-  app.patch("/api/drivers/:id", requireAuth(["driver", "admin", "manager"]), (req, res) => {
+  app.patch("/api/drivers/:id", requireAuth(["driver", "admin", "manager"]), async (req, res) => {
     const currentUser = (req as any).currentUser;
     if (currentUser.role === "driver") {
-      const myDriver = storage.getDriverByUserId(currentUser.id);
+      const myDriver = await storage.getDriverByUserId(currentUser.id);
       if (!myDriver || myDriver.id !== Number(String(req.params.id))) {
         return res.status(403).json({ error: "Access denied" });
       }
     }
-    const updated = storage.updateDriver(Number(String(req.params.id)), req.body);
+    const updated = await storage.updateDriver(Number(String(req.params.id)), req.body);
     if (!updated) return res.status(404).json({ error: "Driver not found" });
     res.json(updated);
   });
 
   // Driver location update
-  app.patch("/api/drivers/:id/location", requireAuth(["driver", "admin"]), (req, res) => {
+  app.patch("/api/drivers/:id/location", requireAuth(["driver", "admin"]), async (req, res) => {
     // Security: drivers can only update their own location
     const cuLoc = (req as any).currentUser;
     if (cuLoc.role === "driver") {
-      const myDriverLoc = storage.getDriverByUserId(cuLoc.id);
+      const myDriverLoc = await storage.getDriverByUserId(cuLoc.id);
       if (!myDriverLoc || myDriverLoc.id !== Number(String(req.params.id))) {
         return res.status(403).json({ error: "Access denied — can only update your own location" });
       }
     }
     const { lat, lng } = req.body;
-    const updated = storage.updateDriver(Number(String(req.params.id)), {
+    const updated = await storage.updateDriver(Number(String(req.params.id)), {
       currentLat: lat,
       currentLng: lng,
     });
@@ -1919,12 +1919,12 @@ export async function registerRoutes(
   });
 
   // Driver go online/offline
-  app.patch("/api/drivers/:id/status", requireAuth(["driver", "admin"]), (req, res) => {
+  app.patch("/api/drivers/:id/status", requireAuth(["driver", "admin"]), async (req, res) => {
     const { status } = req.body;
     if (!["available", "busy", "offline"].includes(status)) {
       return res.status(400).json({ error: "Invalid status" });
     }
-    const updated = storage.updateDriver(Number(String(req.params.id)), { status });
+    const updated = await storage.updateDriver(Number(String(req.params.id)), { status });
     if (!updated) return res.status(404).json({ error: "Driver not found" });
     res.json(updated);
   });
@@ -1933,12 +1933,12 @@ export async function registerRoutes(
   //  SERVICE TYPES
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/service-types", (_req, res) => {
-    res.json(storage.getServiceTypes());
+  app.get("/api/service-types", async (_req, res) => {
+    res.json(await storage.getServiceTypes());
   });
 
-  app.post("/api/service-types", requireAuth(["admin"]), (req, res) => {
-    const st = storage.createServiceType(req.body);
+  app.post("/api/service-types", requireAuth(["admin"]), async (req, res) => {
+    const st = await storage.createServiceType(req.body);
     res.status(201).json(st);
   });
 
@@ -1976,7 +1976,7 @@ export async function registerRoutes(
   });
 
   // ── Public: Create a quote (no auth required for website) ──
-  app.post("/api/quotes", (req, res) => {
+  app.post("/api/quotes", async (req, res) => {
     try {
       const { pickupAddress, pickupCity, pickupState, pickupZip, pickupLat, pickupLng,
         deliveryAddress, serviceType, tierName, deliverySpeed, vendorId,
@@ -1988,7 +1988,7 @@ export async function registerRoutes(
 
       // Idempotency check
       if (idempotencyKey) {
-        const existing = storage.getQuoteByIdempotencyKey(idempotencyKey);
+        const existing = await storage.getQuoteByIdempotencyKey(idempotencyKey);
         if (existing) return res.json(existing);
       }
 
@@ -1996,12 +1996,12 @@ export async function registerRoutes(
       let customerId: number | null = null;
       const authHeader = req.headers.authorization;
       if (authHeader?.startsWith("Bearer ")) {
-        const session = getSession(authHeader.split(" ")[1]);
+        const session = await getSession(authHeader.split(" ")[1]);
         if (session) customerId = session.userId;
       }
 
       // Calculate price
-      const breakdown = calculateQuotePrice({
+      const breakdown = await calculateQuotePrice({
         tierName,
         deliverySpeed: deliverySpeed || "48h",
         vendorId: vendorId ? Number(vendorId) : undefined,
@@ -2019,11 +2019,11 @@ export async function registerRoutes(
       let vendorName: string | null = null;
       let isPreferredVendor = 0;
       if (vendorId) {
-        const v = storage.getVendor(Number(vendorId));
+        const v = await storage.getVendor(Number(vendorId));
         if (v) { vendorName = v.name; isPreferredVendor = 1; }
       }
 
-      const quote = storage.createQuote({
+      const quote = await storage.createQuote({
         quoteNumber: generateQuoteNumber(),
         customerId,
         sessionId: sessionId || null,
@@ -2065,7 +2065,7 @@ export async function registerRoutes(
       });
 
       // Audit log
-      storage.createPricingAuditEntry({
+      await storage.createPricingAuditEntry({
         action: "quote_created",
         details: JSON.stringify({ quoteId: quote.id, quoteNumber: quote.quoteNumber, total: quote.total, tierName: quote.tierName }),
         actorId: customerId,
@@ -2084,13 +2084,13 @@ export async function registerRoutes(
   });
 
   // ── Public: Get quote by ID ──
-  app.get("/api/quotes/:id", (req, res) => {
-    const quote = storage.getQuote(Number(String(req.params.id)));
+  app.get("/api/quotes/:id", async (req, res) => {
+    const quote = await storage.getQuote(Number(String(req.params.id)));
     if (!quote) return res.status(404).json({ error: "Quote not found" });
 
     // Check expiry
     if (["draft", "quoted"].includes(quote.status) && new Date(quote.expiresAt) < new Date()) {
-      storage.updateQuote(quote.id, { status: "expired", updatedAt: now() });
+      await storage.updateQuote(quote.id, { status: "expired", updatedAt: now() });
       return res.json({ ...quote, status: "expired", lineItems: quote.lineItemsJson ? JSON.parse(quote.lineItemsJson) : [] });
     }
 
@@ -2118,12 +2118,12 @@ export async function registerRoutes(
       if (digits.length < 10) return res.status(400).json({ error: "Invalid phone number" });
 
       // Fetch the quote
-      const quote = storage.getQuote(Number(quoteId));
+      const quote = await storage.getQuote(Number(quoteId));
       if (!quote) return res.status(404).json({ error: "Quote not found" });
 
       // Check quote not expired
       if (["draft", "quoted"].includes(quote.status) && new Date(quote.expiresAt!) < new Date()) {
-        storage.updateQuote(quote.id, { status: "expired", updatedAt: now() });
+        await storage.updateQuote(quote.id, { status: "expired", updatedAt: now() });
         return res.status(410).json({ error: "Quote has expired. Please get a new price." });
       }
       if (quote.status === "converted") {
@@ -2131,11 +2131,11 @@ export async function registerRoutes(
       }
 
       // Step 1: Find or create customer
-      let customer = storage.getUserByEmail(email);
+      let customer = await storage.getUserByEmail(email);
       if (!customer) {
         const username = email.split("@")[0] + "_" + randomBytes(3).toString("hex");
         const randomPw = randomBytes(16).toString("hex");
-        customer = storage.createUser({
+        customer = await storage.createUser({
           username,
           password: hashPassword(randomPw),
           name: email.split("@")[0],
@@ -2152,7 +2152,7 @@ export async function registerRoutes(
       }
 
       // Step 2: Create address record
-      const address = storage.createAddress({
+      const address = await storage.createAddress({
         userId: customer.id,
         label: "Pickup",
         street: quote.pickupAddress,
@@ -2169,7 +2169,7 @@ export async function registerRoutes(
       const orderNumber = generateOrderNumber();
       const scheduledPickup = pickupDate ? `${pickupDate}T${pickupTime || '09:00'}:00.000Z` : null;
 
-      const order = storage.createOrder({
+      const order = await storage.createOrder({
         orderNumber,
         customerId: customer.id,
         status: "pending",
@@ -2228,12 +2228,12 @@ export async function registerRoutes(
         paymentIntentId = `pi_demo_${Date.now()}_${randomBytes(4).toString("hex")}`;
         clientSecret = `demo_secret_${paymentIntentId}`;
         // Auto-authorize for demo
-        storage.updateOrder(order.id, { paymentStatus: "authorized" });
+        await storage.updateOrder(order.id, { paymentStatus: "authorized" });
       }
 
       // Record payment transaction
       const CHECKOUT_FEE_RATE = 0.18;
-      storage.createPaymentTransaction({
+      await storage.createPaymentTransaction({
         orderId: order.id,
         type: "charge",
         amount: quote.total || 0,
@@ -2248,10 +2248,10 @@ export async function registerRoutes(
       });
 
       // Step 5: Mark quote as converted
-      storage.updateQuote(quote.id, { status: "converted", customerId: customer.id, updatedAt: ts });
+      await storage.updateQuote(quote.id, { status: "converted", customerId: customer.id, updatedAt: ts });
 
       // Create order event
-      storage.createOrderEvent({
+      await storage.createOrderEvent({
         orderId: order.id,
         eventType: "order_created",
         description: `Order placed via website checkout. Email: ${email}`,
@@ -2259,7 +2259,7 @@ export async function registerRoutes(
       });
 
       // Audit log
-      storage.createPricingAuditEntry({
+      await storage.createPricingAuditEntry({
         action: "public_checkout",
         details: JSON.stringify({ orderId: order.id, orderNumber, quoteId: quote.id, total: quote.total, email }),
         actorId: customer.id,
@@ -2282,9 +2282,9 @@ export async function registerRoutes(
   });
 
   // ── Auth required: Accept (lock) a quote ──
-  app.post("/api/quotes/:id/accept", requireAuth(), (req, res) => {
+  app.post("/api/quotes/:id/accept", requireAuth(), async (req, res) => {
     try {
-      const quote = storage.getQuote(Number(String(req.params.id)));
+      const quote = await storage.getQuote(Number(String(req.params.id)));
       if (!quote) return res.status(404).json({ error: "Quote not found" });
 
       const currentUser = (req as any).currentUser;
@@ -2294,7 +2294,7 @@ export async function registerRoutes(
 
       // Validate state
       if (quote.status === "expired" || new Date(quote.expiresAt) < new Date()) {
-        storage.updateQuote(quote.id, { status: "expired", updatedAt: now() });
+        await storage.updateQuote(quote.id, { status: "expired", updatedAt: now() });
         return res.status(410).json({ error: "Quote has expired. Please request a new quote." });
       }
       if (quote.status === "converted") return res.status(409).json({ error: "Quote already converted to order." });
@@ -2302,14 +2302,14 @@ export async function registerRoutes(
       if (quote.status !== "quoted") return res.status(400).json({ error: `Cannot accept quote in '${quote.status}' status` });
 
       const ts = now();
-      const updated = storage.updateQuote(quote.id, {
+      const updated = await storage.updateQuote(quote.id, {
         status: "accepted",
         lockedAt: ts,
         customerId: (req as any).currentUser?.id || quote.customerId,
         updatedAt: ts,
       });
 
-      storage.createPricingAuditEntry({
+      await storage.createPricingAuditEntry({
         action: "quote_locked",
         details: JSON.stringify({ quoteId: quote.id, total: quote.total }),
         actorId: (req as any).currentUser?.id,
@@ -2324,9 +2324,9 @@ export async function registerRoutes(
   });
 
   // ── Auth required: Convert accepted quote to real order ──
-  app.post("/api/quotes/:id/convert", requireAuth(), (req, res) => {
+  app.post("/api/quotes/:id/convert", requireAuth(), async (req, res) => {
     try {
-      const quote = storage.getQuote(Number(String(req.params.id)));
+      const quote = await storage.getQuote(Number(String(req.params.id)));
       if (!quote) return res.status(404).json({ error: "Quote not found" });
 
       const currentUser = (req as any).currentUser;
@@ -2337,14 +2337,14 @@ export async function registerRoutes(
       // Validate state
       if (quote.status === "converted" && quote.orderId) {
         // Idempotent: return the existing order
-        const existingOrder = storage.getOrder(quote.orderId);
+        const existingOrder = await storage.getOrder(quote.orderId);
         if (existingOrder) return res.json(existingOrder);
       }
       if (quote.status !== "accepted") {
         return res.status(400).json({ error: `Cannot convert quote in '${quote.status}' status. Must be accepted first.` });
       }
       if (new Date(quote.expiresAt) < new Date() && !quote.lockedAt) {
-        storage.updateQuote(quote.id, { status: "expired", updatedAt: now() });
+        await storage.updateQuote(quote.id, { status: "expired", updatedAt: now() });
         return res.status(410).json({ error: "Quote has expired." });
       }
 
@@ -2355,7 +2355,7 @@ export async function registerRoutes(
       const slaDeadline = calculateSLADeadline(quote.deliverySpeed, ts);
 
       // Create the real order from the locked quote
-      const order = storage.createOrder({
+      const order = await storage.createOrder({
         orderNumber: generateOrderNumber(),
         customerId: userId,
         status: "pending",
@@ -2392,7 +2392,7 @@ export async function registerRoutes(
       });
 
       // Mark quote as converted
-      storage.updateQuote(quote.id, {
+      await storage.updateQuote(quote.id, {
         status: "converted",
         orderId: order.id,
         customerId: userId,
@@ -2400,7 +2400,7 @@ export async function registerRoutes(
       });
 
       // Order event: created from quote
-      storage.createOrderEvent({
+      await storage.createOrderEvent({
         orderId: order.id,
         eventType: "order_placed",
         description: `Order created from quote ${quote.quoteNumber}`,
@@ -2416,8 +2416,8 @@ export async function registerRoutes(
       });
 
       // Auto-confirm
-      storage.updateOrder(order.id, { status: "scheduled", confirmedAt: now() });
-      storage.createOrderEvent({
+      await storage.updateOrder(order.id, { status: "scheduled", confirmedAt: now() });
+      await storage.createOrderEvent({
         orderId: order.id,
         eventType: "order_scheduled",
         description: "Order scheduled — finding best match",
@@ -2431,11 +2431,11 @@ export async function registerRoutes(
 
       if (quote.vendorId) {
         // Customer selected a preferred vendor
-        const selectedVendor = storage.getVendor(quote.vendorId);
+        const selectedVendor = await storage.getVendor(quote.vendorId);
         if (selectedVendor) {
-          storage.updateOrder(order.id, { vendorId: selectedVendor.id });
-          storage.updateVendor(selectedVendor.id, { currentLoad: (selectedVendor.currentLoad || 0) + 1 });
-          storage.createOrderEvent({
+          await storage.updateOrder(order.id, { vendorId: selectedVendor.id });
+          await storage.updateVendor(selectedVendor.id, { currentLoad: (selectedVendor.currentLoad || 0) + 1 });
+          await storage.createOrderEvent({
             orderId: order.id,
             eventType: "vendor_assigned",
             description: `Assigned to preferred vendor: ${selectedVendor.name}`,
@@ -2446,11 +2446,11 @@ export async function registerRoutes(
         }
       } else {
         // Auto-assign best vendor
-        const bestVendor = findBestVendor(order, pickupLat, pickupLng);
+        const bestVendor = await findBestVendor(order, pickupLat, pickupLng);
         if (bestVendor) {
-          storage.updateOrder(order.id, { vendorId: bestVendor.id, aiMatchScore: scoreVendor(bestVendor, order, pickupLat, pickupLng) });
-          storage.updateVendor(bestVendor.id, { currentLoad: (bestVendor.currentLoad || 0) + 1 });
-          storage.createOrderEvent({
+          await storage.updateOrder(order.id, { vendorId: bestVendor.id, aiMatchScore: scoreVendor(bestVendor, order, pickupLat, pickupLng) });
+          await storage.updateVendor(bestVendor.id, { currentLoad: (bestVendor.currentLoad || 0) + 1 });
+          await storage.createOrderEvent({
             orderId: order.id,
             eventType: "vendor_assigned",
             description: `Auto-assigned to ${bestVendor.name} (score-based match)`,
@@ -2462,14 +2462,14 @@ export async function registerRoutes(
       }
 
       // Auto-assign driver
-      const bestDriver = findBestDriver(pickupLat, pickupLng);
+      const bestDriver = await findBestDriver(pickupLat, pickupLng);
       if (bestDriver) {
-        storage.updateOrder(order.id, { status: "driver_assigned", driverId: bestDriver.id });
-        storage.updateDriver(bestDriver.id, {
+        await storage.updateOrder(order.id, { status: "driver_assigned", driverId: bestDriver.id });
+        await storage.updateDriver(bestDriver.id, {
           status: "busy",
           todayTrips: (bestDriver.todayTrips || 0) + 1,
         });
-        storage.createOrderEvent({
+        await storage.createOrderEvent({
           orderId: order.id,
           eventType: "driver_assigned",
           description: `${bestDriver.name} assigned (proximity + rating match)`,
@@ -2477,7 +2477,7 @@ export async function registerRoutes(
           actorRole: "system",
           timestamp: now(),
         });
-        notifyUser(bestDriver.userId, order.id, "order_update",
+        await notifyUser(bestDriver.userId, order.id, "order_update",
           "New Pickup Assigned",
           `Pickup at ${quote.pickupAddress}. ${pickupTimeWindow || "ASAP"}`,
           `/driver/order/${order.id}`
@@ -2485,13 +2485,13 @@ export async function registerRoutes(
       }
 
       // Notify customer
-      notifyUser(userId, order.id, "order_update",
+      await notifyUser(userId, order.id, "order_update",
         "Order Confirmed",
         `Your order ${order.orderNumber} is confirmed. Total: $${quote.total.toFixed(2)}`,
         `/orders/${order.id}`
       );
 
-      storage.createPricingAuditEntry({
+      await storage.createPricingAuditEntry({
         action: "quote_converted",
         details: JSON.stringify({ quoteId: quote.id, orderId: order.id, orderNumber: order.orderNumber }),
         actorId: userId,
@@ -2499,23 +2499,23 @@ export async function registerRoutes(
         timestamp: ts,
       });
 
-      res.status(201).json(storage.getOrder(order.id));
+      res.status(201).json(await storage.getOrder(order.id));
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }
   });
 
   // ── Admin: Pricing config ──
-  app.get("/api/pricing/config", requireAuth(["admin"]), (_req, res) => {
-    res.json(storage.getAllPricingConfig());
+  app.get("/api/pricing/config", requireAuth(["admin"]), async (_req, res) => {
+    res.json(await storage.getAllPricingConfig());
   });
 
-  app.put("/api/pricing/config/:key", requireAuth(["admin"]), (req, res) => {
+  app.put("/api/pricing/config/:key", requireAuth(["admin"]), async (req, res) => {
     const { value, category, description } = req.body;
     if (!value || !category) return res.status(400).json({ error: "value and category required" });
     const userId = (req as any).currentUser?.id;
-    const config = storage.upsertPricingConfig(String(req.params.key), value, category, description, userId);
-    storage.createPricingAuditEntry({
+    const config = await storage.upsertPricingConfig(String(req.params.key), value, category, description, userId);
+    await storage.createPricingAuditEntry({
       action: "config_change",
       details: JSON.stringify({ key: String(req.params.key), value, category }),
       actorId: userId,
@@ -2526,16 +2526,16 @@ export async function registerRoutes(
   });
 
   // ── Admin: Pricing audit log ──
-  app.get("/api/pricing/audit", requireAuth(["admin"]), (req, res) => {
+  app.get("/api/pricing/audit", requireAuth(["admin"]), async (req, res) => {
     const limit = Number(req.query.limit) || 100;
-    res.json(storage.getPricingAuditLog(limit));
+    res.json(await storage.getPricingAuditLog(limit));
   });
 
   // ─────────────────────────────────────────────────────────
   //  ORDERS — THE CORE ENGINE
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/orders", requireAuth(), (req, res) => {
+  app.get("/api/orders", requireAuth(), async (req, res) => {
     const user = (req as any).currentUser;
     const userRole = user?.role || "customer";
 
@@ -2545,37 +2545,37 @@ export async function registerRoutes(
       const vendorId = req.query.vendorId ? Number(req.query.vendorId) : undefined;
       const driverId = req.query.driverId ? Number(req.query.driverId) : undefined;
       const status = typeof req.query.status === "string" ? req.query.status : undefined;
-      if (customerId) return res.json(storage.getOrdersByCustomer(customerId).map(enrichAdminOrder));
-      if (vendorId) return res.json(storage.getOrdersByVendor(vendorId).map(enrichAdminOrder));
-      if (driverId) return res.json(storage.getOrdersByDriver(driverId).map(enrichAdminOrder));
-      if (status) return res.json(storage.getOrdersByStatus(status).map(enrichAdminOrder));
-      return res.json(storage.getOrders().map(enrichAdminOrder));
+      if (customerId) return res.json((await storage.getOrdersByCustomer(customerId)).map(enrichAdminOrder));
+      if (vendorId) return res.json((await storage.getOrdersByVendor(vendorId)).map(enrichAdminOrder));
+      if (driverId) return res.json((await storage.getOrdersByDriver(driverId)).map(enrichAdminOrder));
+      if (status) return res.json((await storage.getOrdersByStatus(status)).map(enrichAdminOrder));
+      return res.json((await storage.getOrders()).map(enrichAdminOrder));
     }
 
     // Vendor sees only their assigned orders
     if (["laundromat","vendor"].includes(userRole)) {
-      const vendorProfile = storage.getVendorByUserId(user.id);
-      if (vendorProfile) return res.json(storage.getOrdersByVendor(vendorProfile.id));
+      const vendorProfile = await storage.getVendorByUserId(user.id);
+      if (vendorProfile) return res.json(await storage.getOrdersByVendor(vendorProfile.id));
       return res.json([]);
     }
 
     // Driver sees only their assigned orders
     if (userRole === "driver") {
-      const driverProfile = storage.getDriverByUserId(user.id);
-      if (driverProfile) return res.json(storage.getOrdersByDriver(driverProfile.id));
+      const driverProfile = await storage.getDriverByUserId(user.id);
+      if (driverProfile) return res.json(await storage.getOrdersByDriver(driverProfile.id));
       return res.json([]);
     }
 
     // Customer sees only their own orders
-    res.json(storage.getOrdersByCustomer(user.id));
+    res.json(await storage.getOrdersByCustomer(user.id));
   });
 
-  app.get("/api/orders/active", requireAuth(["admin", "manager"]), (_req, res) => {
-    res.json(storage.getActiveOrders());
+  app.get("/api/orders/active", requireAuth(["admin", "manager"]), async (_req, res) => {
+    res.json(await storage.getActiveOrders());
   });
 
-  app.get("/api/orders/:id", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.get("/api/orders/:id", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // BOLA check: enforce ownership based on role
@@ -2585,19 +2585,19 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Access denied" });
     }
     if (userRole === "driver" && order.driverId !== user.id) {
-      const driverProfile = storage.getDriverByUserId(user.id);
+      const driverProfile = await storage.getDriverByUserId(user.id);
       if (!driverProfile || (order.driverId !== driverProfile.id && order.returnDriverId !== driverProfile.id)) {
         return res.status(403).json({ error: "Access denied" });
       }
     }
 
     // Enrich with related data
-    const events = storage.getOrderEvents(order.id);
-    const vendor = order.vendorId ? storage.getVendor(order.vendorId) : null;
-    const driver = order.driverId ? storage.getDriver(order.driverId) : null;
-    const customer = storage.getUser(order.customerId);
-    const consents = storage.getConsentsByOrder(order.id);
-    const review = storage.getReviewByOrder(order.id);
+    const events = await storage.getOrderEvents(order.id);
+    const vendor = order.vendorId ? await storage.getVendor(order.vendorId) : null;
+    const driver = order.driverId ? await storage.getDriver(order.driverId) : null;
+    const customer = await storage.getUser(order.customerId);
+    const consents = await storage.getConsentsByOrder(order.id);
+    const review = await storage.getReviewByOrder(order.id);
 
     // Mask sensitive info based on role
     const driverInfo = driver ? {
@@ -2617,7 +2617,7 @@ export async function registerRoutes(
       ...order,
       ...(userRole === "admin" || userRole === "manager" ? enrichAdminOrder(order) : {}),
       events,
-      statusHistory: storage.getOrderStatusHistory(order.id),
+      statusHistory: await storage.getOrderStatusHistory(order.id),
       vendor: vendor ? { id: vendor.id, name: vendor.name, rating: vendor.rating, address: vendor.address } : null,
       driver: driverInfo,
       customer: customerInfo,
@@ -2628,7 +2628,7 @@ export async function registerRoutes(
   });
 
   // ── CREATE ORDER (the main flow) ──
-  app.post("/api/orders", requireAuth(), (req, res) => {
+  app.post("/api/orders", requireAuth(), async (req, res) => {
     try {
       const currentUser = (req as any).currentUser;
       const customerId = currentUser.id;
@@ -2679,7 +2679,7 @@ export async function registerRoutes(
       let parsedAddOns: { addOnId: number; quantity: number; unitPrice: number }[] = [];
       if (selectedAddOns && Array.isArray(selectedAddOns)) {
         for (const sa of selectedAddOns) {
-          const addon = storage.getAddOn(sa.addOnId);
+          const addon = await storage.getAddOn(sa.addOnId);
           if (addon) {
             const qty = sa.quantity || 1;
             parsedAddOns.push({ addOnId: addon.id, quantity: qty, unitPrice: addon.price });
@@ -2691,7 +2691,7 @@ export async function registerRoutes(
       // Dynamic pricing with surge
       const basePickupTime = scheduledPickup;
       const surge = getSurgePricingTier(basePickupTime);
-      const demandMultiplier = getDemandMultiplier(serviceType || "wash_fold");
+      const demandMultiplier = await getDemandMultiplier(serviceType || "wash_fold");
 
       let surgeSubtotal: number;
       let surgeTax: number;
@@ -2719,10 +2719,10 @@ export async function registerRoutes(
       // Validate and apply promo code
       let appliedPromoId: number | null = null;
       if (promoCode) {
-        const promo = storage.getPromoCode(promoCode);
+        const promo = await storage.getPromoCode(promoCode);
         if (promo && promo.isActive && (!promo.expiresAt || new Date(promo.expiresAt) > new Date())) {
           // Per-user promo usage check
-          const userUsageCount = storage.getPromoUsageByUser(promo.id, customerId);
+          const userUsageCount = await storage.getPromoUsageByUser(promo.id, customerId);
           if (userUsageCount > 0) {
             return res.status(400).json({ error: "You've already used this promo code" });
           }
@@ -2736,7 +2736,7 @@ export async function registerRoutes(
                 discount = deliveryFee;
               }
               // Increment usage count
-              storage.updatePromoCode(promo.id, { usedCount: (promo.usedCount || 0) + 1 });
+              await storage.updatePromoCode(promo.id, { usedCount: (promo.usedCount || 0) + 1 });
               appliedPromoId = promo.id;
             }
           }
@@ -2745,7 +2745,7 @@ export async function registerRoutes(
 
       // Apply loyalty points redemption (100 points = $1)
       if (loyaltyPointsToRedeem && loyaltyPointsToRedeem > 0) {
-        const user = storage.getUser(customerId);
+        const user = await storage.getUser(customerId);
         if (user && user.loyaltyPoints && user.loyaltyPoints >= loyaltyPointsToRedeem) {
           const maxRedeemable = Math.floor(user.loyaltyPoints / 100) * 100; // must be multiple of 100
           const toRedeem = Math.min(loyaltyPointsToRedeem, maxRedeemable);
@@ -2753,7 +2753,7 @@ export async function registerRoutes(
           discount += dollarValue;
           loyaltyPointsRedeemed = toRedeem;
           // Deduct points from user
-          storage.updateUser(customerId, {
+          await storage.updateUser(customerId, {
             loyaltyPoints: user.loyaltyPoints - toRedeem,
           });
         }
@@ -2764,7 +2764,7 @@ export async function registerRoutes(
       const ts_ = now();
       const slaDeadline = calculateSLADeadline(speed, ts_);
 
-      const order = storage.createOrder({
+      const order = await storage.createOrder({
         orderNumber: generateOrderNumber(),
         customerId,
         status: "pending",
@@ -2804,7 +2804,7 @@ export async function registerRoutes(
 
       // Create order add-on records
       for (const addon of parsedAddOns) {
-        storage.createOrderAddOn({
+        await storage.createOrderAddOn({
           orderId: order.id,
           addOnId: addon.addOnId,
           quantity: addon.quantity,
@@ -2815,7 +2815,7 @@ export async function registerRoutes(
 
       // Record loyalty redemption transaction
       if (loyaltyPointsRedeemed > 0) {
-        storage.createLoyaltyTransaction({
+        await storage.createLoyaltyTransaction({
           userId: customerId,
           orderId: order.id,
           type: "redeemed",
@@ -2823,16 +2823,16 @@ export async function registerRoutes(
           description: `Redeemed ${loyaltyPointsRedeemed} points for $${(loyaltyPointsRedeemed / 100).toFixed(2)} off order ${order.orderNumber}`,
           createdAt: ts_,
         });
-        storage.updateOrder(order.id, { loyaltyPointsRedeemed });
+        await storage.updateOrder(order.id, { loyaltyPointsRedeemed });
       }
 
       // Record per-user promo usage
       if (appliedPromoId) {
-        storage.recordPromoUsage(appliedPromoId, customerId, order.id);
+        await storage.recordPromoUsage(appliedPromoId, customerId, order.id);
       }
 
       // Event: order placed
-      storage.createOrderEvent({
+      await storage.createOrderEvent({
         orderId: order.id,
         eventType: "order_placed",
         description: "Your pickup has been scheduled",
@@ -2843,8 +2843,8 @@ export async function registerRoutes(
       });
 
       // ── STEP 1: Authorize payment ──
-      storage.updateOrder(order.id, { paymentStatus: "authorized" });
-      storage.createOrderEvent({
+      await storage.updateOrder(order.id, { paymentStatus: "authorized" });
+      await storage.createOrderEvent({
         orderId: order.id,
         eventType: "payment_authorized",
         description: `Payment of $${finalTotal.toFixed(2)} authorized`,
@@ -2853,8 +2853,8 @@ export async function registerRoutes(
       });
 
       // ── STEP 2: Auto-confirm ──
-      storage.updateOrder(order.id, { status: "scheduled", confirmedAt: now() });
-      storage.createOrderEvent({
+      await storage.updateOrder(order.id, { status: "scheduled", confirmedAt: now() });
+      await storage.createOrderEvent({
         orderId: order.id,
         eventType: "order_scheduled",
         description: "Order scheduled — finding best match",
@@ -2863,15 +2863,15 @@ export async function registerRoutes(
       });
 
       // ── STEP 3: Auto-dispatch vendor ──
-      const addr = storage.getAddress(pickupAddressId);
+      const addr = await storage.getAddress(pickupAddressId);
       const pickupLat = addr?.lat || 25.78;
       const pickupLng = addr?.lng || -80.19;
 
-      const bestVendor = findBestVendor(order, pickupLat, pickupLng);
+      const bestVendor = await findBestVendor(order, pickupLat, pickupLng);
       if (bestVendor) {
-        storage.updateOrder(order.id, { vendorId: bestVendor.id, aiMatchScore: scoreVendor(bestVendor, order, pickupLat, pickupLng) });
-        storage.updateVendor(bestVendor.id, { currentLoad: (bestVendor.currentLoad || 0) + 1 });
-        storage.createOrderEvent({
+        await storage.updateOrder(order.id, { vendorId: bestVendor.id, aiMatchScore: scoreVendor(bestVendor, order, pickupLat, pickupLng) });
+        await storage.updateVendor(bestVendor.id, { currentLoad: (bestVendor.currentLoad || 0) + 1 });
+        await storage.createOrderEvent({
           orderId: order.id,
           eventType: "vendor_assigned",
           description: `Assigned to ${bestVendor.name} (score-based match)`,
@@ -2882,14 +2882,14 @@ export async function registerRoutes(
       }
 
       // ── STEP 4: Auto-assign driver ──
-      const bestDriver = findBestDriver(pickupLat, pickupLng);
+      const bestDriver = await findBestDriver(pickupLat, pickupLng);
       if (bestDriver) {
-        storage.updateOrder(order.id, { status: "driver_assigned", driverId: bestDriver.id });
-        storage.updateDriver(bestDriver.id, {
+        await storage.updateOrder(order.id, { status: "driver_assigned", driverId: bestDriver.id });
+        await storage.updateDriver(bestDriver.id, {
           status: "busy",
           todayTrips: (bestDriver.todayTrips || 0) + 1,
         });
-        storage.createOrderEvent({
+        await storage.createOrderEvent({
           orderId: order.id,
           eventType: "driver_assigned",
           description: `${bestDriver.name} assigned (proximity + rating match)`,
@@ -2899,7 +2899,7 @@ export async function registerRoutes(
         });
 
         // Notify driver
-        notifyUser(bestDriver.userId, order.id, "order_update",
+        await notifyUser(bestDriver.userId, order.id, "order_update",
           "New Pickup Assigned",
           `Pickup at ${pickupAddress}. ${pickupTimeWindow || "ASAP"}`,
           `/driver/order/${order.id}`
@@ -2907,26 +2907,26 @@ export async function registerRoutes(
       }
 
       // Notify customer
-      notifyUser(customerId, order.id, "order_update",
+      await notifyUser(customerId, order.id, "order_update",
         "Order Confirmed",
         `Your order ${order.orderNumber} is confirmed. ${bestDriver ? `${bestDriver.name} will pick up your laundry.` : "Finding a driver..."}${surge.tier !== "normal" ? ` (${surge.reason})` : ""}`,
         `/orders/${order.id}`
       );
 
       // Run fraud check for high-value orders
-      const freshOrder = storage.getOrder(order.id)!;
-      const fraud = calculateFraudRisk(order.id);
+      const freshOrder = await storage.getOrder(order.id)!;
+      const fraud = await calculateFraudRisk(order.id);
       if (fraud.autoFlagged) {
-        storage.createOrderEvent({
+        await storage.createOrderEvent({
           orderId: order.id,
           eventType: "fraud_flagged",
           description: `Auto-fraud flag: risk score ${fraud.riskScore}/100. Flags: ${fraud.flags.join("; ")}`,
           actorRole: "system",
           timestamp: now(),
         });
-        const admins = storage.getUsersByRole("admin");
-        admins.forEach(admin => {
-          notifyUser(admin.id, order.id, "fraud_alert",
+        const admins = await storage.getUsersByRole("admin");
+        admins.forEach(async admin => {
+          await notifyUser(admin.id, order.id, "fraud_alert",
             "Fraud Alert",
             `Order ${order.orderNumber} flagged with risk score ${fraud.riskScore}/100`,
             "/admin/orders"
@@ -2934,15 +2934,15 @@ export async function registerRoutes(
         });
       }
 
-      res.status(201).json(storage.getOrder(order.id));
+      res.status(201).json(await storage.getOrder(order.id));
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }
   });
 
   // ── UPDATE ORDER STATUS — Step-locked transitions ──
-  app.patch("/api/orders/:id/status", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.patch("/api/orders/:id/status", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // BOLA: ownership check
@@ -2951,7 +2951,7 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Access denied" });
     }
     if (currentUser.role === "driver") {
-      const driver = storage.getDriverByUserId(currentUser.id);
+      const driver = await storage.getDriverByUserId(currentUser.id);
       if (!driver || order.driverId !== driver.id) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -2994,7 +2994,7 @@ export async function registerRoutes(
       "delivered",           // Proof of delivery photo
     ];
     if (PHOTO_REQUIRED_TRANSITIONS.includes(status)) {
-      const existingPhotos = storage.getPhotosByOrder(order.id);
+      const existingPhotos = await storage.getPhotosByOrder(order.id);
       const hasPhotoForStep = existingPhotos.some(
         (p: any) => p.type === status || p.type === `${status}_proof`
       ) || photoUrl; // Also accept inline photoUrl
@@ -3029,45 +3029,45 @@ export async function registerRoutes(
     if (status === "delivered") {
       updateData.deliveredAt = ts_;
       // Process payment capture on delivery
-      processPaymentCapture(order);
+      await processPaymentCapture(order);
       // Award loyalty points
       awardLoyaltyPoints(order.customerId, order.id, order.total || 0);
       // Check if this completes a referral
-      const referrals_ = storage.getReferralsByUser(order.customerId);
+      const referrals_ = await storage.getReferralsByUser(order.customerId);
       const pendingReferral = referrals_.find(r => r.refereeId === order.customerId && r.status === "pending");
       if (pendingReferral) {
         // First completed order — complete the referral
-        storage.updateReferral(pendingReferral.id, {
+        await storage.updateReferral(pendingReferral.id, {
           status: "rewarded",
           completedOrderId: order.id,
           completedAt: ts_,
         });
         // Credit referrer $10 in points (1000 points = $10)
-        const referrer = storage.getUser(pendingReferral.referrerId);
+        const referrer = await storage.getUser(pendingReferral.referrerId);
         if (referrer) {
-          storage.updateUser(referrer.id, {
+          await storage.updateUser(referrer.id, {
             loyaltyPoints: (referrer.loyaltyPoints || 0) + 1000,
           });
-          storage.createLoyaltyTransaction({
+          await storage.createLoyaltyTransaction({
             userId: referrer.id,
             type: "referral",
             points: 1000,
             description: `Referral reward: your friend placed their first order!`,
             createdAt: ts_,
           });
-          notifyUser(referrer.id, null, "loyalty",
+          await notifyUser(referrer.id, null, "loyalty",
             "Referral Reward!",
             `You earned 1,000 points because your referral placed their first order.`,
             "/profile"
           );
         }
         // Credit referee $10 in points
-        const referee = storage.getUser(order.customerId);
+        const referee = await storage.getUser(order.customerId);
         if (referee) {
-          storage.updateUser(referee.id, {
+          await storage.updateUser(referee.id, {
             loyaltyPoints: (referee.loyaltyPoints || 0) + 1000,
           });
-          storage.createLoyaltyTransaction({
+          await storage.createLoyaltyTransaction({
             userId: referee.id,
             type: "referral",
             points: 1000,
@@ -3082,21 +3082,21 @@ export async function registerRoutes(
       updateData.paymentStatus = "refunded";
       // Release vendor capacity
       if (order.vendorId) {
-        const vendor = storage.getVendor(order.vendorId);
+        const vendor = await storage.getVendor(order.vendorId);
         if (vendor && (vendor.currentLoad || 0) > 0) {
-          storage.updateVendor(vendor.id, { currentLoad: (vendor.currentLoad || 0) - 1 });
+          await storage.updateVendor(vendor.id, { currentLoad: (vendor.currentLoad || 0) - 1 });
         }
       }
       // Free driver
       if (order.driverId) {
-        const driver = storage.getDriver(order.driverId);
+        const driver = await storage.getDriver(order.driverId);
         if (driver) {
-          storage.updateDriver(driver.id, { status: "available" });
+          await storage.updateDriver(driver.id, { status: "available" });
         }
       }
       // Delete per-user promo usage on cancellation
       if (order.promoCode) {
-        storage.deletePromoUsageByOrder(order.id);
+        await storage.deletePromoUsageByOrder(order.id);
       }
     }
 
@@ -3106,9 +3106,9 @@ export async function registerRoutes(
       if (status === "delivered") updateData.deliveryPhotoUrl = photoUrl;
     }
 
-    storage.updateOrder(order.id, updateData);
+    await storage.updateOrder(order.id, updateData);
 
-    storage.createOrderEvent({
+    await storage.createOrderEvent({
       orderId: order.id,
       eventType: status,
       description: description || `Order status: ${status.replace(/_/g, " ")}`,
@@ -3122,7 +3122,7 @@ export async function registerRoutes(
     });
 
     // WS3: Send email notification on status change
-    const orderCustomer = storage.getUser(order.customerId);
+    const orderCustomer = await storage.getUser(order.customerId);
     if (orderCustomer?.email) {
       const STATUS_LABELS: Record<string, string> = {
         "driver_assigned": "Driver Assigned",
@@ -3168,47 +3168,47 @@ export async function registerRoutes(
     };
 
     if (statusMessages[status]) {
-      notifyOrderUpdate(order, `Order ${status.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase())}`, statusMessages[status]);
-      sendOrderStatusSMS(order, status);
+      await notifyOrderUpdate(order, `Order ${status.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase())}`, statusMessages[status]);
+      await sendOrderStatusSMS(order, status);
     }
 
     // When delivered, send review request
     if (status === "delivered") {
-      notifyUser(order.customerId, order.id, "review_request",
+      await notifyUser(order.customerId, order.id, "review_request",
         "How was your experience?",
         "Rate your laundry service to help us improve.",
         `/orders/${order.id}`
       );
       // Free up driver
       if (order.driverId) {
-        const driver = storage.getDriver(order.driverId);
-        if (driver) storage.updateDriver(driver.id, { status: "available" });
+        const driver = await storage.getDriver(order.driverId);
+        if (driver) await storage.updateDriver(driver.id, { status: "available" });
       }
       // Free vendor capacity
       if (order.vendorId) {
-        const vendor = storage.getVendor(order.vendorId);
+        const vendor = await storage.getVendor(order.vendorId);
         if (vendor && (vendor.currentLoad || 0) > 0) {
-          storage.updateVendor(vendor.id, { currentLoad: (vendor.currentLoad || 0) - 1 });
+          await storage.updateVendor(vendor.id, { currentLoad: (vendor.currentLoad || 0) - 1 });
         }
       }
     }
 
     // When ready_for_delivery, assign return driver
     if (status === "ready_for_delivery") {
-      const vendorObj = order.vendorId ? storage.getVendor(order.vendorId) : null;
+      const vendorObj = order.vendorId ? await storage.getVendor(order.vendorId) : null;
       if (vendorObj) {
-        const returnDriver = findBestDriver(vendorObj.lat || 25.78, vendorObj.lng || -80.19);
+        const returnDriver = await findBestDriver(vendorObj.lat || 25.78, vendorObj.lng || -80.19);
         if (returnDriver) {
-          storage.updateOrder(order.id, { returnDriverId: returnDriver.id });
-          storage.updateDriver(returnDriver.id, { status: "busy", todayTrips: (returnDriver.todayTrips || 0) + 1 });
-          storage.createOrderEvent({
+          await storage.updateOrder(order.id, { returnDriverId: returnDriver.id });
+          await storage.updateDriver(returnDriver.id, { status: "busy", todayTrips: (returnDriver.todayTrips || 0) + 1 });
+          await storage.createOrderEvent({
             orderId: order.id,
             eventType: "return_driver_assigned",
             description: `${returnDriver.name} assigned for delivery`,
             actorRole: "system",
             timestamp: now(),
           });
-          notifyUser(returnDriver.userId, order.id, "order_update",
+          await notifyUser(returnDriver.userId, order.id, "order_update",
             "Delivery Pickup",
             `Pick up clean laundry from ${vendorObj.name} for delivery.`,
             `/driver/order/${order.id}`
@@ -3217,12 +3217,12 @@ export async function registerRoutes(
       }
     }
 
-    res.json(storage.getOrder(order.id));
+    res.json(await storage.getOrder(order.id));
   });
 
   // General order update
-  app.patch("/api/orders/:id", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.patch("/api/orders/:id", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // BOLA: ownership + role check
@@ -3231,7 +3231,7 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Access denied" });
     }
     if (currentUser.role === "driver") {
-      const driver = storage.getDriverByUserId(currentUser.id);
+      const driver = await storage.getDriverByUserId(currentUser.id);
       if (!driver || order.driverId !== driver.id) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -3276,18 +3276,18 @@ export async function registerRoutes(
       }
     }
 
-    const updated = storage.updateOrder(order.id, req.body);
+    const updated = await storage.updateOrder(order.id, req.body);
     res.json(updated);
   });
 
 
   // ── WS5: Driver failure reporting ──
-  app.post("/api/orders/:id/report-issue", requireAuth(["driver"]), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.post("/api/orders/:id/report-issue", requireAuth(["driver"]), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const currentUser = (req as any).currentUser;
-    const driver = storage.getDriverByUserId(currentUser.id);
+    const driver = await storage.getDriverByUserId(currentUser.id);
     if (!driver || order.driverId !== driver.id) {
       return res.status(403).json({ error: "Access denied" });
     }
@@ -3303,8 +3303,8 @@ export async function registerRoutes(
     // Determine appropriate status transition
     const failureStatus = order.status.includes("pickup") ? "pickup_failed" : "delivery_failed";
     
-    storage.updateOrder(order.id, { status: failureStatus });
-    storage.createOrderEvent({
+    await storage.updateOrder(order.id, { status: failureStatus });
+    await storage.createOrderEvent({
       orderId: order.id,
       eventType: failureStatus,
       description: `Driver reported issue: ${issueType} — ${description || "No details provided"}`,
@@ -3314,9 +3314,9 @@ export async function registerRoutes(
     });
 
     // Notify customer
-    const customer = storage.getUser(order.customerId);
+    const customer = await storage.getUser(order.customerId);
     if (customer) {
-      notifyUser(customer.id, order.id, "order_update", 
+      await notifyUser(customer.id, order.id, "order_update", 
         `Issue with your ${failureStatus === "pickup_failed" ? "pickup" : "delivery"}`,
         `Your driver reported an issue: ${issueType}. Our team is working on a resolution.`,
         `/orders/${order.id}`
@@ -3333,8 +3333,8 @@ export async function registerRoutes(
 
 
   // ── WS5: Vendor order actions (accept/reject/complete) ──
-  app.post("/api/orders/:id/vendor-action", requireAuth(["laundromat", "vendor", "admin", "manager"]), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.post("/api/orders/:id/vendor-action", requireAuth(["laundromat", "vendor", "admin", "manager"]), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const currentUser = (req as any).currentUser;
@@ -3353,8 +3353,8 @@ export async function registerRoutes(
         if (order.status !== "at_facility" && order.status !== "at_laundromat") {
           return res.status(400).json({ error: "Order must be at facility to accept" });
         }
-        storage.updateOrder(order.id, { status: "processing" });
-        storage.createOrderEvent({
+        await storage.updateOrder(order.id, { status: "processing" });
+        await storage.createOrderEvent({
           orderId: order.id, eventType: "vendor_accepted",
           description: `Vendor accepted order${estimatedCompletionTime ? `. Estimated completion: ${estimatedCompletionTime}` : ""}`,
           actorId: currentUser.id, actorRole: currentUser.role, timestamp: ts,
@@ -3362,7 +3362,7 @@ export async function registerRoutes(
         break;
 
       case "reject":
-        storage.createOrderEvent({
+        await storage.createOrderEvent({
           orderId: order.id, eventType: "vendor_rejected",
           description: `Vendor rejected order: ${reason || "No reason provided"}`,
           actorId: currentUser.id, actorRole: currentUser.role, timestamp: ts,
@@ -3374,12 +3374,12 @@ export async function registerRoutes(
         if (order.status !== "processing" && order.status !== "washing" && order.status !== "wash_complete") {
           return res.status(400).json({ error: "Order must be in processing/washing to quality check" });
         }
-        storage.updateOrder(order.id, { 
+        await storage.updateOrder(order.id, { 
           status: "ready_for_delivery",
           qualityCheckedAt: ts,
           washCompletedAt: ts,
         });
-        storage.createOrderEvent({
+        await storage.createOrderEvent({
           orderId: order.id, eventType: "quality_checked",
           description: "Quality check passed — order ready for delivery",
           actorId: currentUser.id, actorRole: currentUser.role, timestamp: ts,
@@ -3390,13 +3390,13 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Invalid action. Valid: accept, reject, quality_check" });
     }
 
-    res.json(storage.getOrder(order.id));
+    res.json(await storage.getOrder(order.id));
   });
 
 
   // ── CANCEL ORDER ──
-  app.post("/api/orders/:id/cancel", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.post("/api/orders/:id/cancel", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // BOLA: only order owner or admin/manager can cancel
@@ -3412,7 +3412,7 @@ export async function registerRoutes(
     }
 
     const ts_ = now();
-    storage.updateOrder(order.id, {
+    await storage.updateOrder(order.id, {
       status: "cancelled",
       cancelledAt: ts_,
       paymentStatus: "refunded",
@@ -3420,12 +3420,12 @@ export async function registerRoutes(
 
     // Restore redeemed loyalty points on cancellation
     if (order.loyaltyPointsRedeemed && order.loyaltyPointsRedeemed > 0) {
-      const user = storage.getUser(order.customerId);
+      const user = await storage.getUser(order.customerId);
       if (user) {
-        storage.updateUser(order.customerId, {
+        await storage.updateUser(order.customerId, {
           loyaltyPoints: (user.loyaltyPoints || 0) + order.loyaltyPointsRedeemed,
         });
-        storage.createLoyaltyTransaction({
+        await storage.createLoyaltyTransaction({
           userId: order.customerId,
           orderId: order.id,
           type: "bonus",
@@ -3438,26 +3438,26 @@ export async function registerRoutes(
 
     // Release resources
     if (order.vendorId) {
-      const vendor = storage.getVendor(order.vendorId);
+      const vendor = await storage.getVendor(order.vendorId);
       if (vendor && (vendor.currentLoad || 0) > 0) {
-        storage.updateVendor(vendor.id, { currentLoad: (vendor.currentLoad || 0) - 1 });
+        await storage.updateVendor(vendor.id, { currentLoad: (vendor.currentLoad || 0) - 1 });
       }
     }
     if (order.driverId) {
-      const driver = storage.getDriver(order.driverId);
-      if (driver) storage.updateDriver(driver.id, { status: "available" });
+      const driver = await storage.getDriver(order.driverId);
+      if (driver) await storage.updateDriver(driver.id, { status: "available" });
     }
 
     // Decrement promo usedCount and delete per-user usage on cancellation
     if (order.promoCode) {
-      const promo = storage.getPromoCode(order.promoCode);
+      const promo = await storage.getPromoCode(order.promoCode);
       if (promo && (promo.usedCount || 0) > 0) {
-        storage.updatePromoCode(promo.id, { usedCount: (promo.usedCount || 0) - 1 });
+        await storage.updatePromoCode(promo.id, { usedCount: (promo.usedCount || 0) - 1 });
       }
-      storage.deletePromoUsageByOrder(order.id);
+      await storage.deletePromoUsageByOrder(order.id);
     }
 
-    storage.createOrderEvent({
+    await storage.createOrderEvent({
       orderId: order.id,
       eventType: "cancelled",
       description: req.body.reason || "Order cancelled by customer — full refund issued",
@@ -3466,14 +3466,14 @@ export async function registerRoutes(
       timestamp: ts_,
     });
 
-    notifyOrderUpdate(order, "Order Cancelled", "Your order has been cancelled and a full refund has been initiated.");
+    await notifyOrderUpdate(order, "Order Cancelled", "Your order has been cancelled and a full refund has been initiated.");
 
-    res.json(storage.getOrder(order.id));
+    res.json(await storage.getOrder(order.id));
   });
 
   // ── RESCHEDULE ORDER ──
-  app.post("/api/orders/:id/reschedule", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.post("/api/orders/:id/reschedule", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const currentUser = (req as any).currentUser;
@@ -3500,14 +3500,14 @@ export async function registerRoutes(
     const oldPickup = order.scheduledPickup;
     const oldTimeWindow = order.pickupTimeWindow;
 
-    storage.updateOrder(order.id, {
+    await storage.updateOrder(order.id, {
       scheduledPickup: pickupDate,
       pickupTimeWindow: pickupTimeSlot,
       updatedAt: ts_,
     });
 
     // Audit trail event
-    storage.createOrderEvent({
+    await storage.createOrderEvent({
       orderId: order.id,
       eventType: "reschedule",
       description: `Order rescheduled: pickup changed to ${pickupDate} (${pickupTimeSlot})`,
@@ -3527,9 +3527,9 @@ export async function registerRoutes(
 
     // Notify assigned driver if any
     if (order.driverId) {
-      const driver = storage.getDriver(order.driverId);
+      const driver = await storage.getDriver(order.driverId);
       if (driver) {
-        notifyUser(driver.userId, order.id, "driver_update",
+        await notifyUser(driver.userId, order.id, "driver_update",
           "Pickup Rescheduled",
           `Order ${order.orderNumber} has been rescheduled. New pickup: ${pickupDate} (${pickupTimeSlot}).`,
           `/orders/${order.id}`);
@@ -3538,18 +3538,18 @@ export async function registerRoutes(
 
     // Notify customer if rescheduled by admin/manager
     if (currentUser.role !== "customer") {
-      notifyUser(order.customerId, order.id, "order_update",
+      await notifyUser(order.customerId, order.id, "order_update",
         "Pickup Rescheduled",
         `Your order ${order.orderNumber} has been rescheduled. New pickup: ${pickupDate} (${pickupTimeSlot}).`,
         `/orders/${order.id}`);
     }
 
-    res.json(storage.getOrder(order.id));
+    res.json(await storage.getOrder(order.id));
   });
 
   // ── PREDICTIVE ETA ──
-  app.get("/api/orders/:id/eta", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.get("/api/orders/:id/eta", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
     if (order.status === "delivered" || order.status === "cancelled") {
       return res.json({ message: "Order is no longer active", status: order.status, deliveredAt: order.deliveredAt });
@@ -3568,11 +3568,11 @@ export async function registerRoutes(
   //  STAFF QUALITY STATS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/staff/quality-stats", requireAuth(), (req, res) => {
+  app.get("/api/staff/quality-stats", requireAuth(), async (req, res) => {
     const vendorId = Number(req.query.vendorId);
     if (!vendorId) return res.status(400).json({ error: "vendorId required" });
 
-    const allOrders = storage.getOrders().filter(o => o.vendorId === vendorId);
+    const allOrders = (await storage.getOrders()).filter(o => o.vendorId === vendorId);
     const completedOrders = allOrders.filter(o =>
       ["packing", "ready_for_delivery", "out_for_delivery", "delivered"].includes(o.status)
     );
@@ -3584,7 +3584,7 @@ export async function registerRoutes(
       : 4.5;
 
     // Vendor-wide average (all vendors for comparison)
-    const allVendorOrders = storage.getOrders().filter(o => o.aiQualityScore != null && o.aiQualityScore > 0);
+    const allVendorOrders = (await storage.getOrders()).filter(o => o.aiQualityScore != null && o.aiQualityScore > 0);
     const vendorAvgScore = allVendorOrders.length > 0
       ? Math.round((allVendorOrders.reduce((s, o) => s + (o.aiQualityScore || 0), 0) / allVendorOrders.length) * 10) / 10
       : 4.1;
@@ -3597,12 +3597,12 @@ export async function registerRoutes(
     const dayVendorSum: Record<string, number> = {};
     const dayVendorCount: Record<string, number> = {};
 
-    DAY_LABELS.forEach(d => {
+    DAY_LABELS.forEach(async d => {
       dayScoreSum[d] = 0; dayScoreCount[d] = 0;
       dayVendorSum[d] = 0; dayVendorCount[d] = 0;
     });
 
-    scoredOrders.forEach(o => {
+    scoredOrders.forEach(async o => {
       if (o.createdAt) {
         const raw = new Date(o.createdAt).getDay(); // 0=Sun..6=Sat
         // Map to Mon-Sun labels
@@ -3611,7 +3611,7 @@ export async function registerRoutes(
         dayScoreCount[label]++;
       }
     });
-    allVendorOrders.forEach(o => {
+    allVendorOrders.forEach(async o => {
       if (o.createdAt) {
         const raw = new Date(o.createdAt).getDay();
         const label = DAY_LABELS[(raw + 6) % 7];
@@ -3648,19 +3648,19 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   // Staff records intake weight
-  app.post("/api/orders/:id/intake", requireAuth(["laundromat", "vendor", "admin"]), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.post("/api/orders/:id/intake", requireAuth(["laundromat", "vendor", "admin"]), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const { weight, photoUrl, actorId } = req.body;
     if (!weight) return res.status(400).json({ error: "Weight is required" });
 
-    storage.updateOrder(order.id, {
+    await storage.updateOrder(order.id, {
       intakeWeight: weight,
       intakePhotoUrl: photoUrl || undefined,
     });
 
-    storage.createOrderEvent({
+    await storage.createOrderEvent({
       orderId: order.id,
       eventType: "intake_completed",
       description: `Intake: ${weight} lbs recorded${photoUrl ? ", photo taken" : ""}`,
@@ -3671,12 +3671,12 @@ export async function registerRoutes(
       timestamp: now(),
     });
 
-    res.json(storage.getOrder(order.id));
+    res.json(await storage.getOrder(order.id));
   });
 
   // Staff records output weight (after wash)
-  app.post("/api/orders/:id/output-weight", requireAuth(["laundromat", "vendor", "admin"]), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.post("/api/orders/:id/output-weight", requireAuth(["laundromat", "vendor", "admin"]), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const { weight, actorId } = req.body;
@@ -3689,7 +3689,7 @@ export async function registerRoutes(
       const diff = Math.abs(weight - order.intakeWeight) / order.intakeWeight;
       if (diff > WEIGHT_TOLERANCE) {
         updateData.weightDiscrepancy = 1;
-        storage.createOrderEvent({
+        await storage.createOrderEvent({
           orderId: order.id,
           eventType: "weight_discrepancy",
           description: `Weight discrepancy detected: intake ${order.intakeWeight} lbs → output ${weight} lbs (${(diff * 100).toFixed(1)}% variance)`,
@@ -3699,13 +3699,13 @@ export async function registerRoutes(
         });
 
         // Notify customer and admin
-        notifyUser(order.customerId, order.id, "order_update",
+        await notifyUser(order.customerId, order.id, "order_update",
           "Weight Discrepancy",
           `A weight difference was detected in your order. Intake: ${order.intakeWeight} lbs, Output: ${weight} lbs.`,
           `/orders/${order.id}`
         );
         // Auto-create consent request
-        storage.createConsent({
+        await storage.createConsent({
           orderId: order.id,
           consentType: "overweight",
           description: `Weight changed from ${order.intakeWeight} lbs to ${weight} lbs (${(diff * 100).toFixed(1)}% variance)`,
@@ -3717,8 +3717,8 @@ export async function registerRoutes(
       }
     }
 
-    storage.updateOrder(order.id, updateData);
-    storage.createOrderEvent({
+    await storage.updateOrder(order.id, updateData);
+    await storage.createOrderEvent({
       orderId: order.id,
       eventType: "output_weight_recorded",
       description: `Output weight: ${weight} lbs`,
@@ -3727,20 +3727,20 @@ export async function registerRoutes(
       timestamp: now(),
     });
 
-    res.json(storage.getOrder(order.id));
+    res.json(await storage.getOrder(order.id));
   });
 
   // Driver records dirty weight at pickup
-  app.post("/api/orders/:id/record-dirty-weight", requireAuth(["driver", "laundromat", "vendor", "admin"]), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.post("/api/orders/:id/record-dirty-weight", requireAuth(["driver", "laundromat", "vendor", "admin"]), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const { weight, actorId } = req.body;
     if (!weight || weight <= 0) return res.status(400).json({ error: "Valid weight is required" });
 
-    storage.updateOrder(order.id, { dirtyWeight: weight });
+    await storage.updateOrder(order.id, { dirtyWeight: weight });
 
-    storage.createOrderEvent({
+    await storage.createOrderEvent({
       orderId: order.id,
       eventType: "dirty_weight_recorded",
       description: `Dirty weight at pickup: ${weight} lbs`,
@@ -3750,12 +3750,12 @@ export async function registerRoutes(
       timestamp: now(),
     });
 
-    res.json(storage.getOrder(order.id));
+    res.json(await storage.getOrder(order.id));
   });
 
   // Staff records clean weight after wash — auto-calculates overage and final price
-  app.post("/api/orders/:id/record-clean-weight", requireAuth(["laundromat", "vendor", "admin"]), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.post("/api/orders/:id/record-clean-weight", requireAuth(["laundromat", "vendor", "admin"]), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const { weight, actorId } = req.body;
@@ -3781,14 +3781,14 @@ export async function registerRoutes(
       updateData.overageCharge = overageCharge;
 
       // Calculate add-ons total
-      const orderAddOnsList = storage.getOrderAddOns(order.id);
+      const orderAddOnsList = await storage.getOrderAddOns(order.id);
       const addOnsTotal = orderAddOnsList.reduce((sum, oa) => sum + oa.total, 0);
 
       const finalPrice = Math.round((tierFlatPrice + overageCharge + addOnsTotal - (order.discount || 0) + (order.tax || 0) + (order.deliveryFee || 0)) * 100) / 100;
       updateData.finalPrice = Math.max(0, finalPrice);
 
       if (overageWeight > 0) {
-        storage.createOrderEvent({
+        await storage.createOrderEvent({
           orderId: order.id,
           eventType: "overage_calculated",
           description: `Order exceeds ${order.tierName || "tier"} limit by ${overageWeight} lbs. Overage charge: $${overageCharge.toFixed(2)}`,
@@ -3799,9 +3799,9 @@ export async function registerRoutes(
       }
     }
 
-    storage.updateOrder(order.id, updateData);
+    await storage.updateOrder(order.id, updateData);
 
-    storage.createOrderEvent({
+    await storage.createOrderEvent({
       orderId: order.id,
       eventType: "clean_weight_recorded",
       description: `Clean weight after wash: ${weight} lbs${updateData.weightDifference != null ? ` (${updateData.weightDifference > 0 ? "-" : "+"}${Math.abs(updateData.weightDifference).toFixed(1)} lbs from dirty weight)` : ""}`,
@@ -3811,15 +3811,15 @@ export async function registerRoutes(
       timestamp: now(),
     });
 
-    res.json(storage.getOrder(order.id));
+    res.json(await storage.getOrder(order.id));
   });
 
   // Weight comparison breakdown
-  app.get("/api/orders/:id/weight-comparison", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.get("/api/orders/:id/weight-comparison", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    const orderAddOnsList = storage.getOrderAddOns(order.id);
+    const orderAddOnsList = await storage.getOrderAddOns(order.id);
     const addOnsTotal = orderAddOnsList.reduce((sum, oa) => sum + oa.total, 0);
 
     res.json({
@@ -3846,18 +3846,18 @@ export async function registerRoutes(
   //  ORDER EVENTS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/orders/:id/events", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.get("/api/orders/:id/events", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
     const currentUser = (req as any).currentUser;
     if (order.customerId !== currentUser.id && order.driverId !== currentUser.id && order.vendorId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    res.json(storage.getOrderEvents(Number(String(req.params.id))));
+    res.json(await storage.getOrderEvents(Number(String(req.params.id))));
   });
 
-  app.post("/api/orders/:id/events", requireAuth(["admin", "manager"]), (req, res) => {
-    const event = storage.createOrderEvent({
+  app.post("/api/orders/:id/events", requireAuth(["admin", "manager"]), async (req, res) => {
+    const event = await storage.createOrderEvent({
       ...req.body,
       orderId: Number(String(req.params.id)),
       timestamp: now(),
@@ -3869,48 +3869,48 @@ export async function registerRoutes(
   //  ADDRESSES
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/addresses", requireAuth(), (req, res) => {
+  app.get("/api/addresses", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     const userId = ["admin", "manager"].includes(currentUser.role) && req.query.userId ? Number(req.query.userId) : currentUser.id;
-    res.json(storage.getAddressesByUser(userId));
+    res.json(await storage.getAddressesByUser(userId));
   });
 
-  app.post("/api/addresses", requireAuth(), (req, res) => {
+  app.post("/api/addresses", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     req.body.userId = currentUser.id;
     if (req.body.isDefault) {
-      const existing = storage.getAddressesByUser(currentUser.id);
-      existing.forEach(a => {
-        if (a.isDefault) storage.updateAddress(a.id, { isDefault: 0 });
+      const existing = await storage.getAddressesByUser(currentUser.id);
+      existing.forEach(async a => {
+        if (a.isDefault) await storage.updateAddress(a.id, { isDefault: 0 });
       });
     }
-    const address = storage.createAddress(req.body);
+    const address = await storage.createAddress(req.body);
     res.status(201).json(address);
   });
 
-  app.patch("/api/addresses/:id", requireAuth(), (req, res) => {
+  app.patch("/api/addresses/:id", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
-    const addr = storage.getAddress(Number(String(req.params.id)));
+    const addr = await storage.getAddress(Number(String(req.params.id)));
     if (!addr) return res.status(404).json({ error: "Address not found" });
     if (addr.userId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
     if (req.body.isDefault) {
-      const allAddr = storage.getAddressesByUser(addr.userId);
-      allAddr.forEach(a => storage.updateAddress(a.id, { isDefault: 0 }));
+      const allAddr = await storage.getAddressesByUser(addr.userId);
+      for (const a of allAddr) { await storage.updateAddress(a.id, { isDefault: 0 }); }
     }
-    const updated = storage.updateAddress(Number(String(req.params.id)), req.body);
+    const updated = await storage.updateAddress(Number(String(req.params.id)), req.body);
     res.json(updated);
   });
 
-  app.delete("/api/addresses/:id", requireAuth(), (req, res) => {
+  app.delete("/api/addresses/:id", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
-    const addr = storage.getAddress(Number(String(req.params.id)));
+    const addr = await storage.getAddress(Number(String(req.params.id)));
     if (!addr) return res.status(404).json({ error: "Address not found" });
     if (addr.userId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    storage.deleteAddress(Number(String(req.params.id)));
+    await storage.deleteAddress(Number(String(req.params.id)));
     res.json({ success: true });
   });
 
@@ -3918,49 +3918,49 @@ export async function registerRoutes(
   //  PAYMENT METHODS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/payment-methods", requireAuth(), (req, res) => {
+  app.get("/api/payment-methods", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     const userId = ["admin", "manager"].includes(currentUser.role) && req.query.userId ? Number(req.query.userId) : currentUser.id;
-    res.json(storage.getPaymentMethodsByUser(userId));
+    res.json(await storage.getPaymentMethodsByUser(userId));
   });
 
-  app.post("/api/payment-methods", requireAuth(), (req, res) => {
+  app.post("/api/payment-methods", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     req.body.userId = currentUser.id;
-    res.status(201).json(storage.createPaymentMethod(req.body));
+    res.status(201).json(await storage.createPaymentMethod(req.body));
   });
 
-  app.patch("/api/payment-methods/:id", requireAuth(), (req, res) => {
+  app.patch("/api/payment-methods/:id", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     const id = Number(String(req.params.id));
-    const allMethods = storage.getPaymentMethodsByUser(currentUser.id);
+    const allMethods = await storage.getPaymentMethodsByUser(currentUser.id);
     const method = allMethods.find(m => m.id === id);
     if (!method && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
     const { isDefault, userId } = req.body;
     if (isDefault) {
-      const existing = storage.getPaymentMethodsByUser(method?.userId || currentUser.id);
-      existing.forEach(pm => {
+      const existing = await storage.getPaymentMethodsByUser(method?.userId || currentUser.id);
+      existing.forEach(async pm => {
         if (pm.id !== id && pm.isDefault) {
-          storage.updatePaymentMethod(pm.id, { isDefault: 0 });
+          await storage.updatePaymentMethod(pm.id, { isDefault: 0 });
         }
       });
     }
-    const updated = storage.updatePaymentMethod(id, req.body);
+    const updated = await storage.updatePaymentMethod(id, req.body);
     if (!updated) return res.status(404).json({ error: "Payment method not found" });
     res.json(updated);
   });
 
-  app.delete("/api/payment-methods/:id", requireAuth(), (req, res) => {
+  app.delete("/api/payment-methods/:id", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     const id = Number(String(req.params.id));
-    const allMethods = storage.getPaymentMethodsByUser(currentUser.id);
+    const allMethods = await storage.getPaymentMethodsByUser(currentUser.id);
     const method = allMethods.find(m => m.id === id);
     if (!method && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    storage.deletePaymentMethod(id);
+    await storage.deletePaymentMethod(id);
     res.json({ success: true });
   });
 
@@ -3968,15 +3968,15 @@ export async function registerRoutes(
   //  CONSENT ENGINE
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/orders/:id/consents", requireAuth(), (req, res) => {
-    res.json(storage.getConsentsByOrder(Number(String(req.params.id))));
+  app.get("/api/orders/:id/consents", requireAuth(), async (req, res) => {
+    res.json(await storage.getConsentsByOrder(Number(String(req.params.id))));
   });
 
-  app.post("/api/orders/:id/consents", requireAuth(["laundromat", "vendor", "admin"]), (req, res) => {
+  app.post("/api/orders/:id/consents", requireAuth(["laundromat", "vendor", "admin"]), async (req, res) => {
     const ts_ = now();
     const autoApproveAt = new Date(Date.now() + CONSENT_TIMEOUT_HOURS * 3600000).toISOString();
 
-    const consent = storage.createConsent({
+    const consent = await storage.createConsent({
       ...req.body,
       orderId: Number(String(req.params.id)),
       requestedAt: ts_,
@@ -3984,7 +3984,7 @@ export async function registerRoutes(
     });
 
     // Log event
-    storage.createOrderEvent({
+    await storage.createOrderEvent({
       orderId: Number(String(req.params.id)),
       eventType: "consent_requested",
       description: `Consent requested: ${req.body.consentType} — ${req.body.description}`,
@@ -3994,9 +3994,9 @@ export async function registerRoutes(
     });
 
     // Notify customer
-    const order = storage.getOrder(Number(String(req.params.id)));
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (order) {
-      notifyUser(order.customerId, order.id, "consent_request",
+      await notifyUser(order.customerId, order.id, "consent_request",
         "Action Required",
         `The laundromat needs your approval: ${req.body.description}. Auto-approves in ${CONSENT_TIMEOUT_HOURS} hours.`,
         `/orders/${order.id}`
@@ -4007,8 +4007,8 @@ export async function registerRoutes(
   });
 
   // Customer responds to consent
-  app.patch("/api/consents/:id", requireAuth(), (req, res) => {
-    const consent = storage.getConsent(Number(String(req.params.id)));
+  app.patch("/api/consents/:id", requireAuth(), async (req, res) => {
+    const consent = await storage.getConsent(Number(String(req.params.id)));
     if (!consent) return res.status(404).json({ error: "Consent not found" });
 
     const { status } = req.body;
@@ -4016,13 +4016,13 @@ export async function registerRoutes(
       return res.status(400).json({ error: "Status must be approved or denied" });
     }
 
-    const updated = storage.updateConsent(consent.id, {
+    const updated = await storage.updateConsent(consent.id, {
       status,
       respondedAt: now(),
     });
 
     // Log event
-    storage.createOrderEvent({
+    await storage.createOrderEvent({
       orderId: consent.orderId,
       eventType: status === "approved" ? "consent_granted" : "consent_denied",
       description: `Customer ${status} consent: ${consent.description}`,
@@ -4032,12 +4032,12 @@ export async function registerRoutes(
 
     // If there's an additional charge and it's approved, update order total
     if (status === "approved" && consent.additionalCharge && consent.additionalCharge > 0) {
-      const order = storage.getOrder(consent.orderId);
+      const order = await storage.getOrder(consent.orderId);
       if (order) {
         const newSubtotal = (order.subtotal || 0) + consent.additionalCharge;
         const newTax = Math.round(newSubtotal * TAX_RATE * 100) / 100;
         const newTotal = Math.round((newSubtotal + newTax + (order.deliveryFee || 0)) * 100) / 100;
-        storage.updateOrder(order.id, { subtotal: newSubtotal, tax: newTax, total: newTotal });
+        await storage.updateOrder(order.id, { subtotal: newSubtotal, tax: newTax, total: newTotal });
       }
     }
 
@@ -4048,24 +4048,24 @@ export async function registerRoutes(
   //  MESSAGES
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/orders/:id/messages", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.get("/api/orders/:id/messages", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
     const currentUser = (req as any).currentUser;
     if (order.customerId !== currentUser.id && order.driverId !== currentUser.id && order.vendorId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    res.json(storage.getMessagesByOrder(Number(String(req.params.id))));
+    res.json(await storage.getMessagesByOrder(Number(String(req.params.id))));
   });
 
-  app.post("/api/orders/:id/messages", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.post("/api/orders/:id/messages", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
     const currentUser = (req as any).currentUser;
     if (order.customerId !== currentUser.id && order.driverId !== currentUser.id && order.vendorId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const msg = storage.createMessage({
+    const msg = await storage.createMessage({
       ...req.body,
       orderId: Number(String(req.params.id)),
       senderId: currentUser.id,
@@ -4079,31 +4079,31 @@ export async function registerRoutes(
   //  DISPUTES
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/disputes", requireAuth(["admin", "manager"]), (_req, res) => {
-    res.json(storage.getDisputes());
+  app.get("/api/disputes", requireAuth(["admin", "manager"]), async (_req, res) => {
+    res.json(await storage.getDisputes());
   });
 
-  app.get("/api/disputes/:id", requireAuth(), (req, res) => {
-    const d = storage.getDispute(Number(String(req.params.id)));
+  app.get("/api/disputes/:id", requireAuth(), async (req, res) => {
+    const d = await storage.getDispute(Number(String(req.params.id)));
     if (!d) return res.status(404).json({ error: "Dispute not found" });
     const currentUser = (req as any).currentUser;
     if (d.customerId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const order = storage.getOrder(d.orderId);
-    const customer = storage.getUser(d.customerId);
+    const order = await storage.getOrder(d.orderId);
+    const customer = await storage.getUser(d.customerId);
     res.json({ ...d, order, customer: customer ? { id: customer.id, name: customer.name, email: customer.email } : null });
   });
 
-  app.post("/api/disputes", requireAuth(), (req, res) => {
+  app.post("/api/disputes", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
-    const order = storage.getOrder(Number(req.body.orderId));
+    const order = await storage.getOrder(Number(req.body.orderId));
     if (!order || order.customerId !== currentUser.id) {
       return res.status(403).json({ error: "Access denied" });
     }
 
     const ts_ = now();
-    const dispute = storage.createDispute({
+    const dispute = await storage.createDispute({
       ...req.body,
       customerId: currentUser.id,
       createdAt: ts_,
@@ -4111,8 +4111,8 @@ export async function registerRoutes(
 
     // Update order status
     if (order) {
-      storage.updateOrder(order.id, { status: "disputed" });
-      storage.createOrderEvent({
+      await storage.updateOrder(order.id, { status: "disputed" });
+      await storage.createOrderEvent({
         orderId: order.id,
         eventType: "disputed",
         description: `Dispute filed: ${dispute.reason}`,
@@ -4122,9 +4122,9 @@ export async function registerRoutes(
       });
 
       // Notify admins
-      const admins = storage.getUsersByRole("admin");
-      admins.forEach(admin => {
-        notifyUser(admin.id, order.id, "system",
+      const admins = await storage.getUsersByRole("admin");
+      admins.forEach(async admin => {
+        await notifyUser(admin.id, order.id, "system",
           "New Dispute",
           `Dispute on order ${order.orderNumber}: ${dispute.reason}`,
           `/admin/disputes`
@@ -4135,23 +4135,23 @@ export async function registerRoutes(
     res.status(201).json(dispute);
   });
 
-  app.patch("/api/disputes/:id", requireAuth(["admin", "manager"]), (req, res) => {
-    const updated = storage.updateDispute(Number(String(req.params.id)), req.body);
+  app.patch("/api/disputes/:id", requireAuth(["admin", "manager"]), async (req, res) => {
+    const updated = await storage.updateDispute(Number(String(req.params.id)), req.body);
     if (!updated) return res.status(404).json({ error: "Dispute not found" });
 
     // If resolved, notify customer
     if (req.body.status === "resolved" || req.body.status === "closed") {
-      const dispute = storage.getDispute(Number(String(req.params.id)));
+      const dispute = await storage.getDispute(Number(String(req.params.id)));
       if (dispute) {
-        notifyUser(dispute.customerId, dispute.orderId, "system",
+        await notifyUser(dispute.customerId, dispute.orderId, "system",
           "Dispute Resolved",
           `Your dispute has been ${req.body.status}. ${req.body.resolution || ""}`,
           `/orders/${dispute.orderId}`
         );
         if (req.body.refundAmount && req.body.refundAmount > 0) {
-          const order = storage.getOrder(dispute.orderId);
+          const order = await storage.getOrder(dispute.orderId);
           if (order) {
-            storage.updateOrder(order.id, { paymentStatus: "refunded" });
+            await storage.updateOrder(order.id, { paymentStatus: "refunded" });
           }
         }
       }
@@ -4164,25 +4164,25 @@ export async function registerRoutes(
   //  REVIEWS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/reviews", requireAuth(), (_req, res) => {
-    res.json(storage.getReviews());
+  app.get("/api/reviews", requireAuth(), async (_req, res) => {
+    res.json(await storage.getReviews());
   });
 
-  app.get("/api/orders/:id/review", requireAuth(), (req, res) => {
-    const review = storage.getReviewByOrder(Number(String(req.params.id)));
+  app.get("/api/orders/:id/review", requireAuth(), async (req, res) => {
+    const review = await storage.getReviewByOrder(Number(String(req.params.id)));
     if (!review) return res.status(404).json({ error: "No review yet" });
     res.json(review);
   });
 
-  app.post("/api/orders/:id/review", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.post("/api/orders/:id/review", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // Check if already reviewed
-    const existing = storage.getReviewByOrder(order.id);
+    const existing = await storage.getReviewByOrder(order.id);
     if (existing) return res.status(409).json({ error: "Order already reviewed" });
 
-    const review = storage.createReview({
+    const review = await storage.createReview({
       orderId: order.id,
       customerId: order.customerId,
       vendorId: order.vendorId || undefined,
@@ -4196,9 +4196,9 @@ export async function registerRoutes(
 
     // Update vendor rating
     if (order.vendorId && req.body.vendorRating) {
-      const vendorReviews = storage.getReviewsByVendor(order.vendorId);
+      const vendorReviews = await storage.getReviewsByVendor(order.vendorId);
       const avgRating = vendorReviews.reduce((sum, r) => sum + (r.vendorRating || r.overallRating), 0) / vendorReviews.length;
-      storage.updateVendor(order.vendorId, {
+      await storage.updateVendor(order.vendorId, {
         rating: Math.round(avgRating * 10) / 10,
         reviewCount: vendorReviews.length,
       });
@@ -4206,15 +4206,15 @@ export async function registerRoutes(
 
     // Update driver rating
     if (order.driverId && req.body.driverRating) {
-      const driverReviews = storage.getReviewsByDriver(order.driverId);
+      const driverReviews = await storage.getReviewsByDriver(order.driverId);
       const avgRating = driverReviews.reduce((sum, r) => sum + (r.driverRating || r.overallRating), 0) / driverReviews.length;
-      const driver = storage.getDriver(order.driverId);
+      const driver = await storage.getDriver(order.driverId);
       if (driver) {
-        storage.updateDriver(driver.id, { rating: Math.round(avgRating * 10) / 10 });
+        await storage.updateDriver(driver.id, { rating: Math.round(avgRating * 10) / 10 });
       }
     }
 
-    storage.createOrderEvent({
+    await storage.createOrderEvent({
       orderId: order.id,
       eventType: "review_submitted",
       description: `Customer rated ${req.body.overallRating || req.body.rating}/5: ${req.body.comment || "No comment"}`,
@@ -4230,14 +4230,14 @@ export async function registerRoutes(
   //  PUSH TOKENS
   // ─────────────────────────────────────────────────────────
 
-  app.post("/api/push/register-token", requireAuth(), (req, res) => {
+  app.post("/api/push/register-token", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     const { token, platform } = req.body || {};
     if (!token || typeof token !== "string") return res.status(400).json({ error: "token is required" });
     if (!platform || typeof platform !== "string") return res.status(400).json({ error: "platform is required" });
     if (!["ios", "android", "web"].includes(platform)) return res.status(400).json({ error: "Unsupported platform" });
 
-    const saved = storage.savePushToken(currentUser.id, token, platform);
+    const saved = await storage.savePushToken(currentUser.id, token, platform);
     res.status(201).json({ id: saved.id, platform: saved.platform, createdAt: saved.createdAt });
   });
 
@@ -4245,31 +4245,31 @@ export async function registerRoutes(
   //  NOTIFICATIONS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/notifications", requireAuth(), (req, res) => {
+  app.get("/api/notifications", requireAuth(), async (req, res) => {
     // Security: always use auth token userId, ignore query param
     const currentUserN = (req as any).currentUser;
     const userId = currentUserN.id;
-    res.json(storage.getNotificationsByUser(userId));
+    res.json(await storage.getNotificationsByUser(userId));
   });
 
-  app.get("/api/notifications/unread-count", requireAuth(), (req, res) => {
+  app.get("/api/notifications/unread-count", requireAuth(), async (req, res) => {
     const currentUserUC = (req as any).currentUser;
     const userId = currentUserUC.id;
-    res.json({ count: storage.getUnreadCount(userId) });
+    res.json({ count: await storage.getUnreadCount(userId) });
   });
 
-  app.patch("/api/notifications/:id/read", requireAuth(), (req, res) => {
+  app.patch("/api/notifications/:id/read", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
-    const existing = storage.getNotification(Number(String(req.params.id)));
+    const existing = await storage.getNotification(Number(String(req.params.id)));
     if (!existing) return res.status(404).json({ error: "Notification not found" });
     if (existing.userId !== currentUser.id) return res.status(403).json({ error: "Access denied" });
-    const n = storage.markNotificationRead(existing.id);
+    const n = await storage.markNotificationRead(existing.id);
     res.json(n);
   });
 
-  app.post("/api/notifications/mark-all-read", requireAuth(), (req, res) => {
+  app.post("/api/notifications/mark-all-read", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
-    storage.markAllRead(currentUser.id);
+    await storage.markAllRead(currentUser.id);
     res.json({ success: true });
   });
 
@@ -4277,12 +4277,12 @@ export async function registerRoutes(
   //  CUSTOMER STATS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/customers/:id/stats", requireAuth(), (req, res) => {
+  app.get("/api/customers/:id/stats", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     if (Number(String(req.params.id)) !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    res.json(storage.getCustomerStats(Number(String(req.params.id))));
+    res.json(await storage.getCustomerStats(Number(String(req.params.id))));
   });
 
   // ─────────────────────────────────────────────────────────
@@ -4310,7 +4310,7 @@ export async function registerRoutes(
   //  DYNAMIC PRICING ESTIMATE (with surge)
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/pricing/estimate", requireAuth(), (req, res) => {
+  app.get("/api/pricing/estimate", requireAuth(), async (req, res) => {
     try {
       const { serviceType, bags, deliverySpeed, pickupTime } = req.query;
       let parsedBags: any[];
@@ -4323,7 +4323,7 @@ export async function registerRoutes(
 
       const basePrice = calculatePricing(parsedBags, speed);
       const surge = getSurgePricingTier(pickupTime as string | undefined);
-      const demandMultiplier = getDemandMultiplier((serviceType as string) || "wash_fold");
+      const demandMultiplier = await getDemandMultiplier((serviceType as string) || "wash_fold");
 
       const surgedSubtotal = Math.round(basePrice.subtotal * surge.multiplier * demandMultiplier * 100) / 100;
       const surgedTax = Math.round(surgedSubtotal * TAX_RATE * 100) / 100;
@@ -4364,16 +4364,16 @@ export async function registerRoutes(
   //  LOYALTY SYSTEM
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/loyalty/:userId", requireAuth(), (req, res) => {
+  app.get("/api/loyalty/:userId", requireAuth(), async (req, res) => {
     const cuL = (req as any).currentUser;
     if (cuL.role !== "admin" && cuL.role !== "manager" && cuL.id !== Number(String(req.params.userId))) {
       return res.status(403).json({ error: "Access denied" });
     }
     const userId = Number(String(req.params.userId));
-    const user = storage.getUser(userId);
+    const user = await storage.getUser(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    const transactions = storage.getLoyaltyTransactions(userId);
+    const transactions = await storage.getLoyaltyTransactions(userId);
     const tier = user.loyaltyTier || "bronze";
     const tierInfo = LOYALTY_TIERS[tier as keyof typeof LOYALTY_TIERS];
     const nextTierEntry = Object.entries(LOYALTY_TIERS).find(([t, info]) => info.minPoints > (user.loyaltyPoints || 0));
@@ -4396,7 +4396,7 @@ export async function registerRoutes(
     });
   });
 
-  app.post("/api/loyalty/redeem", requireAuth(), (req, res) => {
+  app.post("/api/loyalty/redeem", requireAuth(), async (req, res) => {
     const { userId, points, orderId } = req.body;
     if (!userId || !points) {
       return res.status(400).json({ error: "userId and points are required" });
@@ -4409,7 +4409,7 @@ export async function registerRoutes(
       return res.status(400).json({ error: "Points must be redeemable in multiples of 100" });
     }
 
-    const user = storage.getUser(Number(userId));
+    const user = await storage.getUser(Number(userId));
     if (!user) return res.status(404).json({ error: "User not found" });
     if ((user.loyaltyPoints || 0) < points) {
       return res.status(400).json({ error: `Insufficient points. You have ${user.loyaltyPoints || 0} points.` });
@@ -4418,9 +4418,9 @@ export async function registerRoutes(
     const dollarValue = points / 100;
     const newBalance = (user.loyaltyPoints || 0) - points;
 
-    storage.updateUser(Number(userId), { loyaltyPoints: newBalance });
+    await storage.updateUser(Number(userId), { loyaltyPoints: newBalance });
 
-    const transaction = storage.createLoyaltyTransaction({
+    const transaction = await storage.createLoyaltyTransaction({
       userId: Number(userId),
       orderId: orderId || null,
       type: "redeemed",
@@ -4429,7 +4429,7 @@ export async function registerRoutes(
       createdAt: now(),
     });
 
-    notifyUser(Number(userId), null, "loyalty",
+    await notifyUser(Number(userId), null, "loyalty",
       "Points Redeemed",
       `You redeemed ${points} points for $${dollarValue.toFixed(2)} credit.`,
       "/profile"
@@ -4448,16 +4448,16 @@ export async function registerRoutes(
   //  REFERRAL SYSTEM
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/referrals/:userId", requireAuth(), (req, res) => {
+  app.get("/api/referrals/:userId", requireAuth(), async (req, res) => {
     const cuR = (req as any).currentUser;
     if (cuR.role !== "admin" && cuR.role !== "manager" && cuR.id !== Number(String(req.params.userId))) {
       return res.status(403).json({ error: "Access denied" });
     }
     const userId = Number(String(req.params.userId));
-    const user = storage.getUser(userId);
+    const user = await storage.getUser(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    const referrals_ = storage.getReferralsByUser(userId);
+    const referrals_ = await storage.getReferralsByUser(userId);
     const asReferrer = referrals_.filter(r => r.referrerId === userId);
     const asReferee = referrals_.filter(r => r.refereeId === userId);
 
@@ -4468,8 +4468,8 @@ export async function registerRoutes(
       .reduce((sum, r) => sum + (r.referrerReward || 0), 0);
 
     // Enrich referrals with user info
-    const enrichedReferrals = asReferrer.map(r => {
-      const referee = storage.getUser(r.refereeId);
+    const enrichedReferrals = asReferrer.map(async r => {
+  const referee = await storage.getUser(r.refereeId);
       return {
         ...r,
         refereeName: referee ? referee.name : "Unknown",
@@ -4495,20 +4495,20 @@ export async function registerRoutes(
     });
   });
 
-  app.post("/api/referrals/apply", requireAuth(), (req, res) => {
+  app.post("/api/referrals/apply", requireAuth(), async (req, res) => {
     const { userId, referralCode } = req.body;
     if (!userId || !referralCode) {
       return res.status(400).json({ error: "userId and referralCode are required" });
     }
 
-    const user = storage.getUser(Number(userId));
+    const user = await storage.getUser(Number(userId));
     if (!user) return res.status(404).json({ error: "User not found" });
     if (user.referredBy) {
       return res.status(409).json({ error: "User has already been referred" });
     }
 
     // Find referrer
-    const allCustomers = storage.getUsersByRole("customer");
+    const allCustomers = await storage.getUsersByRole("customer");
     const referrer = allCustomers.find(u => u.referralCode === referralCode);
     if (!referrer) {
       return res.status(404).json({ error: "Invalid referral code" });
@@ -4518,7 +4518,7 @@ export async function registerRoutes(
     }
 
     // Create referral record
-    const referral = storage.createReferral({
+    const referral = await storage.createReferral({
       referrerId: referrer.id,
       refereeId: Number(userId),
       status: "pending",
@@ -4528,13 +4528,13 @@ export async function registerRoutes(
     });
 
     // Update user's referredBy
-    storage.updateUser(Number(userId), { referredBy: referrer.id });
+    await storage.updateUser(Number(userId), { referredBy: referrer.id });
 
     // Give referee 100 bonus points
-    storage.updateUser(Number(userId), {
+    await storage.updateUser(Number(userId), {
       loyaltyPoints: (user.loyaltyPoints || 0) + 100,
     });
-    storage.createLoyaltyTransaction({
+    await storage.createLoyaltyTransaction({
       userId: Number(userId),
       type: "referral",
       points: 100,
@@ -4542,7 +4542,7 @@ export async function registerRoutes(
       createdAt: now(),
     });
 
-    notifyUser(referrer.id, null, "system",
+    await notifyUser(referrer.id, null, "system",
       "New Referral!",
       `${user.name} signed up using your referral code. You'll earn 1,000 points when they complete their first order.`,
       "/profile"
@@ -4559,11 +4559,11 @@ export async function registerRoutes(
   //  PROMO CODE SYSTEM
   // ─────────────────────────────────────────────────────────
 
-  app.post("/api/promo/validate", requireAuth(), (req, res) => {
+  app.post("/api/promo/validate", requireAuth(), async (req, res) => {
     const { code, orderTotal, userId } = req.body;
     if (!code) return res.status(400).json({ error: "Promo code is required" });
 
-    const promo = storage.getPromoCode(code.toUpperCase());
+    const promo = await storage.getPromoCode(code.toUpperCase());
     if (!promo) {
       return res.status(404).json({ error: "Promo code not found", valid: false });
     }
@@ -4611,11 +4611,11 @@ export async function registerRoutes(
     });
   });
 
-  app.get("/api/admin/promos", requireAuth(["admin"]), (_req, res) => {
-    res.json(storage.getPromoCodes());
+  app.get("/api/admin/promos", requireAuth(["admin"]), async (_req, res) => {
+    res.json(await storage.getPromoCodes());
   });
 
-  app.post("/api/admin/promos", requireAuth(["admin"]), (req, res) => {
+  app.post("/api/admin/promos", requireAuth(["admin"]), async (req, res) => {
     const { code, type, value, minOrderAmount, maxUses, expiresAt } = req.body;
     if (!code || !type || value === undefined) {
       return res.status(400).json({ error: "code, type, and value are required" });
@@ -4624,12 +4624,12 @@ export async function registerRoutes(
       return res.status(400).json({ error: "type must be percentage, fixed, or free_delivery" });
     }
 
-    const existing = storage.getPromoCode(code.toUpperCase());
+    const existing = await storage.getPromoCode(code.toUpperCase());
     if (existing) {
       return res.status(409).json({ error: "Promo code already exists" });
     }
 
-    const promo = storage.createPromoCode({
+    const promo = await storage.createPromoCode({
       code: code.toUpperCase(),
       type,
       value,
@@ -4644,14 +4644,14 @@ export async function registerRoutes(
     res.status(201).json(promo);
   });
 
-  app.patch("/api/admin/promos/:id", requireAuth(["admin"]), (req, res) => {
-    const updated = storage.updatePromoCode(Number(String(req.params.id)), req.body);
+  app.patch("/api/admin/promos/:id", requireAuth(["admin"]), async (req, res) => {
+    const updated = await storage.updatePromoCode(Number(String(req.params.id)), req.body);
     if (!updated) return res.status(404).json({ error: "Promo code not found" });
     res.json(updated);
   });
 
-  app.delete("/api/admin/promos/:id", requireAuth(["admin"]), (req, res) => {
-    const updated = storage.updatePromoCode(Number(String(req.params.id)), { isActive: 0 });
+  app.delete("/api/admin/promos/:id", requireAuth(["admin"]), async (req, res) => {
+    const updated = await storage.updatePromoCode(Number(String(req.params.id)), { isActive: 0 });
     if (!updated) return res.status(404).json({ error: "Promo code not found" });
     res.json({ success: true, message: "Promo code deactivated" });
   });
@@ -4660,7 +4660,7 @@ export async function registerRoutes(
   //  AI CHATBOT
   // ─────────────────────────────────────────────────────────
 
-  app.post("/api/chat/message", requireAuth(), (req, res) => {
+  app.post("/api/chat/message", requireAuth(), async (req, res) => {
     const { message, sessionId } = req.body;
     const currentUser = (req as any).currentUser;
     const userId = currentUser.id;
@@ -4669,14 +4669,14 @@ export async function registerRoutes(
     }
 
     const intent = detectIntent(message);
-    const { response, resolved, escalate } = generateAIResponse(intent, userId, message);
+    const { response, resolved, escalate } = await generateAIResponse(intent, userId, message);
 
     const ts_ = now();
 
     // Find or create session
     let session;
     if (sessionId) {
-      session = storage.getChatSession(Number(sessionId));
+      session = await storage.getChatSession(Number(sessionId));
       if (session && session.userId !== userId) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -4688,7 +4688,7 @@ export async function registerRoutes(
         { role: "user", content: message, timestamp: ts_ },
         { role: "assistant", content: response, timestamp: ts_, intent },
       ];
-      session = storage.createChatSession({
+      session = await storage.createChatSession({
         userId,
         status: resolved ? "resolved" : escalate ? "escalated" : "active",
         topic: intent,
@@ -4704,7 +4704,7 @@ export async function registerRoutes(
       existingMessages.push({ role: "user", content: message, timestamp: ts_ });
       existingMessages.push({ role: "assistant", content: response, timestamp: ts_, intent });
 
-      session = storage.updateChatSession(session.id, {
+      session = await storage.updateChatSession(session.id, {
         status: resolved ? "resolved" : escalate ? "escalated" : "active",
         aiResolved: resolved ? 1 : 0,
         messagesJson: JSON.stringify(existingMessages),
@@ -4713,7 +4713,7 @@ export async function registerRoutes(
     }
 
     // Also store as messages
-    storage.createMessage({
+    await storage.createMessage({
       conversationId: `chat-${session.id}`,
       senderId: userId,
       senderRole: "customer",
@@ -4721,7 +4721,7 @@ export async function registerRoutes(
       messageType: "text",
       timestamp: ts_,
     });
-    storage.createMessage({
+    await storage.createMessage({
       conversationId: `chat-${session.id}`,
       senderId: 0, // AI
       senderRole: "ai",
@@ -4732,9 +4732,9 @@ export async function registerRoutes(
     });
 
     if (escalate) {
-      const admins = storage.getUsersByRole("admin");
-      admins.forEach(admin => {
-        notifyUser(admin.id, null, "system",
+      const admins = await storage.getUsersByRole("admin");
+      admins.forEach(async admin => {
+        await notifyUser(admin.id, null, "system",
           "Chat Escalation",
           `Customer chat session requires human attention. Topic: ${intent}`,
           "/admin/support"
@@ -4752,16 +4752,16 @@ export async function registerRoutes(
     });
   });
 
-  app.get("/api/chat/sessions/:userId", requireAuth(), (req, res) => {
+  app.get("/api/chat/sessions/:userId", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     if (Number(String(req.params.userId)) !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
     const userId = Number(String(req.params.userId));
-    const user = storage.getUser(userId);
+    const user = await storage.getUser(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    const sessions = storage.getChatSessions(userId);
+    const sessions = await storage.getChatSessions(userId);
     res.json({
       userId,
       totalSessions: sessions.length,
@@ -4774,13 +4774,13 @@ export async function registerRoutes(
     });
   });
 
-  app.get("/api/chat/sessions/:userId/:sessionId", requireAuth(), (req, res) => {
+  app.get("/api/chat/sessions/:userId/:sessionId", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     // Ownership check: user can only view their own chat sessions
     if (Number(String(req.params.userId)) !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Forbidden" });
     }
-    const session = storage.getChatSession(Number(String(req.params.sessionId)));
+    const session = await storage.getChatSession(Number(String(req.params.sessionId)));
     if (!session) return res.status(404).json({ error: "Session not found" });
     // Verify session belongs to the requested user
     if (session.userId !== Number(String(req.params.userId)) && !["admin", "manager"].includes(currentUser.role)) {
@@ -4796,13 +4796,13 @@ export async function registerRoutes(
   //  VENDOR SCORING (AI Health)
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/admin/vendor-scores", requireAuth(["admin"]), (_req, res) => {
-    const vendors = storage.getVendors();
-    const scored = vendors.map(vendor => {
+  app.get("/api/admin/vendor-scores", requireAuth(["admin"]), async (_req, res) => {
+    const vendors = await storage.getVendors();
+    const scored = (await Promise.all(vendors.map(async vendor => {
       const health = calculateVendorHealthScore(vendor);
-      const stats = storage.getVendorStats(vendor.id);
+      const stats = await storage.getVendorStats(vendor.id);
       // Update stored score
-      storage.updateVendor(vendor.id, { aiHealthScore: health.score });
+      await storage.updateVendor(vendor.id, { aiHealthScore: health.score });
       return {
         id: vendor.id,
         name: vendor.name,
@@ -4825,7 +4825,7 @@ export async function registerRoutes(
         disputeRate: vendor.disputeRate,
         avgProcessingTime: vendor.avgProcessingTime,
       };
-    }).sort((a, b) => b.aiHealthScore - a.aiHealthScore);
+    }))).sort((a, b) => b.aiHealthScore - a.aiHealthScore);
 
     const eliteCount = scored.filter(v => v.performanceTier === "elite").length;
     const atRiskCount = scored.filter(v => v.aiHealthScore < 60).length;
@@ -4848,17 +4848,17 @@ export async function registerRoutes(
     });
   });
 
-  app.get("/api/admin/vendor-health/:id", requireAuth(["admin", "manager"]), (req, res) => {
-    const vendor = storage.getVendor(Number(String(req.params.id)));
+  app.get("/api/admin/vendor-health/:id", requireAuth(["admin", "manager"]), async (req, res) => {
+    const vendor = await storage.getVendor(Number(String(req.params.id)));
     if (!vendor) return res.status(404).json({ error: "Vendor not found" });
 
     const health = calculateVendorHealthScore(vendor);
-    const stats = storage.getVendorStats(vendor.id);
-    const recentOrders = storage.getOrdersByVendor(vendor.id).slice(0, 20);
-    const reviews = storage.getReviewsByVendor(vendor.id);
+    const stats = await storage.getVendorStats(vendor.id);
+    const recentOrders = (await storage.getOrdersByVendor(vendor.id)).slice(0, 20);
+    const reviews = await storage.getReviewsByVendor(vendor.id);
 
     // Update stored score
-    storage.updateVendor(vendor.id, { aiHealthScore: health.score });
+    await storage.updateVendor(vendor.id, { aiHealthScore: health.score });
 
     // On-time delivery analysis
     const deliveredOrders = recentOrders.filter(o => o.status === "delivered");
@@ -4945,16 +4945,16 @@ export async function registerRoutes(
   //  FRAUD DETECTION
   // ─────────────────────────────────────────────────────────
 
-  app.post("/api/admin/fraud-check/:orderId", requireAuth(["admin"]), (req, res) => {
+  app.post("/api/admin/fraud-check/:orderId", requireAuth(["admin"]), async (req, res) => {
     const orderId = Number(String(req.params.orderId));
-    const order = storage.getOrder(orderId);
+    const order = await storage.getOrder(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    const result = calculateFraudRisk(orderId);
+    const result = await calculateFraudRisk(orderId);
 
     // If auto-flagged, add event
     if (result.autoFlagged) {
-      storage.createOrderEvent({
+      await storage.createOrderEvent({
         orderId,
         eventType: "fraud_reviewed",
         description: `Manual fraud review: risk score ${result.riskScore}/100`,
@@ -4982,10 +4982,10 @@ export async function registerRoutes(
   });
 
   // Bulk fraud scan
-  app.get("/api/admin/fraud-scan", requireAuth(["admin"]), (_req, res) => {
-    const activeOrders = storage.getActiveOrders();
-    const results = activeOrders.map(order => {
-      const fraud = calculateFraudRisk(order.id);
+  app.get("/api/admin/fraud-scan", requireAuth(["admin"]), async (_req, res) => {
+    const activeOrders = await storage.getActiveOrders();
+    const results = (await Promise.all(activeOrders.map(async order => {
+      const fraud = await calculateFraudRisk(order.id);
       return {
         orderId: order.id,
         orderNumber: order.orderNumber,
@@ -4996,7 +4996,7 @@ export async function registerRoutes(
         flags: fraud.flags,
         autoFlagged: fraud.autoFlagged,
       };
-    }).filter(r => r.riskScore > 0).sort((a, b) => b.riskScore - a.riskScore);
+    }))).filter(r => r.riskScore > 0).sort((a, b) => b.riskScore - a.riskScore);
 
     res.json({
       scanned: activeOrders.length,
@@ -5008,12 +5008,12 @@ export async function registerRoutes(
   });
 
   // Admin: Fraud alerts (matching frontend FraudSummary interface)
-  app.get("/api/admin/fraud-alerts", requireAuth(["admin"]), (_req, res) => {
-    const allOrders = storage.getOrders();
-    const alerts = allOrders.map(order => {
-      const fraud = calculateFraudRisk(order.id);
+  app.get("/api/admin/fraud-alerts", requireAuth(["admin"]), async (_req, res) => {
+    const allOrders = await storage.getOrders();
+    const alerts = (await Promise.all(allOrders.map(async order => {
+      const fraud = await calculateFraudRisk(order.id);
       if (fraud.riskScore <= 10) return null;
-      const customer = storage.getUser(order.customerId);
+      const customer = await storage.getUser(order.customerId);
       return {
         id: order.id,
         orderId: order.id,
@@ -5027,7 +5027,7 @@ export async function registerRoutes(
         amount: Number(order.total) || 0,
         createdAt: order.createdAt,
       };
-    }).filter(Boolean).sort((a: any, b: any) => b.riskScore - a.riskScore);
+    }))).filter(Boolean).sort((a: any, b: any) => b.riskScore - a.riskScore);
 
     const flaggedAlerts = alerts.filter((a: any) => a.status === "flagged");
     res.json({
@@ -5052,13 +5052,13 @@ export async function registerRoutes(
   //  SUBSCRIPTION MANAGEMENT
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/subscription/:userId", requireAuth(), (req, res) => {
+  app.get("/api/subscription/:userId", requireAuth(), async (req, res) => {
     const cuSub = (req as any).currentUser;
     if (cuSub.role !== "admin" && cuSub.role !== "manager" && cuSub.id !== Number(String(req.params.userId))) {
       return res.status(403).json({ error: "Access denied" });
     }
     const userId = Number(String(req.params.userId));
-    const user = storage.getUser(userId);
+    const user = await storage.getUser(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
 
     const tier = user.subscriptionTier;
@@ -5105,7 +5105,7 @@ export async function registerRoutes(
     });
   });
 
-  app.post("/api/subscription/upgrade", requireAuth(), (req, res) => {
+  app.post("/api/subscription/upgrade", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     const userId = currentUser.id;
     const { tier } = req.body;
@@ -5116,7 +5116,7 @@ export async function registerRoutes(
       return res.status(400).json({ error: `Invalid tier. Must be: ${Object.keys(SUBSCRIPTION_TIERS).join(", ")}` });
     }
 
-    const user = storage.getUser(Number(userId));
+    const user = await storage.getUser(Number(userId));
     if (!user) return res.status(404).json({ error: "User not found" });
 
     const tierInfo = SUBSCRIPTION_TIERS[tier as keyof typeof SUBSCRIPTION_TIERS];
@@ -5124,13 +5124,13 @@ export async function registerRoutes(
     const endDate = new Date();
     endDate.setMonth(endDate.getMonth() + 1);
 
-    const updated = storage.updateUser(Number(userId), {
+    const updated = await storage.updateUser(Number(userId), {
       subscriptionTier: tier,
       subscriptionStartDate: startDate,
       subscriptionEndDate: endDate.toISOString(),
     });
 
-    notifyUser(Number(userId), null, "system",
+    await notifyUser(Number(userId), null, "system",
       `Subscribed to ${tier.charAt(0).toUpperCase() + tier.slice(1)} Plan!`,
       `Your ${tier} plan is now active. Enjoy ${tierInfo.freeDeliveries} free deliveries, ${tierInfo.discount * 100}% off orders, and ${tierInfo.pointsBonus}x loyalty points!`,
       "/profile"
@@ -5138,10 +5138,10 @@ export async function registerRoutes(
 
     // Award bonus points for subscribing
     const bonusPoints = tier === "premium" ? 500 : tier === "plus" ? 300 : 150;
-    storage.updateUser(Number(userId), {
+    await storage.updateUser(Number(userId), {
       loyaltyPoints: (user.loyaltyPoints || 0) + bonusPoints,
     });
-    storage.createLoyaltyTransaction({
+    await storage.createLoyaltyTransaction({
       userId: Number(userId),
       type: "bonus",
       points: bonusPoints,
@@ -5160,24 +5160,24 @@ export async function registerRoutes(
     });
   });
 
-  app.delete("/api/subscription/:userId", requireAuth(), (req, res) => {
+  app.delete("/api/subscription/:userId", requireAuth(), async (req, res) => {
     const cuSubD = (req as any).currentUser;
     if (cuSubD.role !== "admin" && cuSubD.role !== "manager" && cuSubD.id !== Number(String(req.params.userId))) {
       return res.status(403).json({ error: "Access denied" });
     }
     const userId = Number(String(req.params.userId));
-    const user = storage.getUser(userId);
+    const user = await storage.getUser(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
     if (!user.subscriptionTier) {
       return res.status(400).json({ error: "No active subscription to cancel" });
     }
 
-    const updated = storage.updateUser(userId, {
+    const updated = await storage.updateUser(userId, {
       subscriptionTier: null,
       subscriptionEndDate: now(), // End immediately
     });
 
-    notifyUser(userId, null, "system",
+    await notifyUser(userId, null, "system",
       "Subscription Cancelled",
       "Your subscription has been cancelled. You can re-subscribe at any time.",
       "/profile"
@@ -5194,12 +5194,12 @@ export async function registerRoutes(
   //  ADMIN METRICS (dashboard)
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/admin/metrics", requireAuth(["admin", "manager"]), (_req, res) => {
-    const allOrders = storage.getOrders();
-    const allVendors = storage.getVendors();
-    const allDrivers = storage.getDrivers();
-    const allDisputes = storage.getDisputes();
-    const allReviews = storage.getReviews();
+  app.get("/api/admin/metrics", requireAuth(["admin", "manager"]), async (_req, res) => {
+    const allOrders = await storage.getOrders();
+    const allVendors = await storage.getVendors();
+    const allDrivers = await storage.getDrivers();
+    const allDisputes = await storage.getDisputes();
+    const allReviews = await storage.getReviews();
 
     const totalRevenue = allOrders
       .filter(o => o.status === "delivered")
@@ -5215,13 +5215,13 @@ export async function registerRoutes(
 
     // Status distribution
     const statusCounts: Record<string, number> = {};
-    allOrders.forEach(o => {
+    allOrders.forEach(async o => {
       statusCounts[o.status] = (statusCounts[o.status] || 0) + 1;
     });
 
     // Revenue by vendor
     const revenueByVendor: Record<string, number> = {};
-    allOrders.filter(o => o.status === "delivered").forEach(o => {
+    allOrders.filter(o => o.status === "delivered").forEach(async o => {
       const vendor = allVendors.find(v => v.id === o.vendorId);
       const name = vendor?.name || "Unassigned";
       revenueByVendor[name] = (revenueByVendor[name] || 0) + (o.total || 0);
@@ -5237,17 +5237,17 @@ export async function registerRoutes(
     const totalDriverPayouts = allOrders.reduce((sum, o) => sum + (o.driverPayout || 0), 0);
 
     // Loyalty stats
-    const allCustomers = storage.getUsersByRole("customer");
+    const allCustomers = await storage.getUsersByRole("customer");
     const totalLoyaltyPoints = allCustomers.reduce((sum, u) => sum + (u.loyaltyPoints || 0), 0);
     const tierBreakdown: Record<string, number> = { bronze: 0, silver: 0, gold: 0, platinum: 0 };
-    allCustomers.forEach(u => {
+    allCustomers.forEach(async u => {
       const t = u.loyaltyTier || "bronze";
       tierBreakdown[t] = (tierBreakdown[t] || 0) + 1;
     });
 
     // Pricing tier distribution
     const pricingTierCounts: Record<string, number> = {};
-    allOrders.forEach(o => {
+    allOrders.forEach(async o => {
       if (o.aiPricingTier) {
         pricingTierCounts[o.aiPricingTier] = (pricingTierCounts[o.aiPricingTier] || 0) + 1;
       }
@@ -5281,11 +5281,11 @@ export async function registerRoutes(
     });
   });
 
-  function enrichAdminOrder(order: Order) {
-    const customer = storage.getUser(order.customerId);
-    const vendor = order.vendorId ? storage.getVendor(order.vendorId) : null;
-    const driver = order.driverId ? storage.getDriver(order.driverId) : null;
-    const returnDriver = order.returnDriverId ? storage.getDriver(order.returnDriverId) : null;
+  async function enrichAdminOrder(order: Order) {
+    const customer = await storage.getUser(order.customerId);
+    const vendor = order.vendorId ? await storage.getVendor(order.vendorId) : null;
+    const driver = order.driverId ? await storage.getDriver(order.driverId) : null;
+    const returnDriver = order.returnDriverId ? await storage.getDriver(order.returnDriverId) : null;
     return {
       ...order,
       customerName: customer?.name || "Unknown customer",
@@ -5297,62 +5297,66 @@ export async function registerRoutes(
     };
   }
 
-  app.get("/api/admin/orders", requireAuth(ADMIN_ROLES), (_req, res) => {
-    res.json(storage.getOrders().map(enrichAdminOrder));
+  app.get("/api/admin/orders", requireAuth(ADMIN_ROLES), async (_req, res) => {
+    res.json((await storage.getOrders()).map(enrichAdminOrder));
   });
 
-  app.get("/api/admin/orders/:id", requireAuth(ADMIN_ROLES), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.get("/api/admin/orders/:id", requireAuth(ADMIN_ROLES), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
     res.json({
       ...enrichAdminOrder(order),
-      events: storage.getOrderEvents(order.id),
-      statusHistory: storage.getOrderStatusHistory(order.id),
-      photos: storage.getOrderPhotos(order.id),
-      paymentTransactions: storage.getPaymentTransactionsByOrder(order.id),
-      consents: storage.getConsentsByOrder(order.id),
-      review: storage.getReviewByOrder(order.id),
+      events: await storage.getOrderEvents(order.id),
+      statusHistory: await storage.getOrderStatusHistory(order.id),
+      photos: await storage.getOrderPhotos(order.id),
+      paymentTransactions: await storage.getPaymentTransactionsByOrder(order.id),
+      consents: await storage.getConsentsByOrder(order.id),
+      review: await storage.getReviewByOrder(order.id),
     });
   });
 
-  app.get("/api/admin/users/:id", requireAuth(ADMIN_ROLES), (req, res) => {
-    const user = storage.getUser(Number(String(req.params.id)));
+  app.get("/api/admin/users/:id", requireAuth(ADMIN_ROLES), async (req, res) => {
+    const user = await storage.getUser(Number(String(req.params.id)));
     if (!user) return res.status(404).json({ error: "User not found" });
     res.json({
       ...user,
       password: undefined,
-      orders: user.role === "customer" ? storage.getOrdersByCustomer(user.id) : [],
-      driverProfile: user.role === "driver" ? storage.getDriverByUserId(user.id) : null,
-      vendorProfile: ["vendor", "laundromat", "manager"].includes(user.role) ? storage.getVendorByUserId(user.id) : null,
-      notifications: storage.getNotificationsByUser(user.id),
+      orders: user.role === "customer" ? await storage.getOrdersByCustomer(user.id) : [],
+      driverProfile: user.role === "driver" ? await storage.getDriverByUserId(user.id) : null,
+      vendorProfile: ["vendor", "laundromat", "manager"].includes(user.role) ? await storage.getVendorByUserId(user.id) : null,
+      notifications: await storage.getNotificationsByUser(user.id),
     });
   });
 
-  app.get("/api/admin/payments", requireAuth(ADMIN_ROLES), (_req, res) => {
-    const payments = storage.getOrders().flatMap(order =>
-      storage.getPaymentTransactionsByOrder(order.id).map(txn => ({
+  app.get("/api/admin/payments", requireAuth(ADMIN_ROLES), async (_req, res) => {
+    const orders2 = await storage.getOrders();
+    const paymentArrays = await Promise.all(orders2.map(async order => {
+      const txns = await storage.getPaymentTransactionsByOrder(order.id);
+      return txns.map(txn => ({
         ...txn,
         orderNumber: order.orderNumber,
         customerId: order.customerId,
         orderTotal: order.total,
-      }))
-    );
+      }));
+    }));
+    const payments = paymentArrays.flat();
     res.json(payments);
   });
 
-  app.get("/api/admin/drivers", requireAuth(ADMIN_ROLES), (_req, res) => {
-    res.json(storage.getDrivers());
+  app.get("/api/admin/drivers", requireAuth(ADMIN_ROLES), async (_req, res) => {
+    res.json(await storage.getDrivers());
   });
 
-  app.get("/api/admin/vendors", requireAuth(ADMIN_ROLES), (_req, res) => {
-    res.json(storage.getVendors());
+  app.get("/api/admin/vendors", requireAuth(ADMIN_ROLES), async (_req, res) => {
+    res.json(await storage.getVendors());
   });
 
-  app.get("/api/admin/financial-summary", requireAuth(ADMIN_ROLES), (_req, res) => {
-    const orders = storage.getOrders();
+  app.get("/api/admin/financial-summary", requireAuth(ADMIN_ROLES), async (_req, res) => {
+    const orders = await storage.getOrders();
     const delivered = orders.filter(o => o.status === "delivered");
     const revenue = delivered.reduce((sum, o) => sum + (o.total || 0), 0);
-    const refunds = orders.flatMap(o => storage.getPaymentTransactionsByOrder(o.id))
+    const allTxnArrays = await Promise.all(orders.map(o => storage.getPaymentTransactionsByOrder(o.id)));
+    const refunds = allTxnArrays.flat()
       .filter(t => t.type === "refund" && t.status === "completed")
       .reduce((sum, t) => sum + Math.abs(t.amount || 0), 0);
     const aov = delivered.length ? revenue / delivered.length : 0;
@@ -5365,11 +5369,11 @@ export async function registerRoutes(
     });
   });
 
-  function adminKpis() {
-    const orders = storage.getOrders();
-    const customers = storage.getUsersByRole("customer");
-    const drivers = storage.getDrivers();
-    const disputes = storage.getDisputes();
+  async function adminKpis() {
+    const orders = await storage.getOrders();
+    const customers = await storage.getUsersByRole("customer");
+    const drivers = await storage.getDrivers();
+    const disputes = await storage.getDisputes();
     const delivered = orders.filter(o => o.status === "delivered");
     const revenue = delivered.reduce((sum, o) => sum + (o.total || 0), 0);
     return {
@@ -5387,46 +5391,46 @@ export async function registerRoutes(
     res.json(adminKpis());
   });
 
-  app.get("/api/dashboard/revenue", requireAuth(ADMIN_ROLES), (_req, res) => {
-    const delivered = storage.getOrders().filter(o => o.status === "delivered");
+  app.get("/api/dashboard/revenue", requireAuth(ADMIN_ROLES), async (_req, res) => {
+    const delivered = (await storage.getOrders()).filter(o => o.status === "delivered");
     const buckets: Record<string, number> = {};
-    delivered.forEach(o => {
+    delivered.forEach(async o => {
       const key = new Date(o.deliveredAt || o.createdAt).toISOString().slice(0, 10);
       buckets[key] = (buckets[key] || 0) + (o.total || 0);
     });
     res.json(Object.entries(buckets).map(([date, revenue]) => ({ date, revenue: Math.round(revenue * 100) / 100 })));
   });
 
-  app.get("/api/dashboard/orders-by-status", requireAuth(ADMIN_ROLES), (_req, res) => {
+  app.get("/api/dashboard/orders-by-status", requireAuth(ADMIN_ROLES), async (_req, res) => {
     const counts: Record<string, number> = {};
-    storage.getOrders().forEach(o => { counts[o.status] = (counts[o.status] || 0) + 1; });
+    (await storage.getOrders()).forEach(async o => { counts[o.status] = (counts[o.status] || 0) + 1; });
     res.json(Object.entries(counts).map(([status, count]) => ({ status, count })));
   });
 
-  app.get("/api/dashboard/recent-orders", requireAuth(ADMIN_ROLES), (_req, res) => {
-    res.json(storage.getOrders().slice(0, 10).map(enrichAdminOrder));
+  app.get("/api/dashboard/recent-orders", requireAuth(ADMIN_ROLES), async (_req, res) => {
+    res.json((await storage.getOrders()).slice(0, 10).map(enrichAdminOrder));
   });
 
-  app.get("/api/customers", requireAuth(ADMIN_ROLES), (_req, res) => {
-    res.json(storage.getUsersByRole("customer").map(u => ({ ...u, password: undefined })));
+  app.get("/api/customers", requireAuth(ADMIN_ROLES), async (_req, res) => {
+    res.json((await storage.getUsersByRole("customer")).map(u => ({ ...u, password: undefined })));
   });
 
-  app.get("/api/customers/:id", requireAuth(ADMIN_ROLES), (req, res) => {
-    const user = storage.getUser(Number(String(req.params.id)));
+  app.get("/api/customers/:id", requireAuth(ADMIN_ROLES), async (req, res) => {
+    const user = await storage.getUser(Number(String(req.params.id)));
     if (!user || user.role !== "customer") return res.status(404).json({ error: "Customer not found" });
-    res.json({ ...user, password: undefined, orders: storage.getOrdersByCustomer(user.id) });
+    res.json({ ...user, password: undefined, orders: await storage.getOrdersByCustomer(user.id) });
   });
 
-  app.get("/api/customers/:id/orders", requireAuth(ADMIN_ROLES), (req, res) => {
-    res.json(storage.getOrdersByCustomer(Number(String(req.params.id))).map(enrichAdminOrder));
+  app.get("/api/customers/:id/orders", requireAuth(ADMIN_ROLES), async (req, res) => {
+    res.json((await storage.getOrdersByCustomer(Number(String(req.params.id)))).map(enrichAdminOrder));
   });
 
-  app.get("/api/customers/:id/communications", requireAuth(ADMIN_ROLES), (req, res) => {
-    res.json(storage.getNotificationsByUser(Number(String(req.params.id))));
+  app.get("/api/customers/:id/communications", requireAuth(ADMIN_ROLES), async (req, res) => {
+    res.json(await storage.getNotificationsByUser(Number(String(req.params.id))));
   });
 
-  app.get("/api/transactions", requireAuth(ADMIN_ROLES), (_req, res) => {
-    res.json(storage.getPaymentTransactions());
+  app.get("/api/transactions", requireAuth(ADMIN_ROLES), async (_req, res) => {
+    res.json(await storage.getPaymentTransactions());
   });
 
   app.get("/api/analytics/overview", requireAuth(ADMIN_ROLES), (_req, res) => {
@@ -5434,29 +5438,29 @@ export async function registerRoutes(
     res.json({ kpis, acquisitionFunnel: [], acquisitionFunnelMessage: "Insufficient data: web analytics events are not available in the production database." });
   });
 
-  app.get("/api/settings", requireAuth(ADMIN_ROLES), (_req, res) => {
-    res.json(storage.getAllPricingConfig());
+  app.get("/api/settings", requireAuth(ADMIN_ROLES), async (_req, res) => {
+    res.json(await storage.getAllPricingConfig());
   });
 
-  app.get("/api/promo-codes", requireAuth(ADMIN_ROLES), (_req, res) => {
-    res.json(storage.getPromoCodes());
+  app.get("/api/promo-codes", requireAuth(ADMIN_ROLES), async (_req, res) => {
+    res.json(await storage.getPromoCodes());
   });
 
-  app.post("/api/promo-codes", requireAuth(["admin"]), (req, res) => {
-    res.status(201).json(storage.createPromoCode({ ...req.body, createdAt: now() }));
+  app.post("/api/promo-codes", requireAuth(["admin"]), async (req, res) => {
+    res.status(201).json(await storage.createPromoCode({ ...req.body, createdAt: now() }));
   });
 
-  app.patch("/api/promo-codes/:id", requireAuth(["admin"]), (req, res) => {
-    const updated = storage.updatePromoCode(Number(String(req.params.id)), req.body);
+  app.patch("/api/promo-codes/:id", requireAuth(["admin"]), async (req, res) => {
+    const updated = await storage.updatePromoCode(Number(String(req.params.id)), req.body);
     if (!updated) return res.status(404).json({ error: "Promo code not found" });
     res.json(updated);
   });
 
   // Admin: Analytics dashboard
-  app.get("/api/admin/analytics", requireAuth(["admin", "manager"]), (_req, res) => {
-    const allOrders = storage.getOrders();
-    const allVendors = storage.getVendors();
-    const allCustomers = storage.getUsersByRole("customer");
+  app.get("/api/admin/analytics", requireAuth(["admin", "manager"]), async (_req, res) => {
+    const allOrders = await storage.getOrders();
+    const allVendors = await storage.getVendors();
+    const allCustomers = await storage.getUsersByRole("customer");
     const deliveredOrders = allOrders.filter(o => o.status === "delivered");
 
     const totalRevenue = deliveredOrders.reduce((sum, o) => sum + (o.total || 0), 0);
@@ -5469,7 +5473,7 @@ export async function registerRoutes(
     const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const dayRevenue: Record<number, number> = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
     const dayOrderCount: Record<number, number> = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
-    deliveredOrders.forEach(o => {
+    deliveredOrders.forEach(async o => {
       if (o.createdAt) {
         const dow = new Date(o.createdAt).getDay();
         dayRevenue[dow] = (dayRevenue[dow] || 0) + (o.total || 0);
@@ -5520,9 +5524,9 @@ export async function registerRoutes(
   });
 
   // Admin: Financial report
-  app.get("/api/admin/financial", requireAuth(["admin", "manager"]), (_req, res) => {
-    const allOrders = storage.getOrders();
-    const allVendors = storage.getVendors();
+  app.get("/api/admin/financial", requireAuth(["admin", "manager"]), async (_req, res) => {
+    const allOrders = await storage.getOrders();
+    const allVendors = await storage.getVendors();
     const deliveredOrders = allOrders.filter(o => o.status === "delivered");
 
     const totalRevenue = deliveredOrders.reduce((sum, o) => sum + (o.total || 0), 0);
@@ -5588,22 +5592,23 @@ export async function registerRoutes(
   });
 
   // Admin: all users list
-  app.get("/api/admin/users", requireAuth(["admin"]), (req, res) => {
+  app.get("/api/admin/users", requireAuth(["admin"]), async (req, res) => {
     const role = req.query.role as string | undefined;
     if (role) {
-      const users = storage.getUsersByRole(role);
+      const users = await storage.getUsersByRole(role);
       return res.json(users.map(u => ({ ...u, password: undefined })));
     }
     const allRoles = ["customer", "driver", "laundromat", "vendor", "manager", "admin"];
-    const allUsers = allRoles.flatMap(r => storage.getUsersByRole(r));
+    const allUserArrays = await Promise.all(allRoles.map(r => storage.getUsersByRole(r)));
+    const allUsers = allUserArrays.flat();
     res.json(allUsers.map(u => ({ ...u, password: undefined })));
   });
 
   // Admin: search users
-  app.get("/api/admin/users/search", requireAuth(["admin"]), (req, res) => {
+  app.get("/api/admin/users/search", requireAuth(["admin"]), async (req, res) => {
     const query = req.query.q as string;
     if (!query) return res.status(400).json({ error: "Search query required" });
-    const users = storage.searchUsers(query);
+    const users = await storage.searchUsers(query);
     res.json(users.map(u => ({ ...u, password: undefined })));
   });
 
@@ -5611,12 +5616,12 @@ export async function registerRoutes(
   //  MANAGER ENDPOINTS (vendor-specific)
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/manager/earnings", requireAuth(["admin", "manager"]), (req, res) => {
+  app.get("/api/manager/earnings", requireAuth(["admin", "manager"]), async (req, res) => {
     const vendorId = Number(req.query.vendorId);
     if (!vendorId) {
       // Return aggregated earnings for all vendors
-      const allVendors = storage.getVendors();
-      const allOrders = storage.getOrders();
+      const allVendors = await storage.getVendors();
+      const allOrders = await storage.getOrders();
       const delivered = allOrders.filter(o => o.status === "delivered");
       const totalRevenue = delivered.reduce((sum, o) => sum + (o.total || 0), 0);
       const totalPayouts = delivered.reduce((sum, o) => sum + (o.vendorPayout || 0), 0);
@@ -5643,10 +5648,10 @@ export async function registerRoutes(
       });
     }
 
-    const vendor = storage.getVendor(vendorId);
+    const vendor = await storage.getVendor(vendorId);
     if (!vendor) return res.status(404).json({ error: "Vendor not found" });
 
-    const vendorOrders = storage.getOrdersByVendor(vendorId);
+    const vendorOrders = await storage.getOrdersByVendor(vendorId);
     const delivered = vendorOrders.filter(o => o.status === "delivered");
     const totalRevenue = delivered.reduce((sum, o) => sum + (o.total || 0), 0);
     const totalPayout = delivered.reduce((sum, o) => sum + (o.vendorPayout || 0), 0);
@@ -5668,11 +5673,11 @@ export async function registerRoutes(
   //  DRIVER EARNINGS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/driver/earnings", requireAuth(["driver", "admin", "manager"]), (req, res) => {
+  app.get("/api/driver/earnings", requireAuth(["driver", "admin", "manager"]), async (req, res) => {
     // Security: drivers can only see their own earnings
     const cuE = (req as any).currentUser;
     if (cuE.role === "driver") {
-      const myDriver = storage.getDriverByUserId(cuE.id);
+      const myDriver = await storage.getDriverByUserId(cuE.id);
       const requestedId = Number(req.query.driverId);
       if (myDriver && requestedId && requestedId !== myDriver.id) {
         return res.status(403).json({ error: "Access denied" });
@@ -5681,10 +5686,10 @@ export async function registerRoutes(
     const driverId = Number(req.query.driverId);
     if (!driverId) return res.status(400).json({ error: "driverId required" });
 
-    const driver = storage.getDriver(driverId);
+    const driver = await storage.getDriver(driverId);
     if (!driver) return res.status(404).json({ error: "Driver not found" });
 
-    const driverOrders = storage.getOrdersByDriver(driverId);
+    const driverOrders = await storage.getOrdersByDriver(driverId);
     const delivered = driverOrders.filter(o => o.status === "delivered");
     const todayDelivered = delivered.filter(o => {
       if (!o.deliveredAt) return false;
@@ -5759,11 +5764,11 @@ export async function registerRoutes(
   //  VENDOR PAYOUT MANAGEMENT
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/vendor-payouts/:vendorId", requireAuth(["admin", "manager"]), (req, res) => {
+  app.get("/api/vendor-payouts/:vendorId", requireAuth(["admin", "manager"]), async (req, res) => {
     const vendorId = Number(String(req.params.vendorId));
-    const vendor = storage.getVendor(vendorId);
+    const vendor = await storage.getVendor(vendorId);
     if (!vendor) return res.status(404).json({ error: "Vendor not found" });
-    const payouts = storage.getVendorPayouts(vendorId);
+    const payouts = await storage.getVendorPayouts(vendorId);
     res.json({
       vendorId,
       vendorName: vendor.name,
@@ -5773,12 +5778,12 @@ export async function registerRoutes(
     });
   });
 
-  app.post("/api/vendor-payouts", requireAuth(["admin", "manager"]), (req, res) => {
+  app.post("/api/vendor-payouts", requireAuth(["admin", "manager"]), async (req, res) => {
     const { vendorId, amount, periodStart, periodEnd, ordersCount } = req.body;
     if (!vendorId || !amount) {
       return res.status(400).json({ error: "vendorId and amount are required" });
     }
-    const payout = storage.createVendorPayout({
+    const payout = await storage.createVendorPayout({
       vendorId,
       amount,
       status: "pending",
@@ -5790,16 +5795,16 @@ export async function registerRoutes(
     res.status(201).json(payout);
   });
 
-  app.patch("/api/vendor-payouts/:id", requireAuth(["admin"]), (req, res) => {
-    const updated = storage.updateVendorPayout(Number(String(req.params.id)), req.body);
+  app.patch("/api/vendor-payouts/:id", requireAuth(["admin"]), async (req, res) => {
+    const updated = await storage.updateVendorPayout(Number(String(req.params.id)), req.body);
     if (!updated) return res.status(404).json({ error: "Payout not found" });
 
     // If completed, clear pendingPayout for vendor
     if (req.body.status === "completed") {
       const payout = updated;
-      const vendor = storage.getVendor(payout.vendorId);
+      const vendor = await storage.getVendor(payout.vendorId);
       if (vendor) {
-        storage.updateVendor(vendor.id, {
+        await storage.updateVendor(vendor.id, {
           pendingPayout: Math.max(0, (vendor.pendingPayout || 0) - payout.amount),
         });
       }
@@ -5812,24 +5817,24 @@ export async function registerRoutes(
   //  AI CHAT (enhanced endpoint with actions)
   // ─────────────────────────────────────────────────────────
 
-  app.post("/api/ai/chat", requireAuth(), (req, res) => {
+  app.post("/api/ai/chat", requireAuth(), async (req, res) => {
     const { message, sessionId, orderId } = req.body;
     const currentUser = (req as any).currentUser;
     const userId = currentUser.id;
     if (!message) return res.status(400).json({ error: "message is required" });
 
     const intent = detectIntent(message);
-    const { response, resolved, escalate } = generateAIResponse(intent, userId, message);
+    const { response, resolved, escalate } = await generateAIResponse(intent, userId, message);
     const ts_ = now();
 
     let session;
-    if (sessionId) session = storage.getChatSession(Number(sessionId));
+    if (sessionId) session = await storage.getChatSession(Number(sessionId));
     if (!session) {
       const newMessages = [
         { role: "user", content: message, timestamp: ts_ },
         { role: "assistant", content: response, timestamp: ts_, intent },
       ];
-      session = storage.createChatSession({
+      session = await storage.createChatSession({
         userId, orderId: orderId || undefined,
         status: resolved ? "resolved" : escalate ? "escalated" : "active",
         topic: intent, aiResolved: resolved ? 1 : 0,
@@ -5841,7 +5846,7 @@ export async function registerRoutes(
       try { existingMessages = session.messagesJson ? JSON.parse(session.messagesJson) : []; } catch (_) {}
       existingMessages.push({ role: "user", content: message, timestamp: ts_ });
       existingMessages.push({ role: "assistant", content: response, timestamp: ts_, intent });
-      session = storage.updateChatSession(session.id, {
+      session = await storage.updateChatSession(session.id, {
         status: resolved ? "resolved" : escalate ? "escalated" : "active",
         aiResolved: resolved ? 1 : 0,
         messagesJson: JSON.stringify(existingMessages),
@@ -5851,7 +5856,7 @@ export async function registerRoutes(
 
     const actions: any[] = [];
     if (intent === "order_status") {
-      const activeOrders = storage.getOrdersByCustomer(userId).filter(o => !["delivered","cancelled"].includes(o.status));
+      const activeOrders = (await storage.getOrdersByCustomer(userId)).filter(o => !["delivered","cancelled"].includes(o.status));
       if (activeOrders.length > 0) actions.push({ type: "view_order", data: { orderId: activeOrders[0].id } });
     }
     if (intent === "pricing") actions.push({ type: "navigate", data: { path: "/schedule" } });
@@ -5864,8 +5869,8 @@ export async function registerRoutes(
   //  BLE SCALE WEIGHT RECORDING
   // ─────────────────────────────────────────────────────────
 
-  app.post("/api/orders/:id/ble-weight", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.post("/api/orders/:id/ble-weight", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const currentUser = (req as any).currentUser;
@@ -5895,13 +5900,13 @@ export async function registerRoutes(
         const overageRate = tierInfo?.overageRate || 2.50;
         updateData.overageWeight = Math.round(overage * 100) / 100;
         updateData.overageCharge = Math.round(overage * overageRate * 100) / 100;
-        const addOnsTotal = storage.getOrderAddOns(order.id).reduce((sum, a) => sum + a.total, 0);
+        const addOnsTotal = (await storage.getOrderAddOns(order.id)).reduce((sum, a) => sum + a.total, 0);
         updateData.finalPrice = Math.round(((order.tierFlatPrice || 0) + updateData.overageCharge + addOnsTotal - (order.discount || 0) + (order.tax || 0) + (order.deliveryFee || 0)) * 100) / 100;
       }
     }
 
-    storage.updateOrder(order.id, updateData);
-    storage.createOrderEvent({
+    await storage.updateOrder(order.id, updateData);
+    await storage.createOrderEvent({
       orderId: order.id,
       eventType: weightType === "dirty" ? "dirty_weight_recorded" : "clean_weight_recorded",
       description: `${weightType === "dirty" ? "Dirty" : "Clean"} weight: ${weight} lbs (BLE scale: ${deviceName || "unknown"})`,
@@ -5909,7 +5914,7 @@ export async function registerRoutes(
       actorId, actorRole: "vendor", timestamp: ts_,
     });
 
-    res.json(storage.getOrder(order.id));
+    res.json(await storage.getOrder(order.id));
   });
 
   // ─────────────────────────────────────────────────────────
@@ -5934,8 +5939,8 @@ export async function registerRoutes(
     return dollarsToCents(order.finalPrice ?? order.total ?? 0);
   }
 
-  function getCapturedChargeForOrder(orderId: number) {
-    const transactions = storage.getPaymentTransactionsByOrder(orderId);
+  async function getCapturedChargeForOrder(orderId: number) {
+    const transactions = await storage.getPaymentTransactionsByOrder(orderId);
     const chargeTxn = transactions.find(t =>
       t.type === "charge" &&
       ["completed", "paid", "captured"].includes(String(t.status || "")) &&
@@ -5956,7 +5961,7 @@ export async function registerRoutes(
       return { errorStatus: 400, error: "Order payment must be paid or captured before refunding" };
     }
 
-    const { chargeTxn, alreadyRefundedCents } = getCapturedChargeForOrder(order.id);
+    const { chargeTxn, alreadyRefundedCents } = await getCapturedChargeForOrder(order.id);
     if (!chargeTxn) {
       return { errorStatus: 400, error: "Captured payment transaction not found" };
     }
@@ -6025,7 +6030,7 @@ export async function registerRoutes(
     const amountDollars = centsToDollars(amountCents);
     const newTotalRefundedCents = alreadyRefundedCents + amountCents;
     const newPaymentStatus = newTotalRefundedCents >= capturedAmountCents ? "refunded" : "partially_refunded";
-    const txn = storage.createPaymentTransaction({
+    const txn = await storage.createPaymentTransaction({
       orderId: order.id,
       type: "refund",
       amount: amountDollars,
@@ -6037,8 +6042,8 @@ export async function registerRoutes(
       createdAt: ts_,
       completedAt: ts_,
     });
-    storage.updateOrder(order.id, { paymentStatus: newPaymentStatus });
-    storage.createOrderEvent({
+    await storage.updateOrder(order.id, { paymentStatus: newPaymentStatus });
+    await storage.createOrderEvent({
       orderId: order.id,
       eventType: "refund_issued",
       description: `Refund of $${amountDollars.toFixed(2)} issued. Reason: ${reason || "not specified"}`,
@@ -6060,7 +6065,7 @@ export async function registerRoutes(
     const { orderId } = req.body;
     if (!orderId) return res.status(400).json({ error: "orderId required" });
 
-    const order = storage.getOrder(Number(orderId));
+    const order = await storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const currentUser = (req as any).currentUser;
@@ -6095,7 +6100,7 @@ export async function registerRoutes(
       clientSecret = `demo_secret_${intentId}`;
     }
 
-    const txn = storage.createPaymentTransaction({
+    const txn = await storage.createPaymentTransaction({
       orderId: Number(orderId), type: "charge", amount, currency: "usd",
       amountCents,
       status: "pending", stripePaymentIntentId: intentId,
@@ -6111,20 +6116,20 @@ export async function registerRoutes(
     });
   });
 
-  app.post("/api/payments/confirm", requireAuth(["admin", "manager"]), (req, res) => {
+  app.post("/api/payments/confirm", requireAuth(["admin", "manager"]), async (req, res) => {
     // Security: only admin/manager can confirm payments — real payment confirmation
     // comes through the Stripe webhook, not from client-side requests
     const { orderId } = req.body;
     if (!orderId) return res.status(400).json({ error: "orderId required" });
-    const order = storage.getOrder(Number(orderId));
+    const order = await storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    const txns = storage.getPaymentTransactionsByOrder(Number(orderId));
+    const txns = await storage.getPaymentTransactionsByOrder(Number(orderId));
     const chargeTxn = txns.find(t => t.type === "charge" && t.status === "pending");
-    if (chargeTxn) storage.updatePaymentTransaction(chargeTxn.id, { status: "completed", completedAt: now() });
+    if (chargeTxn) await storage.updatePaymentTransaction(chargeTxn.id, { status: "completed", completedAt: now() });
 
-    storage.updateOrder(order.id, { paymentStatus: "captured" });
-    storage.createOrderEvent({
+    await storage.updateOrder(order.id, { paymentStatus: "captured" });
+    await storage.createOrderEvent({
       orderId: order.id, eventType: "payment_captured",
       description: `Payment of $${order.total?.toFixed(2)} captured${hasStripe ? "" : " (demo)"}`,
       timestamp: now(),
@@ -6135,7 +6140,7 @@ export async function registerRoutes(
   app.post("/api/payments/refund", requireAuth(["admin", "manager"]), async (req, res) => {
     const { orderId, amount, reason } = req.body;
     if (!orderId || amount === undefined) return res.status(400).json({ error: "orderId and amount required" });
-    const order = storage.getOrder(Number(orderId));
+    const order = await storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const amountCents = Number(amount);
@@ -6154,12 +6159,12 @@ export async function registerRoutes(
     });
   });
 
-  app.get("/api/payments/order/:id", requireAuth(), (req, res) => {
+  app.get("/api/payments/order/:id", requireAuth(), async (req, res) => {
     const orderId = Number(String(req.params.id));
-    const order = storage.getOrder(orderId);
+    const order = await storage.getOrder(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    const transactions = storage.getPaymentTransactionsByOrder(orderId);
+    const transactions = await storage.getPaymentTransactionsByOrder(orderId);
     const total = order.finalPrice || order.total || 0;
     const platformFee = Math.round(total * PLATFORM_FEE_RATE * 100) / 100;
     const remaining = total - platformFee;
@@ -6173,13 +6178,13 @@ export async function registerRoutes(
     res.status(501).json({ error: "Vendor payout onboarding is not yet available. Please contact support." });
   });
 
-  app.get("/api/payments/connect-status/:userId", requireAuth(), (req, res) => {
+  app.get("/api/payments/connect-status/:userId", requireAuth(), async (req, res) => {
     const userId = Number(String(req.params.userId));
     const currentUser = (req as any).currentUser;
     if (userId !== currentUser.id && !isAdminOrManager(currentUser)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const account = storage.getStripeAccount(userId);
+    const account = await storage.getStripeAccount(userId);
     if (!account) return res.json({ connected: false, status: "not_connected" });
     if (!account.stripeAccountId || account.stripeAccountId.startsWith("acct_demo_")) {
       return res.json({ connected: false, status: "not_connected", demoMode: false });
@@ -6216,25 +6221,25 @@ export async function registerRoutes(
   // ═══════════════════════════════════════════════════════════════
 
   // ── Update driver location ──
-  app.post("/api/drivers/:id/location", requireAuth(["driver", "admin"]), (req, res) => {
+  app.post("/api/drivers/:id/location", requireAuth(["driver", "admin"]), async (req, res) => {
     // Security: drivers can only update their own location
     const cuLocP = (req as any).currentUser;
     if (cuLocP.role === "driver") {
-      const myDriverLocP = storage.getDriverByUserId(cuLocP.id);
+      const myDriverLocP = await storage.getDriverByUserId(cuLocP.id);
       if (!myDriverLocP || myDriverLocP.id !== Number(String(req.params.id))) {
         return res.status(403).json({ error: "Access denied — can only update your own location" });
       }
     }
     const driverId = Number(String(req.params.id));
-    const driver = storage.getDriver(driverId);
+    const driver = await storage.getDriver(driverId);
     if (!driver) return res.status(404).json({ error: "Driver not found" });
 
     const { lat, lng, speed, heading, accuracy } = req.body;
     if (lat == null || lng == null) return res.status(400).json({ error: "lat and lng required" });
 
-    storage.updateDriver(driverId, { currentLat: lat, currentLng: lng });
+    await storage.updateDriver(driverId, { currentLat: lat, currentLng: lng });
 
-    const loc = storage.createDriverLocationHistory({
+    const loc = await storage.createDriverLocationHistory({
       driverId,
       orderId: req.body.orderId || null,
       lat,
@@ -6246,10 +6251,10 @@ export async function registerRoutes(
     });
 
     // Emit location to any order rooms this driver is assigned to
-    const activeOrders = storage.getOrdersByDriver(driverId).filter(
+    const activeOrders = (await storage.getOrdersByDriver(driverId)).filter(
       o => !["completed", "cancelled", "delivered"].includes(o.status)
     );
-    activeOrders.forEach(order => {
+    activeOrders.forEach(async order => {
       emitToOrder(order.id, "driver_location", { driverId, lat, lng, speed, heading, timestamp: loc.timestamp });
     });
 
@@ -6258,7 +6263,7 @@ export async function registerRoutes(
 
   // ── Get order tracking info (customer-facing) ──
   app.get("/api/orders/:id/tracking", requireAuth(), async (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // BOLA: customer can only track their own orders
@@ -6277,7 +6282,7 @@ export async function registerRoutes(
     let driverInfo = null;
 
     if (order.driverId && isDriverPhase) {
-      const driver = storage.getDriver(order.driverId);
+      const driver = await storage.getDriver(order.driverId);
       if (driver) {
         driverLocation = { lat: driver.currentLat, lng: driver.currentLng };
         // NEVER expose driver personal phone to customer — use masked name and vehicle only
@@ -6314,7 +6319,7 @@ export async function registerRoutes(
       }
     }
 
-    const history = storage.getOrderStatusHistory(order.id);
+    const history = await storage.getOrderStatusHistory(order.id);
     const progress = getProgressPercent(order.status);
 
     res.json({
@@ -6334,10 +6339,10 @@ export async function registerRoutes(
   });
 
   // ── Get driver location history (admin) ──
-  app.get("/api/drivers/:id/location-history", requireAuth(["admin"]), (req, res) => {
+  app.get("/api/drivers/:id/location-history", requireAuth(["admin"]), async (req, res) => {
     const driverId = Number(String(req.params.id));
     const limit = Number(req.query.limit) || 100;
-    const history = storage.getDriverLocationHistory(driverId, limit);
+    const history = await storage.getDriverLocationHistory(driverId, limit);
     res.json(history);
   });
 
@@ -6352,7 +6357,7 @@ export async function registerRoutes(
 
   app.post("/api/orders/:id/photos", requireAuth(), async (req, res) => {
     const orderId = Number(String(req.params.id));
-    const order = storage.getOrder(orderId);
+    const order = await storage.getOrder(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const currentUser = (req as any).currentUser;
@@ -6387,7 +6392,7 @@ export async function registerRoutes(
       }
     }
 
-    const photo = storage.createOrderPhoto({
+    const photo = await storage.createOrderPhoto({
       orderId,
       type,
       photoData: storedPhotoData,
@@ -6407,9 +6412,9 @@ export async function registerRoutes(
     else if (type === "delivery_proof") updateData.deliveryPhotoUrl = photoRef;
     else if (type === "intake_before") updateData.intakePhotoUrl = photoRef;
     else if (type === "intake_after") updateData.outputPhotoUrl = photoRef;
-    if (Object.keys(updateData).length > 0) storage.updateOrder(orderId, updateData);
+    if (Object.keys(updateData).length > 0) await storage.updateOrder(orderId, updateData);
 
-    storage.createOrderEvent({
+    await storage.createOrderEvent({
       orderId,
       eventType: `photo_${type}`,
       description: `${type.replace(/_/g, " ")} photo captured by ${currentUser.role}`,
@@ -6423,15 +6428,15 @@ export async function registerRoutes(
   });
 
   app.get("/api/orders/:id/photos", requireAuth(), async (req, res) => {
-    const orderForPhotos = storage.getOrder(Number(String(req.params.id)));
+    const orderForPhotos = await storage.getOrder(Number(String(req.params.id)));
     if (!orderForPhotos) return res.status(404).json({ error: "Order not found" });
     const cu = (req as any).currentUser;
-    const drPhoto = cu.role === "driver" ? storage.getDriverByUserId(cu.id) : null;
-    const vnPhoto = ["laundromat","vendor"].includes(cu.role) ? (storage as any).getVendorByUserId?.(cu.id) ?? (orderForPhotos.vendorId ? storage.getVendor(orderForPhotos.vendorId) : null) : null;
+    const drPhoto = cu.role === "driver" ? await storage.getDriverByUserId(cu.id) : null;
+    const vnPhoto = ["laundromat","vendor"].includes(cu.role) ? (storage as any).getVendorByUserId?.(cu.id) ?? (orderForPhotos.vendorId ? await storage.getVendor(orderForPhotos.vendorId) : null) : null;
     if (!getOrderOwnershipAllowed(orderForPhotos, cu, drPhoto, vnPhoto)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const photos = storage.getOrderPhotos(Number(String(req.params.id)));
+    const photos = await storage.getOrderPhotos(Number(String(req.params.id)));
     // Build summaries with R2 presigned URLs if available
     const summaries = await Promise.all(photos.map(async (p) => {
       let downloadUrl: string | undefined;
@@ -6452,15 +6457,15 @@ export async function registerRoutes(
   });
 
   app.get("/api/orders/:id/photos/:photoId", requireAuth(), async (req, res) => {
-    const orderSingle = storage.getOrder(Number(String(req.params.id)));
+    const orderSingle = await storage.getOrder(Number(String(req.params.id)));
     if (!orderSingle) return res.status(404).json({ error: "Order not found" });
     const cuS = (req as any).currentUser;
-    const drS = cuS.role === "driver" ? storage.getDriverByUserId(cuS.id) : null;
-    const vnS = ["laundromat","vendor"].includes(cuS.role) ? (storage as any).getVendorByUserId?.(cuS.id) ?? (orderSingle.vendorId ? storage.getVendor(orderSingle.vendorId) : null) : null;
+    const drS = cuS.role === "driver" ? await storage.getDriverByUserId(cuS.id) : null;
+    const vnS = ["laundromat","vendor"].includes(cuS.role) ? (storage as any).getVendorByUserId?.(cuS.id) ?? (orderSingle.vendorId ? await storage.getVendor(orderSingle.vendorId) : null) : null;
     if (!getOrderOwnershipAllowed(orderSingle, cuS, drS, vnS)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const photos = storage.getOrderPhotos(Number(String(req.params.id)));
+    const photos = await storage.getOrderPhotos(Number(String(req.params.id)));
     const photo = photos.find(p => p.id === Number(String(req.params.photoId)));
     if (!photo) return res.status(404).json({ error: "Photo not found" });
     // If photo is in R2, generate presigned download URL
@@ -6475,16 +6480,16 @@ export async function registerRoutes(
     res.json(photo);
   });
 
-  app.get("/api/orders/:id/photos/type/:type", requireAuth(), (req, res) => {
-    const orderT = storage.getOrder(Number(String(req.params.id)));
+  app.get("/api/orders/:id/photos/type/:type", requireAuth(), async (req, res) => {
+    const orderT = await storage.getOrder(Number(String(req.params.id)));
     if (!orderT) return res.status(404).json({ error: "Order not found" });
     const cuT = (req as any).currentUser;
-    const drT = cuT.role === "driver" ? storage.getDriverByUserId(cuT.id) : null;
-    const vnT = ["laundromat","vendor"].includes(cuT.role) ? (storage as any).getVendorByUserId?.(cuT.id) ?? (orderT.vendorId ? storage.getVendor(orderT.vendorId) : null) : null;
+    const drT = cuT.role === "driver" ? await storage.getDriverByUserId(cuT.id) : null;
+    const vnT = ["laundromat","vendor"].includes(cuT.role) ? (storage as any).getVendorByUserId?.(cuT.id) ?? (orderT.vendorId ? await storage.getVendor(orderT.vendorId) : null) : null;
     if (!getOrderOwnershipAllowed(orderT, cuT, drT, vnT)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const photos = storage.getOrderPhotosByType(Number(String(req.params.id)), String(req.params.type));
+    const photos = await storage.getOrderPhotosByType(Number(String(req.params.id)), String(req.params.type));
     res.json(photos);
   });
 
@@ -6503,7 +6508,7 @@ export async function registerRoutes(
     if (!VALID_PHOTO_TYPES.includes(type)) {
       return res.status(400).json({ error: `Invalid photo type. Must be one of: ${VALID_PHOTO_TYPES.join(", ")}` });
     }
-    const order = storage.getOrder(Number(orderId));
+    const order = await storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const key = `orders/${orderId}/${type}/${Date.now()}-${randomBytes(8).toString("hex")}`;
@@ -6519,7 +6524,7 @@ export async function registerRoutes(
   //  GDPR / CCPA DATA DELETION & EXPORT
   // ═══════════════════════════════════════════════════════════════
 
-  app.delete("/api/users/:id/data", requireAuth(), (req, res) => {
+  app.delete("/api/users/:id/data", requireAuth(), async (req, res) => {
     const targetId = Number(String(req.params.id));
     const currentUser = (req as any).currentUser;
 
@@ -6528,11 +6533,11 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Access denied. Only the user themselves or an admin can delete user data." });
     }
 
-    const targetUser = storage.getUser(targetId);
+    const targetUser = await storage.getUser(targetId);
     if (!targetUser) return res.status(404).json({ error: "User not found" });
 
     // 1. Anonymize user PII
-    storage.updateUser(targetId, {
+    await storage.updateUser(targetId, {
       name: "Deleted User",
       email: `deleted-${targetId}@removed.invalid`,
       phone: null,
@@ -6549,27 +6554,27 @@ export async function registerRoutes(
     } as any);
 
     // 2. Clear addresses
-    const userAddresses = storage.getAddressesByUser(targetId);
+    const userAddresses = await storage.getAddressesByUser(targetId);
     for (const addr of userAddresses) {
-      storage.deleteAddress(addr.id);
+      await storage.deleteAddress(addr.id);
     }
 
     // 3. Clear payment methods
-    const userPaymentMethods = storage.getPaymentMethodsByUser(targetId);
+    const userPaymentMethods = await storage.getPaymentMethodsByUser(targetId);
     for (const pm of userPaymentMethods) {
-      storage.deletePaymentMethod(pm.id);
+      await storage.deletePaymentMethod(pm.id);
     }
 
     // 4. Clear chat sessions
-    const userChatSessions = storage.getChatSessions(targetId);
+    const userChatSessions = await storage.getChatSessions(targetId);
     for (const cs of userChatSessions) {
-      storage.updateChatSession(cs.id, { messages: "[]", summary: "Deleted" } as any);
+      await storage.updateChatSession(cs.id, { messages: "[]", summary: "Deleted" } as any);
     }
 
     // 5. Anonymize orders (keep for business records)
-    const userOrders = storage.getOrdersByCustomer(targetId);
+    const userOrders = await storage.getOrdersByCustomer(targetId);
     for (const order of userOrders) {
-      storage.updateOrder(order.id, {
+      await storage.updateOrder(order.id, {
         customerName: "Deleted User",
         customerEmail: null,
         customerPhone: null,
@@ -6577,18 +6582,18 @@ export async function registerRoutes(
     }
 
     // 6. Clear notifications
-    const userNotifications = storage.getNotificationsByUser(targetId);
+    const userNotifications = await storage.getNotificationsByUser(targetId);
     for (const notif of userNotifications) {
-      storage.deleteNotification(notif.id);
+      await storage.deleteNotification(notif.id);
     }
 
     // 7. Invalidate all sessions for the user
-    storage.deleteSessionsByUser(targetId);
+    await storage.deleteSessionsByUser(targetId);
 
     res.json({ success: true, message: "All personal data has been deleted" });
   });
 
-  app.get("/api/users/:id/data-export", requireAuth(), (req, res) => {
+  app.get("/api/users/:id/data-export", requireAuth(), async (req, res) => {
     const targetId = Number(String(req.params.id));
     const currentUser = (req as any).currentUser;
 
@@ -6597,12 +6602,12 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Access denied. Only the user themselves or an admin can export user data." });
     }
 
-    const targetUser = storage.getUser(targetId);
+    const targetUser = await storage.getUser(targetId);
     if (!targetUser) return res.status(404).json({ error: "User not found" });
 
     // Gather all user data
-    const exportAddresses = storage.getAddressesByUser(targetId);
-    const exportPaymentMethods = storage.getPaymentMethodsByUser(targetId).map(pm => ({
+    const exportAddresses = await storage.getAddressesByUser(targetId);
+    const exportPaymentMethods = (await storage.getPaymentMethodsByUser(targetId)).map(pm => ({
       id: pm.id,
       type: pm.type,
       label: pm.label,
@@ -6610,7 +6615,7 @@ export async function registerRoutes(
       expiryDate: pm.expiryDate,
       isDefault: pm.isDefault,
     }));
-    const exportOrders = storage.getOrdersByCustomer(targetId).map(o => ({
+    const exportOrders = (await storage.getOrdersByCustomer(targetId)).map(o => ({
       id: o.id,
       orderNumber: o.orderNumber,
       status: o.status,
@@ -6618,11 +6623,11 @@ export async function registerRoutes(
       createdAt: o.createdAt,
       deliveredAt: o.deliveredAt,
     }));
-    const exportMessages = storage.getMessagesBySender(targetId);
-    const exportLoyalty = storage.getLoyaltyTransactions(targetId);
-    const exportChatSessions = storage.getChatSessions(targetId);
-    const exportNotifications = storage.getNotificationsByUser(targetId);
-    const exportReferrals = storage.getReferralsByUser(targetId);
+    const exportMessages = await storage.getMessagesBySender(targetId);
+    const exportLoyalty = await storage.getLoyaltyTransactions(targetId);
+    const exportChatSessions = await storage.getChatSessions(targetId);
+    const exportNotifications = await storage.getNotificationsByUser(targetId);
+    const exportReferrals = await storage.getReferralsByUser(targetId);
 
     const { password: _pw, ...profile } = targetUser;
 
@@ -6644,21 +6649,21 @@ export async function registerRoutes(
   //  ENHANCED NOTIFICATION ENDPOINTS
   // ═══════════════════════════════════════════════════════════════
 
-  app.delete("/api/notifications/:id", requireAuth(), (req, res) => {
+  app.delete("/api/notifications/:id", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     const id = Number(String(req.params.id));
-    const n = storage.getNotification(id);
+    const n = await storage.getNotification(id);
     if (!n) return res.status(404).json({ error: "Notification not found" });
     if (n.userId !== currentUser.id && !isAdminOrManager(currentUser)) {
       return res.status(403).json({ error: "Forbidden" });
     }
-    storage.deleteNotification(id);
+    await storage.deleteNotification(id);
     res.json({ success: true });
   });
 
-  app.get("/api/notifications/category/:category", requireAuth(), (req, res) => {
+  app.get("/api/notifications/category/:category", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
-    const notifications = storage.getNotificationsByCategory(currentUser.id, String(req.params.category));
+    const notifications = await storage.getNotificationsByCategory(currentUser.id, String(req.params.category));
     res.json(notifications);
   });
 
@@ -6666,10 +6671,10 @@ export async function registerRoutes(
   //  HEALTH CHECK
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/health", (_req, res) => {
-    const allOrders = storage.getOrders();
-    const allVendors = storage.getVendors();
-    const allDrivers = storage.getDrivers();
+  app.get("/api/health", async (_req, res) => {
+    const allOrders = await storage.getOrders();
+    const allVendors = await storage.getVendors();
+    const allDrivers = await storage.getDrivers();
 
     res.json({
       status: "healthy",
@@ -6686,8 +6691,8 @@ export async function registerRoutes(
   //  FSM TRANSITION ENDPOINT
   // ═══════════════════════════════════════════════════════════════
 
-  app.post("/api/orders/:id/transition", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.post("/api/orders/:id/transition", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // BOLA: ownership check
@@ -6696,7 +6701,7 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Access denied" });
     }
     if (user_.role === "driver") {
-      const drv = storage.getDriverByUserId(user_.id);
+      const drv = await storage.getDriverByUserId(user_.id);
       if (!drv || order.driverId !== drv.id) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -6727,26 +6732,26 @@ export async function registerRoutes(
 
     // Handle delivered — payment capture, loyalty, referrals
     if (newStatus === "delivered") {
-      processPaymentCapture(order);
+      await processPaymentCapture(order);
       awardLoyaltyPoints(order.customerId, order.id, order.total || 0);
-      const referrals_ = storage.getReferralsByUser(order.customerId);
+      const referrals_ = await storage.getReferralsByUser(order.customerId);
       const pendingReferral = referrals_.find(r => r.refereeId === order.customerId && r.status === "pending");
       if (pendingReferral) {
-        storage.updateReferral(pendingReferral.id, {
+        await storage.updateReferral(pendingReferral.id, {
           status: "rewarded",
           completedOrderId: order.id,
           completedAt: ts_,
         });
-        const referrer = storage.getUser(pendingReferral.referrerId);
+        const referrer = await storage.getUser(pendingReferral.referrerId);
         if (referrer) {
-          storage.updateUser(referrer.id, { loyaltyPoints: (referrer.loyaltyPoints || 0) + 1000 });
-          storage.createLoyaltyTransaction({ userId: referrer.id, type: "referral", points: 1000, description: "Referral reward: your friend placed their first order!", createdAt: ts_ });
-          notifyAndEmit(referrer.id, null, "loyalty", "Referral Reward!", "You earned 1,000 points because your referral placed their first order.", "/profile");
+          await storage.updateUser(referrer.id, { loyaltyPoints: (referrer.loyaltyPoints || 0) + 1000 });
+          await storage.createLoyaltyTransaction({ userId: referrer.id, type: "referral", points: 1000, description: "Referral reward: your friend placed their first order!", createdAt: ts_ });
+          await notifyAndEmit(referrer.id, null, "loyalty", "Referral Reward!", "You earned 1,000 points because your referral placed their first order.", "/profile");
         }
-        const referee = storage.getUser(order.customerId);
+        const referee = await storage.getUser(order.customerId);
         if (referee) {
-          storage.updateUser(referee.id, { loyaltyPoints: (referee.loyaltyPoints || 0) + 1000 });
-          storage.createLoyaltyTransaction({ userId: referee.id, type: "referral", points: 1000, description: "Referral completion bonus — thanks for your first order!", createdAt: ts_ });
+          await storage.updateUser(referee.id, { loyaltyPoints: (referee.loyaltyPoints || 0) + 1000 });
+          await storage.createLoyaltyTransaction({ userId: referee.id, type: "referral", points: 1000, description: "Referral completion bonus — thanks for your first order!", createdAt: ts_ });
         }
       }
     }
@@ -6756,53 +6761,53 @@ export async function registerRoutes(
       updateData.cancelledAt = ts_;
       updateData.paymentStatus = "refunded";
       if (order.vendorId) {
-        const vendor = storage.getVendor(order.vendorId);
+        const vendor = await storage.getVendor(order.vendorId);
         if (vendor && (vendor.currentLoad || 0) > 0) {
-          storage.updateVendor(vendor.id, { currentLoad: (vendor.currentLoad || 0) - 1 });
+          await storage.updateVendor(vendor.id, { currentLoad: (vendor.currentLoad || 0) - 1 });
         }
       }
       if (order.driverId) {
-        const driver = storage.getDriver(order.driverId);
-        if (driver) storage.updateDriver(driver.id, { status: "available" });
+        const driver = await storage.getDriver(order.driverId);
+        if (driver) await storage.updateDriver(driver.id, { status: "available" });
       }
       // Delete per-user promo usage on cancellation
       if (order.promoCode) {
-        storage.deletePromoUsageByOrder(order.id);
+        await storage.deletePromoUsageByOrder(order.id);
       }
     }
 
     // Free resources on delivered
     if (newStatus === "delivered") {
       if (order.driverId) {
-        const driver = storage.getDriver(order.driverId);
-        if (driver) storage.updateDriver(driver.id, { status: "available" });
+        const driver = await storage.getDriver(order.driverId);
+        if (driver) await storage.updateDriver(driver.id, { status: "available" });
       }
       if (order.vendorId) {
-        const vendor = storage.getVendor(order.vendorId);
+        const vendor = await storage.getVendor(order.vendorId);
         if (vendor && (vendor.currentLoad || 0) > 0) {
-          storage.updateVendor(vendor.id, { currentLoad: (vendor.currentLoad || 0) - 1 });
+          await storage.updateVendor(vendor.id, { currentLoad: (vendor.currentLoad || 0) - 1 });
         }
       }
     }
 
     // Assign return driver when ready_for_delivery
     if (newStatus === "ready_for_delivery") {
-      const vendorObj = order.vendorId ? storage.getVendor(order.vendorId) : null;
+      const vendorObj = order.vendorId ? await storage.getVendor(order.vendorId) : null;
       if (vendorObj) {
-        const returnDriver = findBestDriver(vendorObj.lat || 25.78, vendorObj.lng || -80.19);
+        const returnDriver = await findBestDriver(vendorObj.lat || 25.78, vendorObj.lng || -80.19);
         if (returnDriver) {
           updateData.returnDriverId = returnDriver.id;
-          storage.updateDriver(returnDriver.id, { status: "busy", todayTrips: (returnDriver.todayTrips || 0) + 1 });
-          storage.createOrderEvent({ orderId: order.id, eventType: "return_driver_assigned", description: `${returnDriver.name} assigned for delivery`, actorRole: "system", timestamp: ts_ });
-          notifyAndEmit(returnDriver.userId, order.id, "order_update", "Delivery Pickup", `Pick up clean laundry for delivery.`, `/driver/order/${order.id}`);
+          await storage.updateDriver(returnDriver.id, { status: "busy", todayTrips: (returnDriver.todayTrips || 0) + 1 });
+          await storage.createOrderEvent({ orderId: order.id, eventType: "return_driver_assigned", description: `${returnDriver.name} assigned for delivery`, actorRole: "system", timestamp: ts_ });
+          await notifyAndEmit(returnDriver.userId, order.id, "order_update", "Delivery Pickup", `Pick up clean laundry for delivery.`, `/driver/order/${order.id}`);
         }
       }
     }
 
-    storage.updateOrder(order.id, updateData);
+    await storage.updateOrder(order.id, updateData);
 
     // Record in order_status_history
-    storage.createOrderStatusHistory({
+    await storage.createOrderStatusHistory({
       orderId: order.id,
       fromStatus: order.status,
       toStatus: newStatus,
@@ -6815,7 +6820,7 @@ export async function registerRoutes(
     });
 
     // Record in order_events audit trail
-    storage.createOrderEvent({
+    await storage.createOrderEvent({
       orderId: order.id,
       eventType: newStatus,
       description: notes || `Order transitioned to ${newStatus.replace(/_/g, " ")}`,
@@ -6833,28 +6838,28 @@ export async function registerRoutes(
         const body = notifConfig.customer
           .replace("{time}", order.pickupTimeWindow || "")
           .replace("{eta}", "~15 min");
-        notifyAndEmit(order.customerId, order.id, "order_update",
+        await notifyAndEmit(order.customerId, order.id, "order_update",
           `Order ${STATUS_LABELS[newStatus] || newStatus}`, body, `/orders/${order.id}`);
       }
       if (notifConfig.driver && order.driverId) {
-        const driver = storage.getDriver(order.driverId);
+        const driver = await storage.getDriver(order.driverId);
         if (driver) {
-          notifyAndEmit(driver.userId, order.id, "order_update",
+          await notifyAndEmit(driver.userId, order.id, "order_update",
             `Order ${STATUS_LABELS[newStatus] || newStatus}`, notifConfig.driver, `/driver/order/${order.id}`);
         }
       }
       if (notifConfig.staff && order.vendorId) {
         // Notify all staff at the vendor
-        const staffUsers = [...storage.getUsersByRole("laundromat"), ...storage.getUsersByRole("vendor")].filter(u => u.vendorId === order.vendorId);
-        staffUsers.forEach(s => {
-          notifyAndEmit(s.id, order.id, "order_update",
+        const staffUsers = [...await storage.getUsersByRole("laundromat"), ...await storage.getUsersByRole("vendor")].filter(u => u.vendorId === order.vendorId);
+        staffUsers.forEach(async s => {
+          await notifyAndEmit(s.id, order.id, "order_update",
             `Order ${STATUS_LABELS[newStatus] || newStatus}`, notifConfig.staff!, `/staff`);
         });
       }
     }
 
     // Emit order status update via Socket.io
-    const updatedOrder = storage.getOrder(order.id);
+    const updatedOrder = await storage.getOrder(order.id);
     emitToOrder(order.id, "order_status_changed", {
       orderId: order.id,
       fromStatus: order.status,
@@ -6865,7 +6870,7 @@ export async function registerRoutes(
 
     // Review request on delivered
     if (newStatus === "delivered") {
-      notifyAndEmit(order.customerId, order.id, "review_request",
+      await notifyAndEmit(order.customerId, order.id, "review_request",
         "How was your experience?", "Rate your laundry service to help us improve.", `/orders/${order.id}`);
     }
 
@@ -6873,13 +6878,13 @@ export async function registerRoutes(
   });
 
   // ── Get FSM info for an order ──
-  app.get("/api/orders/:id/fsm", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.get("/api/orders/:id/fsm", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const currentStatus = order.status;
     const allowed = FSM_TRANSITIONS[currentStatus] || validTransitions[currentStatus] || [];
-    const history = storage.getOrderStatusHistory(order.id);
+    const history = await storage.getOrderStatusHistory(order.id);
     const progress = getProgressPercent(currentStatus);
     const cancellable = isCancellable(currentStatus);
 
@@ -6895,8 +6900,8 @@ export async function registerRoutes(
   });
 
   // ── Get order status history ──
-  app.get("/api/orders/:id/status-history", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.get("/api/orders/:id/status-history", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // BOLA: ownership check
@@ -6905,13 +6910,13 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Access denied" });
     }
     if (cu.role === "driver") {
-      const drv = storage.getDriverByUserId(cu.id);
+      const drv = await storage.getDriverByUserId(cu.id);
       if (!drv || order.driverId !== drv.id) {
         return res.status(403).json({ error: "Access denied" });
       }
     }
 
-    const history = storage.getOrderStatusHistory(Number(String(req.params.id)));
+    const history = await storage.getOrderStatusHistory(Number(String(req.params.id)));
     res.json(history);
   });
 
@@ -6920,9 +6925,9 @@ export async function registerRoutes(
   // ═══════════════════════════════════════════════════════════════
 
   // ── Get messages for an order ──
-  app.get("/api/messages/:orderId", requireAuth(), (req, res) => {
+  app.get("/api/messages/:orderId", requireAuth(), async (req, res) => {
     const orderId = Number(String(req.params.orderId));
-    const order = storage.getOrder(orderId);
+    const order = await storage.getOrder(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // BOLA: only participants can read messages
@@ -6931,18 +6936,18 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Access denied" });
     }
     if (cu.role === "driver") {
-      const drv = storage.getDriverByUserId(cu.id);
+      const drv = await storage.getDriverByUserId(cu.id);
       if (!drv || order.driverId !== drv.id) {
         return res.status(403).json({ error: "Access denied" });
       }
     }
 
-    const messages = storage.getMessagesByOrder(orderId);
+    const messages = await storage.getMessagesByOrder(orderId);
     res.json(messages);
   });
 
   // ── Send a message ──
-  app.post("/api/messages", requireAuth(), (req, res) => {
+  app.post("/api/messages", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     const { orderId, content, messageType, recipientId } = req.body;
 
@@ -6951,15 +6956,15 @@ export async function registerRoutes(
     }
 
     // Security: ownership check + sender auth from token (not request body)
-    const order = storage.getOrder(Number(orderId));
+    const order = await storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
-    const driverRec = currentUser.role === "driver" ? storage.getDriverByUserId(currentUser.id) : null;
-    const vendorRec = ["laundromat","vendor"].includes(currentUser.role) ? (storage as any).getVendorByUserId?.(currentUser.id) ?? (order.vendorId ? storage.getVendor(order.vendorId) : null) : null;
+    const driverRec = currentUser.role === "driver" ? await storage.getDriverByUserId(currentUser.id) : null;
+    const vendorRec = ["laundromat","vendor"].includes(currentUser.role) ? (storage as any).getVendorByUserId?.(currentUser.id) ?? (order.vendorId ? await storage.getVendor(order.vendorId) : null) : null;
     if (!getOrderOwnershipAllowed(order, currentUser, driverRec, vendorRec)) {
       return res.status(403).json({ error: "Access denied" });
     }
 
-    const message = storage.createMessage({
+    const message = await storage.createMessage({
       orderId,
       conversationId: `order-${orderId}`,
       senderId: currentUser.id,
@@ -6976,13 +6981,13 @@ export async function registerRoutes(
     if (order) {
       // Determine who to notify based on sender role
       if (currentUser.role === "customer" && order.driverId) {
-        const driverNotif = storage.getDriver(order.driverId);
+        const driverNotif = await storage.getDriver(order.driverId);
         if (driverNotif) {
-          notifyAndEmit(driverNotif.userId, orderId, "new_message",
+          await notifyAndEmit(driverNotif.userId, orderId, "new_message",
             "New Message", `${(currentUser as any).name}: ${content.substring(0, 50)}`, `/driver/order/${orderId}`);
         }
       } else if (currentUser.role === "driver") {
-        notifyAndEmit(order.customerId, orderId, "new_message",
+        await notifyAndEmit(order.customerId, orderId, "new_message",
           "New Message", `Driver: ${content.substring(0, 50)}`, `/orders/${orderId}`);
       }
     }
@@ -6991,19 +6996,19 @@ export async function registerRoutes(
   });
 
   // ── Mark message as read ──
-  app.patch("/api/messages/:id/read", requireAuth(), (req, res) => {
+  app.patch("/api/messages/:id/read", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     // First get the message to check ownership
-    const existing = storage.getMessage(Number(String(req.params.id)));
+    const existing = await storage.getMessage(Number(String(req.params.id)));
     if (!existing) return res.status(404).json({ error: "Message not found" });
     // Verify the current user is a participant in this order
     if (existing.orderId) {
-      const order = storage.getOrder(existing.orderId);
+      const order = await storage.getOrder(existing.orderId);
       if (order && order.customerId !== currentUser.id && order.driverId !== currentUser.id && order.vendorId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
         return res.status(403).json({ error: "Forbidden" });
       }
     }
-    const message = storage.markMessageRead(Number(String(req.params.id)));
+    const message = await storage.markMessageRead(Number(String(req.params.id)));
     if (!message) return res.status(404).json({ error: "Message not found" });
 
     // Emit read receipt
@@ -7018,38 +7023,41 @@ export async function registerRoutes(
   });
 
   // ── Get conversations for current user ──
-  app.get("/api/conversations", requireAuth(), (req, res) => {
+  app.get("/api/conversations", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     let userOrders: Order[];
 
     if (currentUser.role === "customer") {
-      userOrders = storage.getOrdersByCustomer(currentUser.id);
+      userOrders = await storage.getOrdersByCustomer(currentUser.id);
     } else if (currentUser.role === "driver") {
-      const driver = storage.getDriverByUserId(currentUser.id);
-      userOrders = driver ? storage.getOrdersByDriver(driver.id) : [];
+      const driver = await storage.getDriverByUserId(currentUser.id);
+      userOrders = driver ? await storage.getOrdersByDriver(driver.id) : [];
     } else {
-      userOrders = storage.getActiveOrders();
+      userOrders = await storage.getActiveOrders();
     }
 
     // Build conversation list with latest message per order
-    const conversations = userOrders
-      .filter(o => !["cancelled"].includes(o.status))
-      .map(order => {
-        const messages = storage.getMessagesByOrder(order.id);
-        const lastMessage = messages[messages.length - 1];
-        const unreadCount = messages.filter(m => !m.readAt && m.senderId !== currentUser.id).length;
-        return {
-          orderId: order.id,
-          orderNumber: order.orderNumber,
-          status: order.status,
-          lastMessage: lastMessage ? {
-            content: lastMessage.content,
-            timestamp: lastMessage.timestamp,
-            senderRole: lastMessage.senderRole,
-          } : null,
-          unreadCount,
-        };
-      })
+    const conversationRaw = await Promise.all(
+      userOrders
+        .filter(o => !["cancelled"].includes(o.status))
+        .map(async order => {
+          const messages = await storage.getMessagesByOrder(order.id);
+          const lastMessage = messages[messages.length - 1];
+          const unreadCount = messages.filter(m => !m.readAt && m.senderId !== currentUser.id).length;
+          return {
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            status: order.status,
+            lastMessage: lastMessage ? {
+              content: lastMessage.content,
+              timestamp: lastMessage.timestamp,
+              senderRole: lastMessage.senderRole,
+            } : null,
+            unreadCount,
+          };
+        })
+    );
+    const conversations = conversationRaw
       .filter(c => c.lastMessage)
       .sort((a, b) => {
         const ta = a.lastMessage?.timestamp || "";
@@ -7065,14 +7073,14 @@ export async function registerRoutes(
   // =====================================================================
 
   // ── Generate receipt for an order ──
-  app.get("/api/orders/:id/receipt", requireAuth(), (req, res) => {
-    const order = storage.getOrder(Number(String(req.params.id)));
+  app.get("/api/orders/:id/receipt", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
     if (!["delivered", "completed"].includes(order.status)) {
       return res.status(400).json({ error: "Receipt only available for completed orders" });
     }
 
-    const transactions = storage.getPaymentTransactionsByOrder(order.id);
+    const transactions = await storage.getPaymentTransactionsByOrder(order.id);
     const chargeTxn = transactions.find(t => t.type === "charge" && t.status === "completed");
     const refundTxns = transactions.filter(t => t.type === "refund");
     const totalRefunded = refundTxns.reduce((sum, t) => sum + (t.amount || 0), 0);
@@ -7122,7 +7130,7 @@ export async function registerRoutes(
   // These log communications and will be wired to real providers (SendGrid/Twilio)
   const communicationLog: any[] = [];
 
-  app.post("/api/communications/send", requireAuth(["admin", "system"]), (req, res) => {
+  app.post("/api/communications/send", requireAuth(["admin", "system"]), async (req, res) => {
     const { recipientId, channel, templateName, templateData, orderId } = req.body;
     if (!recipientId || !channel || !templateName) {
       return res.status(400).json({ error: "recipientId, channel, and templateName required" });
@@ -7170,7 +7178,7 @@ export async function registerRoutes(
     let body = template.body;
     let subject = template.subject || "";
     if (templateData) {
-      Object.entries(templateData).forEach(([k, v]) => {
+      Object.entries(templateData).forEach(async ([k, v]) => {
         body = body.replace(new RegExp(`\\{\\{${k}\\}\\}`, "g"), String(v));
         subject = subject.replace(new RegExp(`\\{\\{${k}\\}\\}`, "g"), String(v));
       });
@@ -7192,7 +7200,7 @@ export async function registerRoutes(
 
     // Also create notification for in-app
     if (channel === "in_app" || channel === "push") {
-      storage.createNotification({
+      await storage.createNotification({
         userId: Number(recipientId),
         orderId: orderId ? Number(orderId) : null,
         type: templateName,
@@ -7226,7 +7234,7 @@ export async function registerRoutes(
       return res.status(400).json({ error: `Invalid reason code. Valid: ${validReasons.join(", ")}` });
     }
 
-    const order = storage.getOrder(Number(orderId));
+    const order = await storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const result = await issueStripeRefundForOrder(order, Number(amount), reasonCode === "overcharge" ? "duplicate" : "requested_by_customer", `refund-${order.id}-${Date.now()}`);
@@ -7250,7 +7258,7 @@ export async function registerRoutes(
 
   // ── Quote-to-payment bridge: create payment intent from accepted quote ──
   app.post("/api/quotes/:id/create-payment", requireAuth(), async (req, res) => {
-    const quote = storage.getQuote(Number(String(req.params.id)));
+    const quote = await storage.getQuote(Number(String(req.params.id)));
     if (!quote) return res.status(404).json({ error: "Quote not found" });
     if (quote.status !== "accepted") {
       return res.status(400).json({ error: "Quote must be accepted before payment" });
@@ -7286,7 +7294,7 @@ export async function registerRoutes(
     }
 
     // Update quote status to indicate payment initiated
-    storage.updateQuote(quote.id, { status: "payment_pending", updatedAt: now() });
+    await storage.updateQuote(quote.id, { status: "payment_pending", updatedAt: now() });
 
     res.json({
       quoteId: quote.id,
@@ -7304,13 +7312,13 @@ export async function registerRoutes(
   // =====================================================================
 
   // ── Deep health check (replaces basic one above — more detailed) ──
-  app.get("/api/health/deep", requireAuth(["admin", "manager"]), (_req, res) => {
+  app.get("/api/health/deep", requireAuth(["admin", "manager"]), async (_req, res) => {
     const startMs = Date.now();
     try {
       // DB connectivity check
-      const allOrders = storage.getOrders();
-      const allVendors = storage.getVendors();
-      const allDrivers = storage.getDrivers();
+      const allOrders = await storage.getOrders();
+      const allVendors = await storage.getVendors();
+      const allDrivers = await storage.getDrivers();
       const activeOrders = allOrders.filter(o => !["completed", "cancelled", "quote_expired"].includes(o.status));
 
       // Memory usage
@@ -7375,7 +7383,7 @@ export async function registerRoutes(
     res.json(FEATURE_FLAGS);
   });
 
-  app.put("/api/feature-flags/:flag", requireAuth(["admin"]), (req, res) => {
+  app.put("/api/feature-flags/:flag", requireAuth(["admin"]), async (req, res) => {
     const flag = String(req.params.flag);
     if (!FEATURE_FLAGS[flag]) return res.status(404).json({ error: `Unknown feature flag: ${flag}` });
 
@@ -7383,7 +7391,7 @@ export async function registerRoutes(
     if (typeof enabled === "boolean") FEATURE_FLAGS[flag].enabled = enabled;
     if (typeof rolloutPercent === "number") FEATURE_FLAGS[flag].rolloutPercent = Math.max(0, Math.min(100, rolloutPercent));
 
-    storage.createPricingAuditEntry({
+    await storage.createPricingAuditEntry({
       action: "feature_flag_updated",
       details: JSON.stringify({ flag, enabled: FEATURE_FLAGS[flag].enabled, rolloutPercent: FEATURE_FLAGS[flag].rolloutPercent }),
       actorId: (req as any).currentUser?.id,
@@ -7412,9 +7420,9 @@ export async function registerRoutes(
 
   // ── Request ID middleware is already in place via rate limiter ──
   // ── Structured logging helper ──
-  app.get("/api/admin/audit-log", requireAuth(["admin"]), (req, res) => {
+  app.get("/api/admin/audit-log", requireAuth(["admin"]), async (req, res) => {
     const { limit, offset, action } = req.query;
-    const allLogs = storage.getPricingAuditLog(Number(limit) || 100);
+    const allLogs = await storage.getPricingAuditLog(Number(limit) || 100);
     const filtered = action ? allLogs.filter((l: any) => l.action === action) : allLogs;
     res.json({
       total: filtered.length,
@@ -7426,7 +7434,7 @@ export async function registerRoutes(
   //  STRIPE WEBHOOK ENDPOINT
   // ═══════════════════════════════════════════════════════════════
 
-  app.post("/api/webhooks/stripe", (req, res) => {
+  app.post("/api/webhooks/stripe", async (req, res) => {
     const sig = req.headers["stripe-signature"];
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
@@ -7478,7 +7486,7 @@ export async function registerRoutes(
 	      if (!event?.id || !event?.type) {
 	        return res.status(400).json({ error: "Invalid Stripe event" });
 	      }
-	      const shouldProcess = storage.recordStripeEvent(event.id, event.type);
+	      const shouldProcess = await storage.recordStripeEvent(event.id, event.type);
 	      if (!shouldProcess) {
 	        return res.status(200).json({ received: true, duplicate: true });
 	      }
@@ -7489,13 +7497,13 @@ export async function registerRoutes(
 	          const pi = event.data?.object;
 	          if (pi?.metadata?.orderId) {
 	            const orderId = Number(pi.metadata.orderId);
-	            const order = storage.getOrder(orderId);
+	            const order = await storage.getOrder(orderId);
 	            if (order) {
-	              storage.updateOrder(orderId, { paymentStatus: "captured" });
-	              const chargeTxn = storage.getPaymentTransactionsByOrder(orderId)
-	                .find(t => t.type === "charge" && t.stripePaymentIntentId === pi.id);
-	              if (chargeTxn) storage.updatePaymentTransaction(chargeTxn.id, { status: "completed", completedAt: now() });
-	              storage.createOrderEvent({
+	              await storage.updateOrder(orderId, { paymentStatus: "captured" });
+	              const txns4stripe = await storage.getPaymentTransactionsByOrder(orderId);
+	              const chargeTxn = txns4stripe.find(t => t.type === "charge" && t.stripePaymentIntentId === pi.id);
+	              if (chargeTxn) await storage.updatePaymentTransaction(chargeTxn.id, { status: "completed", completedAt: now() });
+	              await storage.createOrderEvent({
 	                orderId, eventType: "payment_captured",
 	                description: `Payment of $${(pi.amount / 100).toFixed(2)} confirmed via Stripe`,
                 timestamp: now(),
@@ -7510,8 +7518,8 @@ export async function registerRoutes(
           const pi = event.data?.object;
           if (pi?.metadata?.orderId) {
             const orderId = Number(pi.metadata.orderId);
-            storage.updateOrder(orderId, { paymentStatus: "failed" });
-            storage.createOrderEvent({
+            await storage.updateOrder(orderId, { paymentStatus: "failed" });
+            await storage.createOrderEvent({
               orderId, eventType: "payment_failed",
               description: `Payment failed: ${pi.last_payment_error?.message || "Unknown error"}`,
               timestamp: now(),
@@ -7523,8 +7531,8 @@ export async function registerRoutes(
           const charge = event.data?.object;
           if (charge?.metadata?.orderId) {
             const orderId = Number(charge.metadata.orderId);
-            storage.updateOrder(orderId, { paymentStatus: "refunded" });
-            storage.createOrderEvent({
+            await storage.updateOrder(orderId, { paymentStatus: "refunded" });
+            await storage.createOrderEvent({
               orderId, eventType: "payment_refunded",
               description: `Refund of $${(charge.amount_refunded / 100).toFixed(2)} processed`,
               timestamp: now(),
@@ -7541,7 +7549,7 @@ export async function registerRoutes(
 	      console.error("[Stripe Webhook] Error:", err.message);
 	      // Allow Stripe to retry events whose local processing failed after the
 	      // dedupe row was inserted.
-	      if (processedStripeEventId) storage.deleteStripeEvent(processedStripeEventId);
+	      if (processedStripeEventId) await storage.deleteStripeEvent(processedStripeEventId);
 	      res.status(400).json({ error: `Webhook Error: ${err.message}` });
 	    }
   });
@@ -7550,8 +7558,8 @@ export async function registerRoutes(
   //  EMAIL NOTIFICATION SYSTEM
   // ═══════════════════════════════════════════════════════════════
 
-  function sendOrderEmail(order: Order, template: string) {
-    const customer = storage.getUser(order.customerId);
+  async function sendOrderEmail(order: Order, template: string) {
+    const customer = await storage.getUser(order.customerId);
     if (!customer?.email) return;
 
     const templates: Record<string, { subject: string; body: (o: Order, c: any) => string }> = {
@@ -7605,7 +7613,7 @@ export async function registerRoutes(
     }
 
     // Always log the communication
-    storage.createOrderEvent({
+    await storage.createOrderEvent({
       orderId: order.id,
       eventType: "email_sent",
       description: `Email: ${emailSubject}`,
@@ -7615,12 +7623,12 @@ export async function registerRoutes(
   }
 
   // ── Send email endpoint for admin/system use ──
-  app.post("/api/notifications/send-email", requireAuth(["admin", "manager"]), (req, res) => {
+  app.post("/api/notifications/send-email", requireAuth(["admin", "manager"]), async (req, res) => {
     const { orderId, template, customEmail } = req.body;
     if (!orderId && !customEmail) return res.status(400).json({ error: "orderId or customEmail required" });
 
     if (orderId) {
-      const order = storage.getOrder(Number(orderId));
+      const order = await storage.getOrder(Number(orderId));
       if (!order) return res.status(404).json({ error: "Order not found" });
       sendOrderEmail(order, template || "order_confirmation");
       return res.json({ sent: true, orderId, template });
@@ -7633,9 +7641,9 @@ export async function registerRoutes(
   //  CHAIN OF CUSTODY SUMMARY
   // ═══════════════════════════════════════════════════════════════
 
-  app.get("/api/orders/:id/chain-of-custody", requireAuth(), (req, res) => {
+  app.get("/api/orders/:id/chain-of-custody", requireAuth(), async (req, res) => {
     const orderId = Number(String(req.params.id));
-    const order = storage.getOrder(orderId);
+    const order = await storage.getOrder(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     // BOLA: ownership check
@@ -7644,8 +7652,8 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Access denied" });
     }
 
-    const events = storage.getOrderEvents(orderId);
-    const photos = storage.getOrderPhotos ? storage.getOrderPhotos(orderId) : [];
+    const events = await storage.getOrderEvents(orderId);
+    const photos = storage.getOrderPhotos ? await storage.getOrderPhotos(orderId) : [];
 
     // Build chain of custody timeline
     const custodyChain = [];

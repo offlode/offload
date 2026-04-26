@@ -38,7 +38,7 @@ export async function sendPushToUser(
   if (!apnProvider) return;
 
   const bundleId = process.env.APNS_BUNDLE_ID || "com.offloadusa.app";
-  const tokens = storage.getPushTokensByUser(userId).filter((t) => t.platform === "ios");
+  const tokens = (await storage.getPushTokensByUser(userId)).filter((t) => t.platform === "ios");
   if (tokens.length === 0) return;
 
   const notification = new apn.Notification();
@@ -54,7 +54,7 @@ export async function sendPushToUser(
       const status = failed.status;
       if (token && (status === "410" || failed.response?.reason === "BadDeviceToken")) {
         const record = tokens.find((t) => t.token === token);
-        if (record) storage.deletePushToken(record.userId, record.token);
+        if (record) await storage.deletePushToken(record.userId, record.token);
       }
       console.warn("[Push] APNs delivery failed", failed.response || failed.error || failed.status);
     }

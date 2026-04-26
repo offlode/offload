@@ -21,7 +21,7 @@ export interface NotificationParams {
 /**
  * Create a single notification and optionally emit via WebSocket.
  */
-export function createNotification(params: NotificationParams) {
+export async function createNotification(params: NotificationParams) {
   return storage.createNotification({
     userId: params.userId,
     orderId: params.orderId ?? undefined,
@@ -39,7 +39,7 @@ export function createNotification(params: NotificationParams) {
 /**
  * Notify all parties associated with an order about a status change.
  */
-export function notifyOrderParties(
+export async function notifyOrderParties(
   order: Order,
   newStatus: string,
   excludeUserId?: number,
@@ -51,7 +51,7 @@ export function notifyOrderParties(
 
   // Notify customer
   if (notifications.customer && order.customerId !== excludeUserId) {
-    createNotification({
+    await createNotification({
       userId: order.customerId,
       orderId: order.id,
       type: "order_update",
@@ -68,9 +68,9 @@ export function notifyOrderParties(
 
   // Notify driver
   if (notifications.driver && order.driverId) {
-    const driver = storage.getDriver(order.driverId);
+    const driver = await storage.getDriver(order.driverId);
     if (driver && driver.userId !== excludeUserId) {
-      createNotification({
+      await createNotification({
         userId: driver.userId,
         orderId: order.id,
         type: "order_update",
@@ -86,13 +86,13 @@ export function notifyOrderParties(
 
   // Notify staff
   if (notifications.staff && order.vendorId) {
-    const vendor = storage.getVendor(order.vendorId);
+    const vendor = await storage.getVendor(order.vendorId);
     if (vendor) {
       // Find staff users for this vendor
-      const staffUsers = storage.getUsersByRole("laundromat").filter((u) => u.vendorId === order.vendorId);
-      staffUsers.forEach((staffUser) => {
+      const staffUsers = (await storage.getUsersByRole("laundromat")).filter((u) => u.vendorId === order.vendorId);
+      for (const staffUser of staffUsers) {
         if (staffUser.id !== excludeUserId) {
-          createNotification({
+          await createNotification({
             userId: staffUser.id,
             orderId: order.id,
             type: "order_update",
@@ -104,7 +104,7 @@ export function notifyOrderParties(
             actionUrl: `/staff/weigh/${order.id}`,
           });
         }
-      });
+      }
     }
   }
 }

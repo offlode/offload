@@ -1,10 +1,8 @@
 /**
  * Bootstrap: ensure critical accounts exist on every server start.
  *
- * The production database is currently SQLite stored on Render's ephemeral
- * filesystem, which means data is lost on every redeploy. Until the user adds
- * a persistent disk or external Postgres, this script makes sure the Apple
- * reviewer demo account and the admin account always exist after a deploy.
+ * The production database is Postgres on Render. This script makes sure the
+ * Apple reviewer demo account and the admin account always exist after a deploy.
  *
  * Read from env so credentials can be rotated without code changes:
  *   BOOTSTRAP_REVIEWER_EMAIL    (default: reviewer@offloadusa.com)
@@ -32,7 +30,7 @@ interface BootstrapAccount {
 
 async function ensureAccount(account: BootstrapAccount) {
   try {
-    const existing = storage.getUserByEmail(account.email);
+    const existing = await storage.getUserByEmail(account.email);
     if (existing) {
       // Always re-hash the bootstrap password and force role correctness so
       // these admin/reviewer accounts are guaranteed usable after every deploy.
@@ -47,7 +45,7 @@ async function ensureAccount(account: BootstrapAccount) {
       }
       if (Object.keys(updates).length > 0) {
         try {
-          storage.updateUser(existing.id, updates);
+          await storage.updateUser(existing.id, updates);
           const what = Object.keys(updates).join(", ");
           console.log(`[Bootstrap] Refreshed ${account.email} (${what})`);
         } catch (e: any) {
@@ -58,7 +56,7 @@ async function ensureAccount(account: BootstrapAccount) {
     }
     const passwordHash = hashPassword(account.password);
     const username = account.email.split("@")[0] + "_bootstrap_" + Date.now();
-    storage.createUser({
+    await storage.createUser({
       username,
       name: account.name,
       email: account.email,
