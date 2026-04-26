@@ -1398,7 +1398,7 @@ export async function registerRoutes(
       "http://localhost",
       "https://localhost",
     ];
-    if (origin && allowedOrigins.some(o => origin === o || origin.startsWith(o))) {
+    if (origin && allowedOrigins.includes(origin)) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Allow-Credentials", "true");
     } else if (!origin) {
@@ -2545,11 +2545,11 @@ export async function registerRoutes(
       const vendorId = req.query.vendorId ? Number(req.query.vendorId) : undefined;
       const driverId = req.query.driverId ? Number(req.query.driverId) : undefined;
       const status = typeof req.query.status === "string" ? req.query.status : undefined;
-      if (customerId) return res.json((await storage.getOrdersByCustomer(customerId)).map(enrichAdminOrder));
-      if (vendorId) return res.json((await storage.getOrdersByVendor(vendorId)).map(enrichAdminOrder));
-      if (driverId) return res.json((await storage.getOrdersByDriver(driverId)).map(enrichAdminOrder));
-      if (status) return res.json((await storage.getOrdersByStatus(status)).map(enrichAdminOrder));
-      return res.json((await storage.getOrders()).map(enrichAdminOrder));
+      if (customerId) return res.json(await Promise.all((await storage.getOrdersByCustomer(customerId)).map(enrichAdminOrder)));
+      if (vendorId) return res.json(await Promise.all((await storage.getOrdersByVendor(vendorId)).map(enrichAdminOrder)));
+      if (driverId) return res.json(await Promise.all((await storage.getOrdersByDriver(driverId)).map(enrichAdminOrder)));
+      if (status) return res.json(await Promise.all((await storage.getOrdersByStatus(status)).map(enrichAdminOrder)));
+      return res.json(await Promise.all((await storage.getOrders()).map(enrichAdminOrder)));
     }
 
     // Vendor sees only their assigned orders
@@ -5298,14 +5298,14 @@ export async function registerRoutes(
   }
 
   app.get("/api/admin/orders", requireAuth(ADMIN_ROLES), async (_req, res) => {
-    res.json((await storage.getOrders()).map(enrichAdminOrder));
+    res.json(await Promise.all((await storage.getOrders()).map(enrichAdminOrder)));
   });
 
   app.get("/api/admin/orders/:id", requireAuth(ADMIN_ROLES), async (req, res) => {
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
     res.json({
-      ...enrichAdminOrder(order),
+      ...await enrichAdminOrder(order),
       events: await storage.getOrderEvents(order.id),
       statusHistory: await storage.getOrderStatusHistory(order.id),
       photos: await storage.getOrderPhotos(order.id),
@@ -5387,8 +5387,8 @@ export async function registerRoutes(
     };
   }
 
-  app.get("/api/dashboard/kpis", requireAuth(ADMIN_ROLES), (_req, res) => {
-    res.json(adminKpis());
+  app.get("/api/dashboard/kpis", requireAuth(ADMIN_ROLES), async (_req, res) => {
+    res.json(await adminKpis());
   });
 
   app.get("/api/dashboard/revenue", requireAuth(ADMIN_ROLES), async (_req, res) => {
@@ -5408,7 +5408,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/dashboard/recent-orders", requireAuth(ADMIN_ROLES), async (_req, res) => {
-    res.json((await storage.getOrders()).slice(0, 10).map(enrichAdminOrder));
+    res.json(await Promise.all((await storage.getOrders()).slice(0, 10).map(enrichAdminOrder)));
   });
 
   app.get("/api/customers", requireAuth(ADMIN_ROLES), async (_req, res) => {
@@ -5422,7 +5422,7 @@ export async function registerRoutes(
   });
 
   app.get("/api/customers/:id/orders", requireAuth(ADMIN_ROLES), async (req, res) => {
-    res.json((await storage.getOrdersByCustomer(Number(String(req.params.id)))).map(enrichAdminOrder));
+    res.json(await Promise.all((await storage.getOrdersByCustomer(Number(String(req.params.id)))).map(enrichAdminOrder)));
   });
 
   app.get("/api/customers/:id/communications", requireAuth(ADMIN_ROLES), async (req, res) => {
@@ -5433,8 +5433,8 @@ export async function registerRoutes(
     res.json(await storage.getPaymentTransactions());
   });
 
-  app.get("/api/analytics/overview", requireAuth(ADMIN_ROLES), (_req, res) => {
-    const kpis = adminKpis();
+  app.get("/api/analytics/overview", requireAuth(ADMIN_ROLES), async (_req, res) => {
+    const kpis = await adminKpis();
     res.json({ kpis, acquisitionFunnel: [], acquisitionFunnelMessage: "Insufficient data: web analytics events are not available in the production database." });
   });
 
@@ -7412,7 +7412,7 @@ export async function registerRoutes(
       resendConfigured: !!process.env.RESEND_API_KEY,
       sendgridConfigured: !!process.env.SENDGRID_API_KEY,
       twilioConfigured: !!process.env.TWILIO_ACCOUNT_SID,
-      databaseEngine: "sqlite",
+      databaseEngine: "postgres",
       uptime: Math.round(process.uptime()),
       startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
     });
