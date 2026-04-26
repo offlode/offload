@@ -8,6 +8,7 @@ import rateLimit from "express-rate-limit";
 import { sanitizeMiddleware } from "./sanitize";
 import { scheduleBackups } from "./backup";
 import { bootstrapAccounts } from "./bootstrap";
+import { storage } from "./storage";
 
 // ── BugSnag Error Tracking ──
 if (process.env.BUGSNAG_API_KEY) {
@@ -29,46 +30,90 @@ const io = new SocketIOServer(httpServer, {
   path: "/ws",
 });
 
-// Authentication middleware for Socket.io
-io.use((socket, next) => {
-  const userId = socket.handshake.auth.userId;
-  const role = socket.handshake.auth.role;
-  if (!userId) return next(new Error("Authentication required"));
-  socket.data.userId = Number(userId);
-  socket.data.role = role || "customer";
-  next();
+// ── Socket.io ownership helper (mirrors HTTP getOrderOwnershipAllowed) ──
+async function socketCanAccessOrder(orderId: number, userId: number, role: string): Promise<boolean> {
+  if (role === "admin" || role === "system") return true;
+  const order = await storage.getOrder(orderId);
+  if (!order) return false;
+  if (role === "customer") return order.customerId === userId;
+  if (role === "driver") {
+    const drv = await storage.getDriverByUserId(userId);
+    return !!drv && order.driverId === drv.id;
+  }
+  if (role === "vendor" || role === "laundromat" || role === "manager") {
+    const v = await (storage as any).getVendorByUserId?.(userId);
+    return !!v && order.vendorId === v.id;
+  }
+  return false;
+}
+
+// Authentication middleware for Socket.io — validates session token against
+// the same session store used by HTTP. Client must pass `token` (preferred) or
+// the legacy `userId` field; legacy is rejected because it was spoofable.
+io.use(async (socket, next) => {
+  try {
+    const token = (socket.handshake.auth?.token as string | undefined)
+      || (socket.handshake.headers?.authorization as string | undefined)?.replace(/^Bearer\s+/i, "");
+    if (!token) return next(new Error("Authentication required"));
+    const session = await storage.getSession(token);
+    if (!session) return next(new Error("Session expired or invalid"));
+    const user = await storage.getUser(session.userId);
+    if (!user) return next(new Error("Invalid user"));
+    socket.data.userId = user.id;
+    socket.data.role = user.role;
+    next();
+  } catch (e) {
+    next(new Error("Auth failed"));
+  }
 });
 
 io.on("connection", (socket) => {
-  // Join user's personal room
+  // Join user's personal room (server-controlled, not from client)
   socket.join(`user:${socket.data.userId}`);
 
   // Join role-based room
   socket.join(`role:${socket.data.role}`);
 
-  // Handle joining order rooms
-  socket.on("join_order", (orderId: number) => {
-    socket.join(`order:${orderId}`);
+  // Handle joining order rooms — verify ownership before allowing
+  socket.on("join_order", async (orderId: number, ack?: (resp: any) => void) => {
+    const id = Number(orderId);
+    if (!Number.isFinite(id)) {
+      if (typeof ack === "function") ack({ ok: false, error: "Invalid orderId" });
+      return;
+    }
+    const allowed = await socketCanAccessOrder(id, socket.data.userId, socket.data.role);
+    if (!allowed) {
+      if (typeof ack === "function") ack({ ok: false, error: "Access denied" });
+      return;
+    }
+    socket.join(`order:${id}`);
+    if (typeof ack === "function") ack({ ok: true });
   });
 
   socket.on("leave_order", (orderId: number) => {
-    socket.leave(`order:${orderId}`);
+    socket.leave(`order:${Number(orderId)}`);
   });
 
-  // Handle typing indicators
+  // Handle typing indicators — only emit to a room the socket is already in
   socket.on("typing", (data: { orderId: number }) => {
-    socket.to(`order:${data.orderId}`).emit("user_typing", {
+    const room = `order:${Number(data?.orderId)}`;
+    if (!socket.rooms.has(room)) return;
+    socket.to(room).emit("user_typing", {
       userId: socket.data.userId,
-      orderId: data.orderId,
+      orderId: Number(data.orderId),
     });
   });
 
-  // Handle read receipts
-  socket.on("mark_read", (data: { messageId: number }) => {
-    socket.broadcast.emit("message_read", {
-      messageId: data.messageId,
-      readBy: socket.data.userId,
-    });
+  // Handle read receipts — do not broadcast to all sockets; require room membership
+  socket.on("mark_read", (data: { messageId: number; orderId?: number }) => {
+    if (data?.orderId != null) {
+      const room = `order:${Number(data.orderId)}`;
+      if (!socket.rooms.has(room)) return;
+      socket.to(room).emit("message_read", {
+        messageId: Number(data.messageId),
+        readBy: socket.data.userId,
+      });
+    }
   });
 });
 

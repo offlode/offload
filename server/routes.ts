@@ -2958,7 +2958,7 @@ export async function registerRoutes(
     }
     if (["laundromat","vendor"].includes(currentUser.role)) {
       // Vendor can only see orders assigned to their vendor profile
-      const vendorProfile = (storage as any).getVendorByUserId?.(currentUser.id);
+      const vendorProfile = await (storage as any).getVendorByUserId?.(currentUser.id);
       if (!vendorProfile || order.vendorId !== vendorProfile.id) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -3286,7 +3286,7 @@ export async function registerRoutes(
       }
     }
     if (["laundromat","vendor"].includes(currentUser.role)) {
-      const vendorProfile = (storage as any).getVendorByUserId?.(currentUser.id);
+      const vendorProfile = await (storage as any).getVendorByUserId?.(currentUser.id);
       if (!vendorProfile || order.vendorId !== vendorProfile.id) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -3388,7 +3388,7 @@ export async function registerRoutes(
 
     const currentUser = (req as any).currentUser;
     if (["laundromat","vendor"].includes(currentUser.role)) {
-      const vendorProfile = (storage as any).getVendorByUserId?.(currentUser.id);
+      const vendorProfile = await (storage as any).getVendorByUserId?.(currentUser.id);
       if (!vendorProfile || order.vendorId !== vendorProfile.id) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -4018,37 +4018,62 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.get("/api/orders/:id/consents", requireAuth(), async (req, res) => {
-    res.json(await storage.getConsentsByOrder(Number(String(req.params.id))));
+    const orderId = Number(String(req.params.id));
+    const orderC = await storage.getOrder(orderId);
+    if (!orderC) return res.status(404).json({ error: "Order not found" });
+    const cu = (req as any).currentUser;
+    const drC = cu.role === "driver" ? await storage.getDriverByUserId(cu.id) : null;
+    const vnC = ["laundromat","vendor","manager"].includes(cu.role)
+      ? await (storage as any).getVendorByUserId?.(cu.id)
+      : null;
+    if (!getOrderOwnershipAllowed(orderC, cu, drC, vnC)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+    res.json(await storage.getConsentsByOrder(orderId));
   });
 
   app.post("/api/orders/:id/consents", requireAuth(["laundromat", "vendor", "admin"]), async (req, res) => {
+    const orderId = Number(String(req.params.id));
+    const orderC = await storage.getOrder(orderId);
+    if (!orderC) return res.status(404).json({ error: "Order not found" });
+    const cu = (req as any).currentUser;
+    // Vendors must own this order; admins are exempt.
+    if (cu.role !== "admin") {
+      const vn = await (storage as any).getVendorByUserId?.(cu.id);
+      if (!vn || orderC.vendorId !== vn.id) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+    }
+
     const ts_ = now();
     const autoApproveAt = new Date(Date.now() + CONSENT_TIMEOUT_HOURS * 3600000).toISOString();
 
+    // Server controls who requested it — do not trust client `requestedBy`.
+    const { requestedBy: _ignoreClientRequestedBy, orderId: _ignoreClientOrderId, ...rest } = req.body || {};
     const consent = await storage.createConsent({
-      ...req.body,
-      orderId: Number(String(req.params.id)),
+      ...rest,
+      orderId,
+      requestedBy: cu.id,
       requestedAt: ts_,
       autoApproveAt,
     });
 
     // Log event
     await storage.createOrderEvent({
-      orderId: Number(String(req.params.id)),
+      orderId,
       eventType: "consent_requested",
-      description: `Consent requested: ${req.body.consentType} — ${req.body.description}`,
-      actorId: req.body.requestedBy,
-      actorRole: "vendor",
+      description: `Consent requested: ${rest.consentType} — ${rest.description}`,
+      actorId: cu.id,
+      actorRole: cu.role,
       timestamp: ts_,
     });
 
     // Notify customer
-    const order = await storage.getOrder(Number(String(req.params.id)));
-    if (order) {
-      await notifyUser(order.customerId, order.id, "consent_request",
+    if (orderC) {
+      await notifyUser(orderC.customerId, orderC.id, "consent_request",
         "Action Required",
-        `The laundromat needs your approval: ${req.body.description}. Auto-approves in ${CONSENT_TIMEOUT_HOURS} hours.`,
-        `/orders/${order.id}`
+        `The laundromat needs your approval: ${rest.description}. Auto-approves in ${CONSENT_TIMEOUT_HOURS} hours.`,
+        `/orders/${orderC.id}`
       );
     }
 
@@ -4059,6 +4084,14 @@ export async function registerRoutes(
   app.patch("/api/consents/:id", requireAuth(), async (req, res) => {
     const consent = await storage.getConsent(Number(String(req.params.id)));
     if (!consent) return res.status(404).json({ error: "Consent not found" });
+
+    // Only the order's customer (or admin) may respond to consent.
+    const cu = (req as any).currentUser;
+    const orderForConsent = await storage.getOrder(consent.orderId);
+    if (!orderForConsent) return res.status(404).json({ error: "Order not found" });
+    if (cu.role !== "admin" && orderForConsent.customerId !== cu.id) {
+      return res.status(403).json({ error: "Access denied" });
+    }
 
     const { status } = req.body;
     if (!["approved", "denied"].includes(status)) {
@@ -6481,7 +6514,7 @@ export async function registerRoutes(
     if (!orderForPhotos) return res.status(404).json({ error: "Order not found" });
     const cu = (req as any).currentUser;
     const drPhoto = cu.role === "driver" ? await storage.getDriverByUserId(cu.id) : null;
-    const vnPhoto = ["laundromat","vendor"].includes(cu.role) ? (storage as any).getVendorByUserId?.(cu.id) ?? (orderForPhotos.vendorId ? await storage.getVendor(orderForPhotos.vendorId) : null) : null;
+    const vnPhoto = ["laundromat","vendor"].includes(cu.role) ? (await (storage as any).getVendorByUserId?.(cu.id)) ?? (orderForPhotos.vendorId ? await storage.getVendor(orderForPhotos.vendorId) : null) : null;
     if (!getOrderOwnershipAllowed(orderForPhotos, cu, drPhoto, vnPhoto)) {
       return res.status(403).json({ error: "Access denied" });
     }
@@ -6510,7 +6543,7 @@ export async function registerRoutes(
     if (!orderSingle) return res.status(404).json({ error: "Order not found" });
     const cuS = (req as any).currentUser;
     const drS = cuS.role === "driver" ? await storage.getDriverByUserId(cuS.id) : null;
-    const vnS = ["laundromat","vendor"].includes(cuS.role) ? (storage as any).getVendorByUserId?.(cuS.id) ?? (orderSingle.vendorId ? await storage.getVendor(orderSingle.vendorId) : null) : null;
+    const vnS = ["laundromat","vendor"].includes(cuS.role) ? (await (storage as any).getVendorByUserId?.(cuS.id)) ?? (orderSingle.vendorId ? await storage.getVendor(orderSingle.vendorId) : null) : null;
     if (!getOrderOwnershipAllowed(orderSingle, cuS, drS, vnS)) {
       return res.status(403).json({ error: "Access denied" });
     }
@@ -6534,7 +6567,7 @@ export async function registerRoutes(
     if (!orderT) return res.status(404).json({ error: "Order not found" });
     const cuT = (req as any).currentUser;
     const drT = cuT.role === "driver" ? await storage.getDriverByUserId(cuT.id) : null;
-    const vnT = ["laundromat","vendor"].includes(cuT.role) ? (storage as any).getVendorByUserId?.(cuT.id) ?? (orderT.vendorId ? await storage.getVendor(orderT.vendorId) : null) : null;
+    const vnT = ["laundromat","vendor"].includes(cuT.role) ? (await (storage as any).getVendorByUserId?.(cuT.id)) ?? (orderT.vendorId ? await storage.getVendor(orderT.vendorId) : null) : null;
     if (!getOrderOwnershipAllowed(orderT, cuT, drT, vnT)) {
       return res.status(403).json({ error: "Access denied" });
     }
@@ -6744,24 +6777,34 @@ export async function registerRoutes(
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    // BOLA: ownership check
-    const user_ = (req as any).currentUser;
-    if (user_.role === "customer" && order.customerId !== user_.id) {
+    // SECURITY: derive actor identity & role from authenticated session.
+    // NEVER trust client-supplied actorRole/actorId — that allowed any
+    // customer to spoof a vendor/admin role and bypass FSM permission checks.
+    const currentUser = (req as any).currentUser;
+    if (!currentUser) return res.status(401).json({ error: "Unauthenticated" });
+    const role = currentUser.role || "customer";
+    const actor = currentUser.id;
+
+    // BOLA: ownership check — every actor role must own this order.
+    if (role === "customer" && order.customerId !== currentUser.id) {
       return res.status(403).json({ error: "Access denied" });
     }
-    if (user_.role === "driver") {
-      const drv = await storage.getDriverByUserId(user_.id);
+    if (role === "driver") {
+      const drv = await storage.getDriverByUserId(currentUser.id);
       if (!drv || order.driverId !== drv.id) {
         return res.status(403).json({ error: "Access denied" });
       }
     }
+    if (role === "vendor" || role === "laundromat") {
+      const vendor = await storage.getVendorByUserId?.(currentUser.id);
+      if (!vendor || order.vendorId !== vendor.id) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+    }
+    // admins and system roles are not blocked by ownership.
 
-    const { newStatus, actorRole, actorId, notes, lat, lng } = req.body;
+    const { newStatus, notes, lat, lng } = req.body;
     if (!newStatus) return res.status(400).json({ error: "newStatus is required" });
-
-    const currentUser = (req as any).currentUser;
-    const role = actorRole || currentUser?.role || "system";
-    const actor = actorId || currentUser?.id;
 
     // Validate the transition using the FSM
     const validation = validateTransition(order.status, newStatus, role);
@@ -7008,7 +7051,7 @@ export async function registerRoutes(
     const order = await storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
     const driverRec = currentUser.role === "driver" ? await storage.getDriverByUserId(currentUser.id) : null;
-    const vendorRec = ["laundromat","vendor"].includes(currentUser.role) ? (storage as any).getVendorByUserId?.(currentUser.id) ?? (order.vendorId ? await storage.getVendor(order.vendorId) : null) : null;
+    const vendorRec = ["laundromat","vendor"].includes(currentUser.role) ? (await (storage as any).getVendorByUserId?.(currentUser.id)) ?? (order.vendorId ? await storage.getVendor(order.vendorId) : null) : null;
     if (!getOrderOwnershipAllowed(order, currentUser, driverRec, vendorRec)) {
       return res.status(403).json({ error: "Access denied" });
     }
@@ -7764,8 +7807,8 @@ export async function registerRoutes(
         await storage.createPricingAuditEntry({
           action: "create_addon",
           details: JSON.stringify({ entityType: "add_on", entityId: item.id, after: item }),
-          actorId: (req as any).user?.id || null,
-          actorRole: (req as any).user?.role || null,
+          actorId: (req as any).currentUser?.id || null,
+          actorRole: (req as any).currentUser?.role || null,
           timestamp: now(),
         });
       } catch {}
@@ -7786,8 +7829,8 @@ export async function registerRoutes(
         await storage.createPricingAuditEntry({
           action: "update_addon",
           details: JSON.stringify({ entityType: "add_on", entityId: id, before, after: item }),
-          actorId: (req as any).user?.id || null,
-          actorRole: (req as any).user?.role || null,
+          actorId: (req as any).currentUser?.id || null,
+          actorRole: (req as any).currentUser?.role || null,
           timestamp: now(),
         });
       } catch {}
@@ -7808,8 +7851,8 @@ export async function registerRoutes(
         await storage.createPricingAuditEntry({
           action: "deactivate_addon",
           details: JSON.stringify({ entityType: "add_on", entityId: id, before, after: item }),
-          actorId: (req as any).user?.id || null,
-          actorRole: (req as any).user?.role || null,
+          actorId: (req as any).currentUser?.id || null,
+          actorRole: (req as any).currentUser?.role || null,
           timestamp: now(),
         });
       } catch {}
