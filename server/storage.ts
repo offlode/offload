@@ -45,6 +45,70 @@ async function ensureExtraTables() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS partner_applications (
+      id SERIAL PRIMARY KEY,
+      applicant_type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending_review',
+      full_name TEXT NOT NULL,
+      email TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      address_line TEXT,
+      city TEXT,
+      state TEXT,
+      zip TEXT,
+      service_zips TEXT,
+      vehicle_type TEXT,
+      license_plate TEXT,
+      drivers_license_number TEXT,
+      drivers_license_state TEXT,
+      drivers_license_expiry TEXT,
+      insurance_carrier TEXT,
+      insurance_policy_number TEXT,
+      insurance_expiry TEXT,
+      has_clean_driving_record INTEGER,
+      years_driving INTEGER,
+      availability_json TEXT,
+      hours_per_week INTEGER,
+      owns_smartphone INTEGER,
+      consent_background_check INTEGER,
+      business_name TEXT,
+      business_legal_entity TEXT,
+      ein TEXT,
+      years_in_business INTEGER,
+      number_of_washers INTEGER,
+      number_of_dryers INTEGER,
+      largest_machine_lbs INTEGER,
+      daily_capacity_lbs INTEGER,
+      operating_hours_json TEXT,
+      services_offered_json TEXT,
+      accepts_commercial INTEGER,
+      accepts_rush_same_day INTEGER,
+      has_dry_cleaning_on_site INTEGER,
+      accepts_hypoallergenic INTEGER,
+      has_insurance INTEGER,
+      insurance_carrier_biz TEXT,
+      agrees_to_quality_standards INTEGER NOT NULL DEFAULT 0,
+      agrees_to_pricing INTEGER NOT NULL DEFAULT 0,
+      agrees_to_terms_of_service INTEGER NOT NULL DEFAULT 0,
+      agrees_to_background_check INTEGER NOT NULL DEFAULT 0,
+      why_join TEXT,
+      "references" TEXT,
+      auto_screen_score INTEGER,
+      auto_screen_flags TEXT,
+      auto_screen_recommendation TEXT,
+      reviewed_by_user_id INTEGER,
+      reviewed_at TEXT,
+      decline_reason TEXT,
+      result_user_id INTEGER,
+      result_driver_id INTEGER,
+      result_vendor_id INTEGER,
+      ip_address TEXT,
+      user_agent TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_partner_apps_status ON partner_applications(status);
+    CREATE INDEX IF NOT EXISTS idx_partner_apps_type ON partner_applications(applicant_type);
   `);
 
   // Add amount_cents column if missing (idempotent)
@@ -178,6 +242,12 @@ export interface IStorage {
   getReviewsByVendor(vendorId: number): Promise<schema.Review[]>;
   getReviewsByDriver(driverId: number): Promise<schema.Review[]>;
   createReview(data: schema.InsertReview): Promise<schema.Review>;
+
+  // ─── Partner Applications ───
+  getPartnerApplications(filter?: { applicantType?: string; status?: string }): Promise<schema.PartnerApplication[]>;
+  getPartnerApplication(id: number): Promise<schema.PartnerApplication | undefined>;
+  createPartnerApplication(data: schema.InsertPartnerApplication & { status?: string; autoScreenScore?: number; autoScreenFlags?: string; autoScreenRecommendation?: string; createdAt: string }): Promise<schema.PartnerApplication>;
+  updatePartnerApplication(id: number, patch: Partial<schema.PartnerApplication>): Promise<schema.PartnerApplication | undefined>;
   // Notifications
   getNotificationsByUser(userId: number): Promise<schema.Notification[]>;
   getUnreadCount(userId: number): Promise<number>;
@@ -532,6 +602,29 @@ class DatabaseStorage implements IStorage {
   async getReviewsByDriver(driverId: number) { return db.select().from(schema.reviews).where(eq(schema.reviews.driverId, driverId)); }
   async createReview(data: schema.InsertReview) {
     const [row] = await db.insert(schema.reviews).values(data).returning();
+    return row;
+  }
+
+  // ─── Partner Applications ───
+  async getPartnerApplications(filter?: { applicantType?: string; status?: string }) {
+    const conditions: any[] = [];
+    if (filter?.applicantType) conditions.push(eq(schema.partnerApplications.applicantType, filter.applicantType));
+    if (filter?.status) conditions.push(eq(schema.partnerApplications.status, filter.status));
+    const q = conditions.length
+      ? db.select().from(schema.partnerApplications).where(and(...conditions))
+      : db.select().from(schema.partnerApplications);
+    return q.orderBy(desc(schema.partnerApplications.createdAt));
+  }
+  async getPartnerApplication(id: number) {
+    const [row] = await db.select().from(schema.partnerApplications).where(eq(schema.partnerApplications.id, id));
+    return row;
+  }
+  async createPartnerApplication(data: any) {
+    const [row] = await db.insert(schema.partnerApplications).values(data).returning();
+    return row;
+  }
+  async updatePartnerApplication(id: number, patch: Partial<schema.PartnerApplication>) {
+    const [row] = await db.update(schema.partnerApplications).set(patch).where(eq(schema.partnerApplications.id, id)).returning();
     return row;
   }
 
