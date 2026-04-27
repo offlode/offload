@@ -169,6 +169,29 @@ function now(): string {
   return new Date().toISOString();
 }
 
+// ── Pickup waiting fee ──
+// When the driver arrives but the customer keeps them waiting, charge a wait fee.
+// Free first 5 min, then $1/min, capped at $15. Mirrors Uber/Lyft pickup wait policy.
+export const WAIT_FEE_CONFIG = {
+  freeMinutes: 5,
+  perMinute: 1.0,
+  cap: 15.0,
+};
+
+export function calculateWaitFee(arrivedAt: string | null | undefined, handoffAt: string | null | undefined): { waitMinutes: number; waitFee: number } {
+  if (!arrivedAt || !handoffAt) return { waitMinutes: 0, waitFee: 0 };
+  const a = new Date(arrivedAt).getTime();
+  const h = new Date(handoffAt).getTime();
+  if (isNaN(a) || isNaN(h) || h <= a) return { waitMinutes: 0, waitFee: 0 };
+  const minutes = (h - a) / 60000;
+  const billable = Math.max(0, minutes - WAIT_FEE_CONFIG.freeMinutes);
+  const fee = Math.min(WAIT_FEE_CONFIG.cap, billable * WAIT_FEE_CONFIG.perMinute);
+  return {
+    waitMinutes: Math.round(minutes * 100) / 100,
+    waitFee: Math.round(fee * 100) / 100,
+  };
+}
+
 // Haversine distance in miles
 function distanceMiles(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 3959;
@@ -3841,7 +3864,163 @@ export async function registerRoutes(
     });
   });
 
+  // ────────────────────────────────────────────────────────────────────────────
+  //  Pickup waiting fee — driver "arrived" / customer "handed off" timestamps
+  //  Free first 5 minutes, then $1/min capped at $15. Charged on top of order total.
+  // ────────────────────────────────────────────────────────────────────────────
+  app.post("/api/orders/:id/driver-arrived", requireAuth(["driver", "admin", "manager"]), async (req, res) => {
+    try {
+      const order = await storage.getOrder(Number(String(req.params.id)));
+      if (!order) return res.status(404).json({ error: "Order not found" });
+      const currentUser = (req as any).currentUser;
 
+      // Auth: drivers can only mark their own assigned order; admin/manager bypass
+      if (currentUser.role === "driver") {
+        const driver = await storage.getDriverByUserId(currentUser.id);
+        if (!driver || order.driverId !== driver.id) {
+          return res.status(403).json({ error: "Access denied" });
+        }
+      }
+
+      // Idempotent — return existing timestamp if already set unless ?force=true
+      if (order.driverArrivedAt && !req.query.force) {
+        return res.json({
+          orderId: order.id,
+          driverArrivedAt: order.driverArrivedAt,
+          alreadyMarked: true,
+        });
+      }
+
+      const arrivedAt = now();
+      await storage.updateOrder(order.id, { driverArrivedAt: arrivedAt } as any);
+      await storage.createOrderEvent({
+        orderId: order.id,
+        eventType: "driver_arrived",
+        description: "Driver arrived at pickup location — wait clock started",
+        actorId: currentUser.id,
+        actorRole: currentUser.role,
+        timestamp: arrivedAt,
+      });
+
+      // Notify customer to come down (5 min grace)
+      try {
+        await notifyUser(order.customerId, order.id, "order_update",
+          "Your driver has arrived",
+          "Please come down within 5 minutes — additional waiting time may incur a fee ($1/min after 5 min, capped at $15).",
+          `/orders/${order.id}`);
+      } catch (e: any) {
+        console.warn("[driver-arrived] notify failed:", e?.message);
+      }
+
+      // Live update via socket so customer app can show countdown
+      try { emitToOrder(order.id, "driver_arrived", { orderId: order.id, arrivedAt, freeMinutes: WAIT_FEE_CONFIG.freeMinutes }); } catch (_) {}
+
+      res.json({
+        orderId: order.id,
+        driverArrivedAt: arrivedAt,
+        freeMinutes: WAIT_FEE_CONFIG.freeMinutes,
+        perMinute: WAIT_FEE_CONFIG.perMinute,
+        cap: WAIT_FEE_CONFIG.cap,
+      });
+    } catch (err: any) {
+      console.error("[/api/orders/:id/driver-arrived] error:", err);
+      res.status(500).json({ error: err?.message || "Failed to mark arrival" });
+    }
+  });
+
+  app.post("/api/orders/:id/customer-handoff", requireAuth(["driver", "admin", "manager"]), async (req, res) => {
+    try {
+      const order = await storage.getOrder(Number(String(req.params.id)));
+      if (!order) return res.status(404).json({ error: "Order not found" });
+      const currentUser = (req as any).currentUser;
+
+      if (currentUser.role === "driver") {
+        const driver = await storage.getDriverByUserId(currentUser.id);
+        if (!driver || order.driverId !== driver.id) {
+          return res.status(403).json({ error: "Access denied" });
+        }
+      }
+
+      if (!order.driverArrivedAt) {
+        return res.status(400).json({ error: "Cannot mark handoff before driver-arrived. Mark arrival first." });
+      }
+
+      const handoffAt = now();
+      const { waitMinutes, waitFee } = calculateWaitFee(order.driverArrivedAt, handoffAt);
+
+      // Update order: store timestamps, wait minutes, wait fee. Roll wait fee into total.
+      const newTotal = Math.round(((order.total || 0) + waitFee) * 100) / 100;
+      await storage.updateOrder(order.id, {
+        customerHandoffAt: handoffAt,
+        pickupWaitMinutes: waitMinutes,
+        pickupWaitFee: waitFee,
+        total: newTotal,
+      } as any);
+
+      await storage.createOrderEvent({
+        orderId: order.id,
+        eventType: "customer_handoff",
+        description: waitFee > 0
+          ? `Customer handed off bags — waited ${waitMinutes.toFixed(1)} min, wait fee $${waitFee.toFixed(2)} added`
+          : `Customer handed off bags — within ${WAIT_FEE_CONFIG.freeMinutes}-min grace, no wait fee`,
+        details: JSON.stringify({ waitMinutes, waitFee, freeMinutes: WAIT_FEE_CONFIG.freeMinutes }),
+        actorId: currentUser.id,
+        actorRole: currentUser.role,
+        timestamp: handoffAt,
+      });
+
+      // Notify customer of wait fee charge if any
+      if (waitFee > 0) {
+        try {
+          await notifyUser(order.customerId, order.id, "order_update",
+            "Wait fee added",
+            `A $${waitFee.toFixed(2)} wait fee was added to your order (${waitMinutes.toFixed(1)} min wait, free ${WAIT_FEE_CONFIG.freeMinutes} min).`,
+            `/orders/${order.id}`);
+        } catch (e: any) {
+          console.warn("[customer-handoff] notify failed:", e?.message);
+        }
+      }
+
+      try { emitToOrder(order.id, "customer_handoff", { orderId: order.id, handoffAt, waitMinutes, waitFee, newTotal }); } catch (_) {}
+
+      res.json({
+        orderId: order.id,
+        driverArrivedAt: order.driverArrivedAt,
+        customerHandoffAt: handoffAt,
+        waitMinutes,
+        waitFee,
+        newTotal,
+        graceMinutes: WAIT_FEE_CONFIG.freeMinutes,
+      });
+    } catch (err: any) {
+      console.error("[/api/orders/:id/customer-handoff] error:", err);
+      res.status(500).json({ error: err?.message || "Failed to mark handoff" });
+    }
+  });
+
+  // Read-only endpoint — useful for the customer app to render a live countdown.
+  app.get("/api/orders/:id/wait-fee", requireAuth(), async (req, res) => {
+    const order = await storage.getOrder(Number(String(req.params.id)));
+    if (!order) return res.status(404).json({ error: "Order not found" });
+    const currentUser = (req as any).currentUser;
+    // Customers see their own; staff see any.
+    if (currentUser.role === "customer" && order.customerId !== currentUser.id) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+    const handoffAt = order.customerHandoffAt || (order.driverArrivedAt ? now() : null);
+    const { waitMinutes, waitFee } = calculateWaitFee(order.driverArrivedAt, handoffAt);
+    res.json({
+      orderId: order.id,
+      driverArrivedAt: order.driverArrivedAt,
+      customerHandoffAt: order.customerHandoffAt,
+      live: !order.customerHandoffAt,
+      graceMinutes: WAIT_FEE_CONFIG.freeMinutes,
+      perMinute: WAIT_FEE_CONFIG.perMinute,
+      cap: WAIT_FEE_CONFIG.cap,
+      currentWaitMinutes: waitMinutes,
+      currentWaitFee: waitFee,
+    });
+  });
 
   // ── WS5: Vendor order actions (accept/reject/complete) ──
   app.post("/api/orders/:id/vendor-action", requireAuth(["laundromat", "vendor", "admin", "manager"]), async (req, res) => {

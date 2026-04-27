@@ -243,6 +243,12 @@ export const orders = pgTable("orders", {
   // Reorder
   isReorder: integer("is_reorder").default(0),
   originalOrderId: integer("original_order_id"),
+  // Pickup waiting fee — when driver shows up but customer is late
+  // Free first 5 min, then $1/min, capped at $15.
+  driverArrivedAt: text("driver_arrived_at"),
+  customerHandoffAt: text("customer_handoff_at"),
+  pickupWaitMinutes: doublePrecision("pickup_wait_minutes").default(0),
+  pickupWaitFee: doublePrecision("pickup_wait_fee").default(0),
   // Timestamps
   confirmedAt: text("confirmed_at"),
   pickedUpAt: text("picked_up_at"),

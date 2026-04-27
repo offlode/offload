@@ -71,6 +71,11 @@ async function ensureExtraTables() {
     ["orders", "handoff_fee DOUBLE PRECISION DEFAULT 0"],
     ["orders", "traffic_multiplier DOUBLE PRECISION DEFAULT 1.0"],
     ["orders", "window_discount DOUBLE PRECISION DEFAULT 0"],
+    // Pickup waiting fee columns (5-min grace, then $1/min capped $15)
+    ["orders", "driver_arrived_at TEXT"],
+    ["orders", "customer_handoff_at TEXT"],
+    ["orders", "pickup_wait_minutes DOUBLE PRECISION DEFAULT 0"],
+    ["orders", "pickup_wait_fee DOUBLE PRECISION DEFAULT 0"],
     ["quotes", "pickup_floor INTEGER"],
     ["quotes", "pickup_has_elevator INTEGER DEFAULT 1"],
     ["quotes", "pickup_handoff TEXT DEFAULT 'curbside'"],
