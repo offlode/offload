@@ -978,7 +978,9 @@ export async function computeLogisticsBreakdown(ctx: LogisticsContext): Promise<
     try {
       const origin = haveCoords ? `${ctx.pickupLat},${ctx.pickupLng}` : ctx.pickupAddress!;
       const dest = haveCoords ? `${ctx.vendorLat},${ctx.vendorLng}` : ctx.vendorAddress!;
-      const departure = ctx.scheduledPickup ? new Date(ctx.scheduledPickup) : new Date();
+      // Always pass a departureTime so Google returns traffic-aware duration.
+      // When no scheduledPickup is given, default to "now" (60s in the future to satisfy API).
+      const departure = ctx.scheduledPickup ? new Date(ctx.scheduledPickup) : new Date(Date.now() + 60_000);
       const dm = await distanceMatrix(origin, dest, departure);
       if (dm) {
         distanceMi = dm.distanceMeters / 1609.344;
