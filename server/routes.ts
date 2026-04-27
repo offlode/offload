@@ -198,6 +198,22 @@ interface QuotePriceBreakdown {
   deliveryFee: number;
   preferredVendorSurcharge: number;
   addOnsTotal: number;
+  // Dynamic logistics (Uber-style)
+  pickupDistanceMiles: number;
+  pickupDistanceFee: number;
+  floorFee: number;
+  handoffFee: number;
+  trafficMultiplier: number;
+  trafficRatio: number;
+  trafficLevel: string;
+  windowDiscount: number;
+  windowDiscountRate: number;
+  surgeMultiplier: number;
+  surgeTier: string;
+  surgeReason: string;
+  logisticsBase: number;
+  logisticsTotal: number;
+  // ── totals ──
   subtotal: number;
   taxRate: number;
   taxAmount: number;
@@ -209,6 +225,9 @@ interface QuotePriceBreakdown {
   tierMaxWeight: number;
   overageRate: number;
   deliverySpeed: string;
+  vendorChoiceMode?: string;
+  recommendedVendorId?: number | null;
+  recommendedVendorName?: string | null;
 }
 
 async function calculateQuotePrice(input: {
@@ -220,6 +239,17 @@ async function calculateQuotePrice(input: {
   pickupLng?: number;
   addOns?: Array<{ id: number; qty: number }>;
   promoCode?: string;
+  // Uber-style dynamic logistics inputs
+  pickupFloor?: number | null;
+  pickupHasElevator?: boolean | number | null;
+  pickupHandoff?: string | null;          // "curbside" | "door"
+  pickupWindowMinutes?: number | null;    // 30 | 120 | 240
+  scheduledPickup?: string | null;        // ISO timestamp
+  vendorLat?: number;
+  vendorLng?: number;
+  vendorAddress?: string;
+  pickupAddress?: string;
+  vendorChoiceMode?: string;              // auto | nearest | preferred | rated
 }): Promise<QuotePriceBreakdown> {
   // 1. Resolve tier
   const normalizedTier = TIER_NAME_MAP[input.tierName] || input.tierName;
@@ -271,8 +301,71 @@ async function calculateQuotePrice(input: {
     }
   }
 
-  // 7. Subtotal
-  const subtotal = Math.round((laundryServicePrice + speedSurcharge + deliveryFee + preferredVendorSurcharge + addOnsTotal) * 100) / 100;
+  // 6b. Resolve recommended vendor (for logistics distance + traffic)
+  // Used when caller didn't pass vendorLat/Lng directly.
+  let resolvedVendorLat: number | undefined = input.vendorLat;
+  let resolvedVendorLng: number | undefined = input.vendorLng;
+  let resolvedVendorAddress: string | undefined = input.vendorAddress;
+  let recommendedVendorId: number | null = null;
+  let recommendedVendorName: string | null = null;
+  const vendorChoiceMode = input.vendorChoiceMode || "auto";
+
+  if ((!resolvedVendorLat || !resolvedVendorLng) && input.pickupLat != null && input.pickupLng != null) {
+    try {
+      const activeVendors = (await storage.getActiveVendors()).filter(v => v.lat && v.lng);
+      if (activeVendors.length > 0) {
+        let pickVendor = null as Vendor | null;
+        if (input.vendorId) {
+          pickVendor = await storage.getVendor(input.vendorId) || null;
+        } else if (vendorChoiceMode === "rated") {
+          // Highest-rated within reason
+          pickVendor = [...activeVendors].sort((a, b) => (b.rating || 0) - (a.rating || 0))[0] || null;
+        } else {
+          // Default "auto" or "nearest" — pick closest by haversine
+          let best = activeVendors[0];
+          let bestDist = distanceMiles(input.pickupLat, input.pickupLng, best.lat!, best.lng!);
+          for (const v of activeVendors) {
+            const d = distanceMiles(input.pickupLat, input.pickupLng, v.lat!, v.lng!);
+            if (d < bestDist) { best = v; bestDist = d; }
+          }
+          pickVendor = best;
+        }
+        if (pickVendor) {
+          resolvedVendorLat = pickVendor.lat || undefined;
+          resolvedVendorLng = pickVendor.lng || undefined;
+          resolvedVendorAddress = pickVendor.address || undefined;
+          recommendedVendorId = pickVendor.id;
+          recommendedVendorName = pickVendor.name;
+        }
+      }
+    } catch (e: any) {
+      console.warn("[calculateQuotePrice] vendor resolution failed:", e?.message);
+    }
+  }
+
+  // 6c. Dynamic logistics breakdown (distance fee, floor fee, handoff fee, traffic, window discount)
+  const logistics = await computeLogisticsBreakdown({
+    pickupLat: input.pickupLat,
+    pickupLng: input.pickupLng,
+    vendorLat: resolvedVendorLat,
+    vendorLng: resolvedVendorLng,
+    pickupAddress: input.pickupAddress,
+    vendorAddress: resolvedVendorAddress,
+    pickupFloor: input.pickupFloor ?? 1,
+    pickupHasElevator: input.pickupHasElevator ?? 1,
+    pickupHandoff: input.pickupHandoff ?? "curbside",
+    pickupWindowMinutes: input.pickupWindowMinutes ?? 30,
+    scheduledPickup: input.scheduledPickup ?? null,
+  });
+
+  // 6d. Surge pricing tier (time-of-day / day-of-week multiplier on logistics only)
+  const surge = getSurgePricingTier(input.scheduledPickup || undefined);
+  const logisticsAfterSurge = Math.round(logistics.logisticsTotal * surge.multiplier * 100) / 100;
+
+  // 7. Subtotal (laundry + delivery base + preferred surcharge + addons + dynamic logistics)
+  const subtotal = Math.round(
+    (laundryServicePrice + speedSurcharge + deliveryFee + preferredVendorSurcharge + addOnsTotal + logisticsAfterSurge) * 100
+  ) / 100;
 
   // 8. Tax
   const taxAmount = Math.round(subtotal * TAX_RATE * 100) / 100;
@@ -311,6 +404,31 @@ async function calculateQuotePrice(input: {
   if (preferredVendorSurcharge > 0) {
     lineItems.push({ label: "Preferred laundromat surcharge", amount: preferredVendorSurcharge, type: "logistics" });
   }
+  // Logistics line items (Uber-style)
+  if (logistics.distanceFee > 0) {
+    lineItems.push({ label: `Pickup distance (${logistics.distanceMiles.toFixed(2)} mi)`, amount: logistics.distanceFee, type: "logistics" });
+  }
+  if (logistics.floorFee > 0) {
+    lineItems.push({ label: `Walk-up floor fee`, amount: logistics.floorFee, type: "logistics" });
+  }
+  if (logistics.handoffFee > 0) {
+    lineItems.push({ label: `Door handoff`, amount: logistics.handoffFee, type: "logistics" });
+  }
+  if (logistics.trafficMultiplier > 1.0 && logistics.logisticsBase > 0) {
+    const trafficSurcharge = Math.round((logistics.logisticsBase * (logistics.trafficMultiplier - 1)) * 100) / 100;
+    if (trafficSurcharge > 0) {
+      lineItems.push({ label: `Traffic surcharge (${logistics.trafficLevel})`, amount: trafficSurcharge, type: "logistics" });
+    }
+  }
+  if (logistics.windowDiscount > 0) {
+    lineItems.push({ label: `Flexible-window discount (${Math.round(logistics.windowDiscountRate * 100)}%)`, amount: -logistics.windowDiscount, type: "discount" });
+  }
+  if (surge.multiplier !== 1.0 && logistics.logisticsTotal > 0) {
+    const surgeDelta = Math.round((logistics.logisticsTotal * (surge.multiplier - 1)) * 100) / 100;
+    if (surgeDelta !== 0) {
+      lineItems.push({ label: `${surge.reason} (${surge.tier})`, amount: surgeDelta, type: surgeDelta > 0 ? "logistics" : "discount" });
+    }
+  }
   for (const ao of addOnItems) {
     lineItems.push({ label: `${ao.name} x${ao.qty}`, amount: ao.price * ao.qty, type: "addon" });
   }
@@ -321,9 +439,27 @@ async function calculateQuotePrice(input: {
 
   return {
     laundryServicePrice, speedSurcharge, deliveryFee, preferredVendorSurcharge,
-    addOnsTotal, subtotal, taxRate: TAX_RATE, taxAmount, discount, total,
+    addOnsTotal,
+    pickupDistanceMiles: logistics.distanceMiles,
+    pickupDistanceFee: logistics.distanceFee,
+    floorFee: logistics.floorFee,
+    handoffFee: logistics.handoffFee,
+    trafficMultiplier: logistics.trafficMultiplier,
+    trafficRatio: logistics.trafficRatio,
+    trafficLevel: logistics.trafficLevel,
+    windowDiscount: logistics.windowDiscount,
+    windowDiscountRate: logistics.windowDiscountRate,
+    surgeMultiplier: surge.multiplier,
+    surgeTier: surge.tier,
+    surgeReason: surge.reason,
+    logisticsBase: logistics.logisticsBase,
+    logisticsTotal: logisticsAfterSurge,
+    subtotal, taxRate: TAX_RATE, taxAmount, discount, total,
     lineItems, tierName: normalizedTier, tierFlatPrice: tier.flatPrice,
     tierMaxWeight: tier.maxWeight, overageRate: tier.overageRate, deliverySpeed: speed,
+    vendorChoiceMode,
+    recommendedVendorId,
+    recommendedVendorName,
   };
 }
 
@@ -701,6 +837,227 @@ function getSurgePricingTier(pickupTime?: string): { tier: string; multiplier: n
   }
 
   return { tier: "normal", multiplier: 1.0, reason: "Standard pricing" };
+}
+
+// ══════════════════════════════════════════════════════════════
+//  DYNAMIC LOGISTICS PRICING (Uber-style)
+// ══════════════════════════════════════════════════════════════
+// Configurable knobs (kept here so admin can later move to pricing_config table)
+export const DYNAMIC_PRICING_CONFIG = {
+  distance: {
+    freeMiles: 1,            // free up to 1 mi customer→laundromat
+    perMileAfter: 1.50,      // $1.50/mi past the free zone
+    capUsd: 12,              // hard cap on distance fee
+  },
+  floor: {
+    freeFloor: 3,            // floors 1–3 are free regardless of elevator
+    perFloorAfter: 2.00,     // $2/floor for floors 4+ if NO elevator
+    capUsd: 20,
+  },
+  handoff: {
+    door: 3.00,              // $3 to send driver to door
+    curbside: 0,             // default — customer brings down
+  },
+  window: {
+    // multiplicative discount applied to (distance + floor + handoff) only —
+    // never to the laundry service price itself
+    "30":  0.00,             // 30-min slot — no discount
+    "120": 0.05,             // 2-hr window — 5% off logistics
+    "240": 0.10,             // 4-hr / flexible — 10% off logistics
+  } as Record<string, number>,
+  traffic: {
+    // expected free-flow speed in NYC ≈ 18 mph. Use ratio of in-traffic vs free-flow
+    // duration to derive a multiplier on the logistics subtotal.
+    freeFlowMultiplier: 1.0,
+    // ratio thresholds → multiplier
+    breakpoints: [
+      { ratio: 1.10, multiplier: 1.0  },  // up to 10% slower than free-flow = no surcharge
+      { ratio: 1.30, multiplier: 1.10 },  // mild traffic
+      { ratio: 1.60, multiplier: 1.20 },  // heavy traffic
+      { ratio: Infinity, multiplier: 1.30 }, // gridlock
+    ],
+    capMultiplier: 1.30,
+  },
+};
+
+export function calculateDistanceFee(miles: number): number {
+  if (!Number.isFinite(miles) || miles <= 0) return 0;
+  const cfg = DYNAMIC_PRICING_CONFIG.distance;
+  const billable = Math.max(0, miles - cfg.freeMiles);
+  const raw = billable * cfg.perMileAfter;
+  return Math.round(Math.min(cfg.capUsd, raw) * 100) / 100;
+}
+
+export function calculateFloorFee(floor: number | null | undefined, hasElevator: boolean | number | null): number {
+  const f = Number(floor || 1);
+  if (!Number.isFinite(f) || f <= 0) return 0;
+  // If there's an elevator, floor is free regardless of how high.
+  if (hasElevator === true || hasElevator === 1) return 0;
+  const cfg = DYNAMIC_PRICING_CONFIG.floor;
+  if (f <= cfg.freeFloor) return 0;
+  const billableFloors = f - cfg.freeFloor;
+  const raw = billableFloors * cfg.perFloorAfter;
+  return Math.round(Math.min(cfg.capUsd, raw) * 100) / 100;
+}
+
+export function calculateHandoffFee(handoff: string | null | undefined): number {
+  const cfg = DYNAMIC_PRICING_CONFIG.handoff;
+  return handoff === "door" ? cfg.door : cfg.curbside;
+}
+
+export function calculateWindowDiscountRate(windowMinutes: number | null | undefined): number {
+  const key = String(Number(windowMinutes || 30));
+  const map = DYNAMIC_PRICING_CONFIG.window;
+  return map[key] ?? 0;
+}
+
+export function calculateTrafficMultiplier(freeFlowSeconds: number, inTrafficSeconds: number | undefined): { multiplier: number; ratio: number; level: string } {
+  if (!freeFlowSeconds || !inTrafficSeconds || inTrafficSeconds <= 0) {
+    return { multiplier: 1.0, ratio: 1.0, level: "unknown" };
+  }
+  const ratio = inTrafficSeconds / freeFlowSeconds;
+  const cfg = DYNAMIC_PRICING_CONFIG.traffic;
+  for (const bp of cfg.breakpoints) {
+    if (ratio <= bp.ratio) {
+      const level = bp.multiplier === 1.0 ? "light"
+        : bp.multiplier <= 1.10 ? "moderate"
+        : bp.multiplier <= 1.20 ? "heavy"
+        : "gridlock";
+      return { multiplier: bp.multiplier, ratio: Math.round(ratio * 100) / 100, level };
+    }
+  }
+  return { multiplier: cfg.capMultiplier, ratio: Math.round(ratio * 100) / 100, level: "gridlock" };
+}
+
+export interface LogisticsContext {
+  pickupLat?: number;
+  pickupLng?: number;
+  vendorLat?: number;
+  vendorLng?: number;
+  pickupAddress?: string;     // used when lat/lng not available
+  vendorAddress?: string;
+  pickupFloor?: number | null;
+  pickupHasElevator?: boolean | number | null;
+  pickupHandoff?: string | null;     // "curbside" | "door"
+  pickupWindowMinutes?: number | null;  // 30 | 120 | 240
+  scheduledPickup?: string | null;   // ISO
+}
+
+export interface LogisticsBreakdown {
+  distanceMiles: number;
+  distanceFee: number;
+  floorFee: number;
+  handoffFee: number;
+  trafficMultiplier: number;
+  trafficRatio: number;
+  trafficLevel: string;
+  windowDiscount: number;     // dollars taken off
+  windowDiscountRate: number; // 0–1
+  logisticsBase: number;      // distance + floor + handoff (pre-traffic, pre-window)
+  logisticsTotal: number;     // after traffic + window
+  durationFreeFlowSec: number;
+  durationInTrafficSec: number;
+  source: "google" | "haversine" | "unknown";
+}
+
+/**
+ * Computes the dynamic logistics breakdown using Google traffic data when available,
+ * falling back to haversine for distance and a neutral 1.0x traffic multiplier otherwise.
+ */
+export async function computeLogisticsBreakdown(ctx: LogisticsContext): Promise<LogisticsBreakdown> {
+  let distanceMi = 0;
+  let durationFreeFlow = 0;
+  let durationTraffic = 0;
+  let source: LogisticsBreakdown["source"] = "unknown";
+
+  // Prefer Google when we have addresses or lat/lng pairs
+  const haveCoords = ctx.pickupLat != null && ctx.pickupLng != null && ctx.vendorLat != null && ctx.vendorLng != null;
+  const haveAddrs = !!(ctx.pickupAddress && ctx.vendorAddress);
+
+  if (isGoogleMapsConfigured() && (haveCoords || haveAddrs)) {
+    try {
+      const origin = haveCoords ? `${ctx.pickupLat},${ctx.pickupLng}` : ctx.pickupAddress!;
+      const dest = haveCoords ? `${ctx.vendorLat},${ctx.vendorLng}` : ctx.vendorAddress!;
+      const departure = ctx.scheduledPickup ? new Date(ctx.scheduledPickup) : new Date();
+      const dm = await distanceMatrix(origin, dest, departure);
+      if (dm) {
+        distanceMi = dm.distanceMeters / 1609.344;
+        durationFreeFlow = dm.durationSeconds;
+        durationTraffic = dm.durationInTrafficSeconds || dm.durationSeconds;
+        source = "google";
+      }
+    } catch (e: any) {
+      console.warn("[logistics] distanceMatrix failed, falling back:", e?.message);
+    }
+  }
+
+  if (source !== "google" && haveCoords) {
+    distanceMi = distanceMiles(ctx.pickupLat!, ctx.pickupLng!, ctx.vendorLat!, ctx.vendorLng!);
+    source = "haversine";
+  }
+
+  const distanceFee = calculateDistanceFee(distanceMi);
+  const floorFee = calculateFloorFee(ctx.pickupFloor ?? 1, ctx.pickupHasElevator ?? 1);
+  const handoffFee = calculateHandoffFee(ctx.pickupHandoff || "curbside");
+  const traffic = calculateTrafficMultiplier(durationFreeFlow, durationTraffic);
+  const windowRate = calculateWindowDiscountRate(ctx.pickupWindowMinutes ?? 30);
+
+  const logisticsBase = Math.round((distanceFee + floorFee + handoffFee) * 100) / 100;
+  const afterTraffic = Math.round(logisticsBase * traffic.multiplier * 100) / 100;
+  const windowDiscount = Math.round(afterTraffic * windowRate * 100) / 100;
+  const logisticsTotal = Math.max(0, Math.round((afterTraffic - windowDiscount) * 100) / 100);
+
+  return {
+    distanceMiles: Math.round(distanceMi * 100) / 100,
+    distanceFee,
+    floorFee,
+    handoffFee,
+    trafficMultiplier: traffic.multiplier,
+    trafficRatio: traffic.ratio,
+    trafficLevel: traffic.level,
+    windowDiscount,
+    windowDiscountRate: windowRate,
+    logisticsBase,
+    logisticsTotal,
+    durationFreeFlowSec: durationFreeFlow,
+    durationInTrafficSec: durationTraffic,
+    source,
+  };
+}
+
+/**
+ * Picks the cheapest pickup time across the next ~12 hours by sampling traffic
+ * for half-hour slots and returning the slot with the lowest in-traffic ratio.
+ * Used when the customer asks for "flexible" pickup.
+ */
+export async function findCheapestPickupSlot(ctx: LogisticsContext, hoursAhead = 12): Promise<{ scheduledPickup: string; trafficLevel: string; ratio: number; multiplier: number }> {
+  const haveCoords = ctx.pickupLat != null && ctx.pickupLng != null && ctx.vendorLat != null && ctx.vendorLng != null;
+  if (!isGoogleMapsConfigured() || !haveCoords) {
+    // No data — fall back to immediate slot.
+    const dt = new Date();
+    return { scheduledPickup: dt.toISOString(), trafficLevel: "unknown", ratio: 1.0, multiplier: 1.0 };
+  }
+
+  const slots: Array<{ when: Date; ratio: number; level: string; mult: number }> = [];
+  const stepMin = 60; // 1-hour granularity to limit Google API calls
+  for (let m = 0; m < hoursAhead * 60; m += stepMin) {
+    const when = new Date(Date.now() + m * 60 * 1000);
+    try {
+      const dm = await distanceMatrix(`${ctx.pickupLat},${ctx.pickupLng}`, `${ctx.vendorLat},${ctx.vendorLng}`, when);
+      if (dm && dm.durationSeconds && dm.durationInTrafficSeconds) {
+        const t = calculateTrafficMultiplier(dm.durationSeconds, dm.durationInTrafficSeconds);
+        slots.push({ when, ratio: t.ratio, level: t.level, mult: t.multiplier });
+      }
+    } catch (_) { /* skip slot */ }
+  }
+
+  if (slots.length === 0) {
+    const dt = new Date();
+    return { scheduledPickup: dt.toISOString(), trafficLevel: "unknown", ratio: 1.0, multiplier: 1.0 };
+  }
+  slots.sort((a, b) => a.mult - b.mult || a.ratio - b.ratio);
+  const best = slots[0];
+  return { scheduledPickup: best.when.toISOString(), trafficLevel: best.level, ratio: best.ratio, multiplier: best.mult };
 }
 
 async function getDemandMultiplier(serviceType: string): Promise<number> {
@@ -1975,12 +2332,94 @@ export async function registerRoutes(
     res.json({ serviceable, zip, reason: serviceable ? null : "We don't serve this area yet. Currently available in the NYC metro area." });
   });
 
+  // ── Public: Dynamic quote (Uber-style breakdown + cheapest-window recommendation) ──
+  // No persistence — just returns the price breakdown for live UI updates as the customer
+  // tweaks floor / elevator / handoff / window / scheduled time / laundromat choice.
+  app.post("/api/quote/dynamic", async (req, res) => {
+    try {
+      const {
+        tierName, deliverySpeed, serviceType, vendorId,
+        pickupAddress, pickupLat, pickupLng,
+        addOns, promoCode,
+        pickupFloor, pickupHasElevator, pickupHandoff, pickupWindowMinutes,
+        scheduledPickup, vendorChoiceMode,
+        recommendCheapestWindow,
+      } = req.body || {};
+
+      if (!tierName) return res.status(400).json({ error: "tierName is required" });
+
+      const breakdown = await calculateQuotePrice({
+        tierName,
+        deliverySpeed: deliverySpeed || "48h",
+        serviceType: serviceType || undefined,
+        vendorId: vendorId ? Number(vendorId) : undefined,
+        pickupAddress: pickupAddress || undefined,
+        pickupLat: pickupLat != null ? Number(pickupLat) : undefined,
+        pickupLng: pickupLng != null ? Number(pickupLng) : undefined,
+        addOns: addOns || [],
+        promoCode: promoCode || undefined,
+        pickupFloor: pickupFloor != null ? Number(pickupFloor) : undefined,
+        pickupHasElevator: pickupHasElevator != null ? (pickupHasElevator ? 1 : 0) : undefined,
+        pickupHandoff: pickupHandoff || undefined,
+        pickupWindowMinutes: pickupWindowMinutes != null ? Number(pickupWindowMinutes) : undefined,
+        scheduledPickup: scheduledPickup || undefined,
+        vendorChoiceMode: vendorChoiceMode || undefined,
+      });
+
+      // Optionally compute the cheapest pickup slot in the next ~12 hrs
+      let cheapestSlot: { scheduledPickup: string; trafficLevel: string; ratio: number; multiplier: number } | null = null;
+      if (recommendCheapestWindow && pickupLat != null && pickupLng != null) {
+        try {
+          // Resolve nearest active vendor for slot scoring
+          const vendors = (await storage.getActiveVendors()).filter(v => v.lat && v.lng);
+          let pick = vendors[0];
+          let pickDist = pick ? distanceMiles(Number(pickupLat), Number(pickupLng), pick.lat!, pick.lng!) : Infinity;
+          for (const v of vendors) {
+            const d = distanceMiles(Number(pickupLat), Number(pickupLng), v.lat!, v.lng!);
+            if (d < pickDist) { pick = v; pickDist = d; }
+          }
+          if (pick) {
+            cheapestSlot = await findCheapestPickupSlot({
+              pickupLat: Number(pickupLat),
+              pickupLng: Number(pickupLng),
+              vendorLat: pick.lat!,
+              vendorLng: pick.lng!,
+              pickupFloor: pickupFloor != null ? Number(pickupFloor) : 1,
+              pickupHasElevator: pickupHasElevator != null ? (pickupHasElevator ? 1 : 0) : 1,
+              pickupHandoff: pickupHandoff || "curbside",
+              pickupWindowMinutes: pickupWindowMinutes != null ? Number(pickupWindowMinutes) : 30,
+            }, 12);
+          }
+        } catch (e: any) {
+          console.warn("[/api/quote/dynamic] cheapest-slot lookup failed:", e?.message);
+        }
+      }
+
+      res.json({
+        breakdown,
+        cheapestSlot,
+        config: {
+          distance: DYNAMIC_PRICING_CONFIG.distance,
+          floor: DYNAMIC_PRICING_CONFIG.floor,
+          handoff: DYNAMIC_PRICING_CONFIG.handoff,
+          window: DYNAMIC_PRICING_CONFIG.window,
+        },
+      });
+    } catch (err: any) {
+      console.error("[/api/quote/dynamic] error:", err);
+      res.status(400).json({ error: err.message });
+    }
+  });
+
   // ── Public: Create a quote (no auth required for website) ──
   app.post("/api/quotes", async (req, res) => {
     try {
       const { pickupAddress, pickupCity, pickupState, pickupZip, pickupLat, pickupLng,
         deliveryAddress, serviceType, tierName, deliverySpeed, vendorId,
-        addOns, promoCode, sessionId, idempotencyKey } = req.body;
+        addOns, promoCode, sessionId, idempotencyKey,
+        // Uber-style dynamic logistics inputs
+        pickupFloor, pickupHasElevator, pickupHandoff, pickupWindowMinutes,
+        scheduledPickup, vendorChoiceMode } = req.body;
 
       // Validate required fields
       if (!pickupAddress) return res.status(400).json({ error: "Pickup address is required" });
@@ -2004,11 +2443,19 @@ export async function registerRoutes(
       const breakdown = await calculateQuotePrice({
         tierName,
         deliverySpeed: deliverySpeed || "48h",
+        serviceType: serviceType || undefined,
         vendorId: vendorId ? Number(vendorId) : undefined,
         pickupLat: pickupLat ? Number(pickupLat) : undefined,
         pickupLng: pickupLng ? Number(pickupLng) : undefined,
+        pickupAddress,
         addOns: addOns || [],
         promoCode: promoCode || undefined,
+        pickupFloor: pickupFloor != null ? Number(pickupFloor) : undefined,
+        pickupHasElevator: pickupHasElevator != null ? (pickupHasElevator ? 1 : 0) : undefined,
+        pickupHandoff: pickupHandoff || undefined,
+        pickupWindowMinutes: pickupWindowMinutes != null ? Number(pickupWindowMinutes) : undefined,
+        scheduledPickup: scheduledPickup || undefined,
+        vendorChoiceMode: vendorChoiceMode || undefined,
       });
 
       // Calculate expiry
@@ -2049,6 +2496,19 @@ export async function registerRoutes(
         deliveryFee: breakdown.deliveryFee,
         preferredVendorSurcharge: breakdown.preferredVendorSurcharge,
         addOnsTotal: breakdown.addOnsTotal,
+        // ── Uber-style dynamic logistics persistence ──
+        pickupFloor: pickupFloor != null ? Number(pickupFloor) : null,
+        pickupHasElevator: pickupHasElevator != null ? (pickupHasElevator ? 1 : 0) : 1,
+        pickupHandoff: pickupHandoff || "curbside",
+        pickupWindowMinutes: pickupWindowMinutes != null ? Number(pickupWindowMinutes) : 30,
+        pickupDistanceMiles: breakdown.pickupDistanceMiles,
+        pickupDistanceFee: breakdown.pickupDistanceFee,
+        floorFee: breakdown.floorFee,
+        handoffFee: breakdown.handoffFee,
+        trafficMultiplier: breakdown.trafficMultiplier,
+        windowDiscount: breakdown.windowDiscount,
+        vendorChoiceMode: vendorChoiceMode || "auto",
+        // ── totals ──
         subtotal: breakdown.subtotal,
         taxRate: breakdown.taxRate,
         taxAmount: breakdown.taxAmount,

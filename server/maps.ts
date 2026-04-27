@@ -23,24 +23,35 @@ export async function geocode(address: string): Promise<{ lat: number; lng: numb
 export async function distanceMatrix(
   origin: string,
   destination: string,
-): Promise<{ distanceMeters: number; durationSeconds: number } | null> {
+  departureTime?: Date,
+): Promise<{ distanceMeters: number; durationSeconds: number; durationInTrafficSeconds?: number } | null> {
   const key = getApiKey();
   if (!key) return null;
 
-  const response = await client.distancematrix({
-    params: {
-      origins: [origin],
-      destinations: [destination],
-      mode: TravelMode.driving,
-      key,
-    },
-  });
+  const params: any = {
+    origins: [origin],
+    destinations: [destination],
+    mode: TravelMode.driving,
+    key,
+  };
+  if (departureTime) {
+    // "now" is special-cased by the API; otherwise pass a future epoch second.
+    const epochSec = Math.floor(departureTime.getTime() / 1000);
+    const nowSec = Math.floor(Date.now() / 1000);
+    // Google requires departure_time to be "now" or in the future.
+    params.departure_time = epochSec > nowSec ? epochSec : "now";
+    // Use best_guess for traffic-aware durations.
+    params.traffic_model = "best_guess";
+  }
+
+  const response = await client.distancematrix({ params });
 
   const element = response.data.rows[0]?.elements[0];
   if (!element || element.status !== "OK") return null;
   return {
     distanceMeters: element.distance.value,
     durationSeconds: element.duration.value,
+    durationInTrafficSeconds: (element as any).duration_in_traffic?.value,
   };
 }
 

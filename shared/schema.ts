@@ -177,6 +177,20 @@ export const orders = pgTable("orders", {
   deliverySpeed: text("delivery_speed").default("48h"), // 48h | 24h | same_day | express_3h
   scheduledPickup: text("scheduled_pickup"),
   pickupTimeWindow: text("pickup_time_window"),
+  // Dynamic pickup logistics (drives Uber-style pricing)
+  pickupFloor: integer("pickup_floor"), // 1 = ground/lobby. 4+ no elevator = walk-up surcharge.
+  pickupHasElevator: integer("pickup_has_elevator").default(1), // 1=yes, 0=no
+  pickupHandoff: text("pickup_handoff").default("curbside"), // curbside | door
+  deliveryFloor: integer("delivery_floor"),
+  deliveryHasElevator: integer("delivery_has_elevator").default(1),
+  deliveryHandoff: text("delivery_handoff").default("curbside"),
+  pickupWindowMinutes: integer("pickup_window_minutes").default(30), // 30 | 120 | 240
+  pickupDistanceMiles: doublePrecision("pickup_distance_miles"), // customer→laundromat one-way
+  pickupDistanceFee: doublePrecision("pickup_distance_fee").default(0),
+  floorFee: doublePrecision("floor_fee").default(0),
+  handoffFee: doublePrecision("handoff_fee").default(0),
+  trafficMultiplier: doublePrecision("traffic_multiplier").default(1.0),
+  windowDiscount: doublePrecision("window_discount").default(0),
   addressNotes: text("address_notes"),
   bags: text("bags").notNull(), // JSON
   preferences: text("preferences"), // JSON
@@ -665,6 +679,18 @@ export const quotes = pgTable("quotes", {
   taxAmount: doublePrecision("tax_amount").notNull(),
   discount: doublePrecision("discount").default(0),
   total: doublePrecision("total").notNull(),
+  // Dynamic pickup logistics (Uber-style)
+  pickupFloor: integer("pickup_floor"),
+  pickupHasElevator: integer("pickup_has_elevator").default(1),
+  pickupHandoff: text("pickup_handoff").default("curbside"),
+  pickupWindowMinutes: integer("pickup_window_minutes").default(30),
+  pickupDistanceMiles: doublePrecision("pickup_distance_miles"),
+  pickupDistanceFee: doublePrecision("pickup_distance_fee").default(0),
+  floorFee: doublePrecision("floor_fee").default(0),
+  handoffFee: doublePrecision("handoff_fee").default(0),
+  trafficMultiplier: doublePrecision("traffic_multiplier").default(1.0),
+  windowDiscount: doublePrecision("window_discount").default(0),
+  vendorChoiceMode: text("vendor_choice_mode").default("auto"), // auto | nearest | preferred | rated
   // Itemized line items and add-ons as JSON
   lineItemsJson: text("line_items_json"),
   addOnsJson: text("add_ons_json"),

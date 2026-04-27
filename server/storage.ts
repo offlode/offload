@@ -54,6 +54,46 @@ async function ensureExtraTables() {
     const msg = String(err?.message || "");
     if (!msg.includes("already exists") && !msg.includes("duplicate column")) throw err;
   }
+
+  // ── Dynamic pricing columns (Uber-style) ──
+  // Each is wrapped in IF NOT EXISTS so reruns are safe.
+  const dynamicPricingCols: Array<[string, string]> = [
+    ["orders", "pickup_floor INTEGER"],
+    ["orders", "pickup_has_elevator INTEGER DEFAULT 1"],
+    ["orders", "pickup_handoff TEXT DEFAULT 'curbside'"],
+    ["orders", "delivery_floor INTEGER"],
+    ["orders", "delivery_has_elevator INTEGER DEFAULT 1"],
+    ["orders", "delivery_handoff TEXT DEFAULT 'curbside'"],
+    ["orders", "pickup_window_minutes INTEGER DEFAULT 30"],
+    ["orders", "pickup_distance_miles DOUBLE PRECISION"],
+    ["orders", "pickup_distance_fee DOUBLE PRECISION DEFAULT 0"],
+    ["orders", "floor_fee DOUBLE PRECISION DEFAULT 0"],
+    ["orders", "handoff_fee DOUBLE PRECISION DEFAULT 0"],
+    ["orders", "traffic_multiplier DOUBLE PRECISION DEFAULT 1.0"],
+    ["orders", "window_discount DOUBLE PRECISION DEFAULT 0"],
+    ["quotes", "pickup_floor INTEGER"],
+    ["quotes", "pickup_has_elevator INTEGER DEFAULT 1"],
+    ["quotes", "pickup_handoff TEXT DEFAULT 'curbside'"],
+    ["quotes", "pickup_window_minutes INTEGER DEFAULT 30"],
+    ["quotes", "pickup_distance_miles DOUBLE PRECISION"],
+    ["quotes", "pickup_distance_fee DOUBLE PRECISION DEFAULT 0"],
+    ["quotes", "floor_fee DOUBLE PRECISION DEFAULT 0"],
+    ["quotes", "handoff_fee DOUBLE PRECISION DEFAULT 0"],
+    ["quotes", "traffic_multiplier DOUBLE PRECISION DEFAULT 1.0"],
+    ["quotes", "window_discount DOUBLE PRECISION DEFAULT 0"],
+    ["quotes", "vendor_choice_mode TEXT DEFAULT 'auto'"],
+  ];
+  for (const [table, colDef] of dynamicPricingCols) {
+    const colName = colDef.split(/\s+/)[0];
+    try {
+      await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${colDef};`);
+    } catch (err: any) {
+      const msg = String(err?.message || "");
+      if (!msg.includes("already exists") && !msg.includes("duplicate column")) {
+        console.warn(`[storage] could not add ${table}.${colName}:`, msg);
+      }
+    }
+  }
 }
 
 ensureExtraTables().catch((err) => {
