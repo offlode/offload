@@ -2369,9 +2369,15 @@ export async function registerRoutes(
         pickupFloor, pickupHasElevator, pickupHandoff, pickupWindowMinutes,
         scheduledPickup, vendorChoiceMode,
         recommendCheapestWindow,
+        view,                    // "customer" (default) | "admin" — controls breakdown verbosity
       } = req.body || {};
 
       if (!tierName) return res.status(400).json({ error: "tierName is required" });
+
+      // Customer-facing UI gets a simplified view; admin/laundromat/driver dashboards
+      // get the full breakdown (vendor name, surge label, distance, traffic, etc.).
+      // Default to customer view since this endpoint is publicly callable.
+      const viewMode: "customer" | "admin" = view === "admin" ? "admin" : "customer";
 
       const breakdown = await calculateQuotePrice({
         tierName,
@@ -2420,6 +2426,66 @@ export async function registerRoutes(
         }
       }
 
+      // ── View-aware response ──
+      // For customers we hide vendor identity, distance, traffic, and surge labels.
+      // We also collapse all logistics line items into a single "Pickup adjustments"
+      // row so the UI stays uncluttered.
+      if (viewMode === "customer") {
+        const lineItems = Array.isArray(breakdown.lineItems) ? breakdown.lineItems : [];
+        const logisticsItems = lineItems.filter((li: any) => li.type === "logistics" || (li.type === "discount" && !String(li.label || "").startsWith("Promo discount")));
+        const logisticsNet = Math.round(logisticsItems.reduce((sum: number, li: any) => sum + (li.amount || 0), 0) * 100) / 100;
+
+        // Service line, delivery, addons, promo, tax — keep these as-is.
+        const customerLines: Array<{ label: string; amount: number; type: string }> = [];
+        for (const li of lineItems) {
+          if (li.type === "logistics") continue;          // collapsed
+          if (li.type === "discount" && !String(li.label || "").startsWith("Promo discount")) continue; // collapsed
+          customerLines.push(li);
+        }
+        // Insert a single rolled-up adjustments row right after the delivery line
+        if (logisticsNet !== 0) {
+          const insertAt = customerLines.findIndex((li) => li.type === "tax");
+          const rollup = {
+            label: logisticsNet >= 0 ? "Pickup adjustments" : "Pickup savings",
+            amount: logisticsNet,
+            type: logisticsNet >= 0 ? "logistics" : "discount",
+          };
+          if (insertAt === -1) customerLines.push(rollup);
+          else customerLines.splice(insertAt, 0, rollup);
+        }
+
+        // Strip vendor-side fields from the breakdown
+        const customerBreakdown: any = {
+          laundryServicePrice: breakdown.laundryServicePrice,
+          deliveryFee: breakdown.deliveryFee,
+          addOnsTotal: breakdown.addOnsTotal,
+          // single rollup amount for UI "Pickup adjustments"
+          pickupAdjustments: logisticsNet,
+          subtotal: breakdown.subtotal,
+          taxRate: breakdown.taxRate,
+          taxAmount: breakdown.taxAmount,
+          discount: breakdown.discount,
+          total: breakdown.total,
+          lineItems: customerLines,
+          tierName: breakdown.tierName,
+          tierFlatPrice: breakdown.tierFlatPrice,
+          tierMaxWeight: breakdown.tierMaxWeight,
+          deliverySpeed: breakdown.deliverySpeed,
+        };
+
+        // Cheapest-slot banner: keep timing info but drop the traffic level chatter
+        const customerCheapest = cheapestSlot ? {
+          scheduledPickup: cheapestSlot.scheduledPickup,
+          multiplier: cheapestSlot.multiplier,
+        } : null;
+
+        return res.json({
+          breakdown: customerBreakdown,
+          cheapestSlot: customerCheapest,
+        });
+      }
+
+      // Admin / internal full breakdown
       res.json({
         breakdown,
         cheapestSlot,
@@ -3098,11 +3164,31 @@ export async function registerRoutes(
       ...(userRole !== "driver" ? { phone: customer.phone } : {})
     } : null;
 
+    // ── Strip vendor-side financial / operational fields from customer-facing payload ──
+    // Customers never need to see what we pay vendors / drivers, our cut, or AI scoring.
+    const sanitizedOrder: any = { ...order };
+    if (userRole === "customer") {
+      delete sanitizedOrder.vendorPayout;
+      delete sanitizedOrder.driverPayout;
+      delete sanitizedOrder.platformFee;
+      delete sanitizedOrder.aiMatchScore;
+      delete sanitizedOrder.aiPricingTier;
+      delete sanitizedOrder.surgeMultiplier;
+      delete sanitizedOrder.surgeReason;
+      delete sanitizedOrder.demandMultiplier;
+      delete sanitizedOrder.actualWeight;     // operational — customer sees their tier weight only
+      delete sanitizedOrder.weighedBy;
+      delete sanitizedOrder.driverNotes;
+      delete sanitizedOrder.vendorNotes;
+      delete sanitizedOrder.internalNotes;
+    }
+
     res.json({
-      ...order,
+      ...sanitizedOrder,
       ...(userRole === "admin" || userRole === "manager" ? enrichAdminOrder(order) : {}),
       events,
       statusHistory: await storage.getOrderStatusHistory(order.id),
+      // Customers see vendor name + address (so they know where their laundry is) but not rating-internals or vendor IDs they can't act on.
       vendor: vendor ? { id: vendor.id, name: vendor.name, rating: vendor.rating, address: vendor.address } : null,
       driver: driverInfo,
       customer: customerInfo,
