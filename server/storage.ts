@@ -177,6 +177,7 @@ export interface IStorage {
   getUsersByRole(role: string): Promise<schema.User[]>;
   createUser(data: schema.InsertUser): Promise<schema.User>;
   updateUser(id: number, data: Partial<schema.InsertUser>): Promise<schema.User | undefined>;
+  deleteUserAccount(id: number): Promise<void>;
   searchUsers(query: string): Promise<schema.User[]>;
   // Addresses
   getAddress(id: number): Promise<schema.Address | undefined>;
@@ -396,6 +397,29 @@ class DatabaseStorage implements IStorage {
   async updateUser(id: number, data: Partial<schema.InsertUser>) {
     const [row] = await db.update(schema.users).set(data).where(eq(schema.users.id, id)).returning();
     return row;
+  }
+  async deleteUserAccount(id: number) {
+    // Scrub PII from the user record (soft-delete preserves FK integrity)
+    const deletedTs = new Date().toISOString();
+    await db.update(schema.users).set({
+      name: "Deleted User",
+      email: `deleted-${id}@removed.offloadusa.com`,
+      username: `deleted-${id}`,
+      phone: null,
+      avatarUrl: null,
+      password: "ACCOUNT_DELETED",
+      referralCode: null,
+      specialInstructions: null,
+      loyaltyPoints: 0,
+      credits: 0,
+      lastActiveAt: deletedTs,
+    } as any).where(eq(schema.users.id, id));
+    // Delete PII-bearing child records
+    await db.delete(schema.addresses).where(eq(schema.addresses.userId, id));
+    await db.delete(schema.paymentMethods).where(eq(schema.paymentMethods.userId, id));
+    await db.delete(schema.pushTokens).where(eq(schema.pushTokens.userId, id));
+    await db.delete(schema.sessions).where(eq(schema.sessions.userId, id));
+    await db.delete(schema.notifications).where(eq(schema.notifications.userId, id));
   }
   async searchUsers(query: string) {
     return db.select().from(schema.users).where(
