@@ -2173,6 +2173,34 @@ export async function registerRoutes(
     res.json({ ...updated, password: undefined });
   });
 
+  // ── Account Deletion (Apple Guideline 5.1.1(v)) ──
+  app.delete("/api/users/me", requireAuth(), async (req, res) => {
+    const user = (req as any).currentUser;
+    try {
+      // Cancel any active orders that are still cancellable
+      const userOrders = await storage.getOrdersByCustomer(user.id);
+      const cancellable = ["pending", "scheduled", "confirmed", "driver_assigned"];
+      for (const order of userOrders) {
+        if (cancellable.includes(order.status)) {
+          await storage.updateOrder(order.id, { status: "cancelled", cancelledAt: now() });
+        }
+      }
+
+      // Scrub PII and delete personal data
+      await storage.deleteUserAccount(user.id);
+
+      // Invalidate the current session
+      const token = getSessionTokenFromRequest(req);
+      if (token) await destroySession(token);
+      clearSessionCookie(res);
+
+      res.json({ success: true, message: "Account deleted" });
+    } catch (err: any) {
+      console.error("[account-deletion] error:", err);
+      res.status(500).json({ error: "Failed to delete account. Please try again." });
+    }
+  });
+
   // ─────────────────────────────────────────────────────────
   //  PRICING TIERS & ADD-ONS
   // ─────────────────────────────────────────────────────────

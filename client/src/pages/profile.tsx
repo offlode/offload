@@ -4,7 +4,8 @@ import { Link, useLocation } from "wouter";
 import {
   User, Package, DollarSign, Star, Heart, MapPin, CreditCard,
   Bell, Shield, Settings, HelpCircle, LogOut, ChevronRight,
-  Truck, Sun, Moon, LayoutDashboard, X, Check, ChevronDown, ArrowLeft
+  Truck, Sun, Moon, LayoutDashboard, X, Check, ChevronDown, ArrowLeft,
+  Trash2
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -78,6 +79,8 @@ export default function ProfilePage() {
   const [washPrefsOpen, setWashPrefsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [signOutOpen, setSignOutOpen] = useState(false);
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [accountDeleted, setAccountDeleted] = useState(false);
   const [editName, setEditName] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [editPhone, setEditPhone] = useState("");
@@ -176,6 +179,24 @@ export default function ProfilePage() {
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const deleteAccountMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("/api/users/me", { method: "DELETE" });
+      return res.json();
+    },
+    onSuccess: () => {
+      setDeleteAccountOpen(false);
+      setAccountDeleted(true);
+      setTimeout(async () => {
+        await logout();
+        navigate("/login");
+      }, 3000);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to delete account", description: err.message, variant: "destructive" });
     },
   });
 
@@ -398,6 +419,20 @@ export default function ProfilePage() {
             label="Sign Out"
             color="bg-red-500/15 text-red-400"
             onClick={() => setSignOutOpen(true)}
+          />
+        </Card>
+      </div>
+
+      {/* Danger Zone — Account Deletion */}
+      <div className="px-5 mb-4">
+        <h3 className="text-sm font-semibold mb-2 text-red-500">Danger Zone</h3>
+        <Card className="px-4 border-red-500/20">
+          <SettingsRow
+            icon={<Trash2 className="w-4 h-4" />}
+            label="Delete My Account"
+            value="Permanently delete all data"
+            color="bg-red-500/15 text-red-500"
+            onClick={() => setDeleteAccountOpen(true)}
           />
         </Card>
       </div>
@@ -643,6 +678,42 @@ export default function ProfilePage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Delete Account Confirmation */}
+      <AlertDialog open={deleteAccountOpen} onOpenChange={setDeleteAccountOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-red-500">Delete your account?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to permanently delete your account? This cannot be undone. All your orders, payment methods, saved addresses, and personal data will be deleted.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-delete-cancel">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deleteAccountMutation.mutate()}
+              disabled={deleteAccountMutation.isPending}
+              className="bg-red-500 text-white hover:bg-red-600 focus:ring-red-500"
+              data-testid="button-delete-confirm"
+            >
+              {deleteAccountMutation.isPending ? "Deleting..." : "Yes, Delete My Account"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Account Deleted Success Screen */}
+      {accountDeleted && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
+          <div className="text-center px-8">
+            <div className="w-16 h-16 rounded-full bg-red-500/10 flex items-center justify-center mx-auto mb-4">
+              <Check className="w-8 h-8 text-red-500" />
+            </div>
+            <h2 className="text-xl font-bold mb-2">Your account has been deleted.</h2>
+            <p className="text-sm text-muted-foreground">Goodbye. Redirecting...</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
