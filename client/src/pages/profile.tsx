@@ -645,7 +645,7 @@ export default function ProfilePage() {
               <AccordionItem value="5">
                 <AccordionTrigger className="text-sm" data-testid="faq-5">What bag sizes are available?</AccordionTrigger>
                 <AccordionContent className="text-sm text-muted-foreground">
-                  We offer Small (10 lbs, $15), Medium (15 lbs, $22), Large (20 lbs, $30), and Extra Large (25 lbs, $40) bags. Pick the size that fits your load.
+                  We offer Small (up to 10 lbs, $24.99), Medium (up to 20 lbs, $44.99), Large (up to 30 lbs, $59.99), and XL (up to 50 lbs, $89.99) bags. If your laundry goes slightly over, it's just $2.50 per additional pound.
                 </AccordionContent>
               </AccordionItem>
             </Accordion>
