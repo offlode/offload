@@ -1233,7 +1233,7 @@ async function generateAIResponse(intent: ChatIntent, userId: number, message: s
 
     case "subscription": {
       return {
-        response: "We offer three subscription plans:\n\n• **Basic** ($19.99/mo): 4 free deliveries, 5% off, 1.25x points\n• **Plus** ($39.99/mo): 10 free deliveries, 10% off, 1.5x points\n• **Premium** ($69.99/mo): Unlimited free deliveries, 15% off, 2x points, priority support\n\nYou can upgrade from your profile page. All plans renew monthly and can be cancelled anytime.",
+        response: "We use simple flat-rate pricing per bag — Small $24.99, Medium $44.99, Large $59.99, XL $89.99 — with $2.50/lb overage if your bag is heavier than expected. Standard 48-hour return is free; Next Day (+$5.99) and Same Day (+$12.99) are also available.",
         resolved: true,
         escalate: false,
       };
@@ -1241,7 +1241,7 @@ async function generateAIResponse(intent: ChatIntent, userId: number, message: s
 
     default: {
       return {
-        response: "Hi! I'm Offload's virtual assistant. I can help you with:\n\n• **Order status** — track your active orders\n• **Pricing** — get a quote\n• **Cancellations** — cancel or reschedule\n• **Loyalty points** — check your rewards\n• **Subscriptions** — manage your plan\n• **Issues** — file a complaint\n\nWhat can I help you with today?",
+        response: "Hi! I'm Offload's virtual assistant. I can help you with:\n\n• **Order status** — track your active orders\n• **Pricing** — get a quote\n• **Cancellations** — cancel or reschedule\n• **Loyalty points** — check your rewards\n• **Issues** — file a complaint\n\nWhat can I help you with today?",
         resolved: false,
         escalate: false,
       };
@@ -2091,12 +2091,12 @@ export async function registerRoutes(
           <p style="color:#aaa;font-size:11px;text-align:center;">&copy; ${new Date().getFullYear()} Offload USA &mdash; Fresh laundry, delivered.</p>
         </div>`,
       }).then(() => {
-        console.log(`[Email] Password reset sent to ${user.email}`);
+        console.log(`[Email] Password reset sent to user#${user.id}`);
       }).catch((err: any) => {
-        console.error(`[Email] Failed to send password reset to ${user.email}:`, err);
+        console.error(`[Email] Failed to send password reset to user#${user.id}:`, err);
       });
     } else {
-      console.log(`[Email] Would send password reset to ${user.email} (no RESEND_API_KEY)`);
+      console.log(`[Email] Would send password reset to user#${user.id} (no RESEND_API_KEY)`);
     }
 
     res.json(successMsg);
@@ -8447,16 +8447,16 @@ export async function registerRoutes(
         subject: emailSubject,
         text: emailBody,
       }).then(() => {
-        console.log(`[Email] Sent '${template}' to ${customer.email} via Resend`);
+        console.log(`[Email] Sent '${template}' to customer#${customer.id} via Resend`);
       }).catch((err: any) => {
-        console.error(`[Email] Failed to send '${template}' to ${customer.email}:`, err);
+        console.error(`[Email] Failed to send '${template}' to customer#${customer.id}:`, err);
       });
     } else if (process.env.SENDGRID_API_KEY) {
       // Fallback: SendGrid
-      console.log(`[Email] Sending '${template}' to ${customer.email} via SendGrid`);
+      console.log(`[Email] Sending '${template}' to customer#${customer.id} via SendGrid`);
     } else {
       // Log email in development
-      console.log(`[Email] Would send '${template}' to ${customer.email}: ${emailSubject}`);
+      console.log(`[Email] Would send '${template}' to customer#${customer.id}: ${emailSubject}`);
     }
 
     // Always log the communication

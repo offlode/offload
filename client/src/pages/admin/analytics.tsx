@@ -14,7 +14,7 @@ import { AdminLayout } from "./layout";
 // Chart colors matching CSS variable hex equivalents
 const CHART_COLORS = {
   primary: "#5B4BC4",
-  teal: "#2DD4BF",
+  accent: "#7C3AED",
   blue: "#3B82F6",
   amber: "#F59E0B",
   red: "#EF4444",
@@ -69,7 +69,7 @@ function KpiCard({
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  delivered: CHART_COLORS.teal,
+  delivered: CHART_COLORS.accent,
   washing: CHART_COLORS.blue,
   pending: CHART_COLORS.amber,
   cancelled: CHART_COLORS.red,
@@ -95,7 +95,7 @@ export default function AdminAnalytics() {
   const funnel = data?.acquisitionFunnel ?? [];
   const vendors = data?.topVendors ?? [];
 
-  const pieColors = [CHART_COLORS.teal, CHART_COLORS.primary, CHART_COLORS.amber, CHART_COLORS.red, CHART_COLORS.blue];
+  const pieColors = [CHART_COLORS.accent, CHART_COLORS.primary, CHART_COLORS.amber, CHART_COLORS.red, CHART_COLORS.blue];
 
   return (
     <AdminLayout>
@@ -255,7 +255,7 @@ export default function AdminAnalytics() {
             ) : (
               <div className="space-y-3">
                 {funnel.map((stage, i) => {
-                  const colors = [CHART_COLORS.primary, CHART_COLORS.blue, CHART_COLORS.teal, CHART_COLORS.amber];
+                  const colors = [CHART_COLORS.primary, CHART_COLORS.blue, CHART_COLORS.accent, CHART_COLORS.amber];
                   return (
                     <div key={stage.stage} data-testid={`funnel-stage-${i}`}>
                       <div className="flex items-center justify-between mb-1">

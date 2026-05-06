@@ -178,8 +178,8 @@ export default function AdminFinancial() {
                     <stop offset="95%" stopColor="#5B4BC4" stopOpacity={0} />
                   </linearGradient>
                   <linearGradient id="gradVendor" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#2DD4BF" stopOpacity={0.25} />
-                    <stop offset="95%" stopColor="#2DD4BF" stopOpacity={0} />
+                    <stop offset="5%" stopColor="#7C3AED" stopOpacity={0.25} />
+                    <stop offset="95%" stopColor="#7C3AED" stopOpacity={0} />
                   </linearGradient>
                   <linearGradient id="gradPlatform" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#F59E0B" stopOpacity={0.25} />
@@ -223,7 +223,7 @@ export default function AdminFinancial() {
                 <Area
                   type="monotone"
                   dataKey="vendorPayouts"
-                  stroke="#2DD4BF"
+                  stroke="#7C3AED"
                   strokeWidth={1.5}
                   fill="url(#gradVendor)"
                 />
@@ -241,7 +241,7 @@ export default function AdminFinancial() {
           <div className="flex items-center gap-4 mt-3 justify-end">
             {[
               { color: "#5B4BC4", label: "Revenue" },
-              { color: "#2DD4BF", label: "Vendor Payouts" },
+              { color: "#7C3AED", label: "Vendor Payouts" },
               { color: "#F59E0B", label: "Platform Revenue" },
             ].map((item) => (
               <div key={item.label} className="flex items-center gap-1.5 text-xs text-muted-foreground">

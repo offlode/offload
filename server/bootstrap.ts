@@ -47,9 +47,9 @@ async function ensureAccount(account: BootstrapAccount) {
         try {
           await storage.updateUser(existing.id, updates);
           const what = Object.keys(updates).join(", ");
-          console.log(`[Bootstrap] Refreshed ${account.email} (${what})`);
+          console.log(`[Bootstrap] Refreshed ${account.role} account (${what})`);
         } catch (e: any) {
-          console.warn(`[Bootstrap] Could not refresh ${account.email}:`, e?.message || e);
+          console.warn(`[Bootstrap] Could not refresh ${account.role} account:`, e?.message || e);
         }
       }
       return;
@@ -64,9 +64,9 @@ async function ensureAccount(account: BootstrapAccount) {
       password: passwordHash,
       role: account.role,
     } as any);
-    console.log(`[Bootstrap] Created ${account.role} account: ${account.email}`);
+    console.log(`[Bootstrap] Created ${account.role} account`);
   } catch (err: any) {
-    console.error(`[Bootstrap] Failed to ensure ${account.email}:`, err?.message || err);
+    console.error(`[Bootstrap] Failed to ensure ${account.role} account:`, err?.message || err);
   }
 }
 
@@ -161,7 +161,7 @@ async function ensurePricingTiers() {
     const seeds = [
       { name: "small_bag",  displayName: "Small Bag",     maxWeight: 10,  flatPrice: 24.99, overageRate: 2.50, description: "Perfect for 1-2 people, single load.",            icon: "ShoppingBag", isActive: 1, sortOrder: 1 },
       { name: "medium_bag", displayName: "Medium Bag",    maxWeight: 20,  flatPrice: 44.99, overageRate: 2.50, description: "Family load — up to 20 lbs.",                     icon: "ShoppingBag", isActive: 1, sortOrder: 2 },
-      { name: "large_bag",  displayName: "Large Bag",     maxWeight: 30,  flatPrice: 59.99, overageRate: 2.50, description: "Big haul — up to 30 lbs.",                        icon: "ShoppingBag", isActive: 1, sortOrder: 3 },
+      { name: "large_bag",  displayName: "Large Bag",     maxWeight: 30,  flatPrice: 59.99, overageRate: 2.50, description: "Large load — perfect for sheets, towels, and a big week's wash.",  icon: "ShoppingBag", isActive: 1, sortOrder: 3 },
       { name: "xl_bag",     displayName: "Extra Large",   maxWeight: 50,  flatPrice: 89.99, overageRate: 2.50, description: "Comforters, sheets, and more — up to 50 lbs.",     icon: "ShoppingBag", isActive: 1, sortOrder: 4 },
     ];
     for (const pt of seeds) {

@@ -319,7 +319,7 @@ export default function AdminVendorScoring() {
                 <div className="space-y-2.5">
                   <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Score Breakdown</p>
                   <ScoreBar label="Quality" value={displayHealth.scoreBreakdown.quality} color="#5B4BC4" />
-                  <ScoreBar label="On-Time" value={displayHealth.scoreBreakdown.onTime} color="#2DD4BF" />
+                  <ScoreBar label="On-Time" value={displayHealth.scoreBreakdown.onTime} color="#7C3AED" />
                   <ScoreBar label="Disputes" value={displayHealth.scoreBreakdown.disputes} color="#3B82F6" />
                   <ScoreBar label="Processing" value={displayHealth.scoreBreakdown.processing} color="#F59E0B" />
                   <ScoreBar label="Volume" value={displayHealth.scoreBreakdown.volume} color="#5B4BC4" />

@@ -297,7 +297,7 @@ export default function ProfilePage() {
           <Card
             className="p-3 text-center cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-95"
             onClick={() => {
-              toast({ title: "Favorite Vendors", description: `You have ${vendors?.length || 0} vendors available. Favorites coming soon!` });
+              toast({ title: "Favorite Vendors", description: `You have ${vendors?.length || 0} vendors available. Your preferred providers will appear here as you complete more orders.` });
             }}
             data-testid="card-quick-favorites"
           >
