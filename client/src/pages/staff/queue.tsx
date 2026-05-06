@@ -94,7 +94,7 @@ function slaCountdown(minutes: number): string {
 
 function inferPriority(order: Order): Priority {
   const sla = order.slaStatus;
-  if (sla === "breached" || order.deliverySpeed === "express_3h") return "urgent";
+  if (sla === "breached") return "urgent";
   if (sla === "at_risk" || order.deliverySpeed === "same_day") return "high";
   return "normal";
 }

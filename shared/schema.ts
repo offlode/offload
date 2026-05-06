@@ -174,7 +174,7 @@ export const orders = pgTable("orders", {
   deliveryAddressId: integer("delivery_address_id"), // can differ from pickup
   deliveryAddress: text("delivery_address"),
   deliveryType: text("delivery_type").default("contactless"),
-  deliverySpeed: text("delivery_speed").default("48h"), // 48h | 24h | same_day | express_3h
+  deliverySpeed: text("delivery_speed").default("48h"), // 48h | 24h | same_day
   scheduledPickup: text("scheduled_pickup"),
   pickupTimeWindow: text("pickup_time_window"),
   // Dynamic pickup logistics (drives Uber-style pricing)
@@ -837,7 +837,6 @@ export const DELIVERY_FEES = {
   "48h": { fee: 0, label: "Standard (48h)" },
   "24h": { fee: 5.99, label: "Next Day (24h)" },
   "same_day": { fee: 12.99, label: "Same Day" },
-  "express_3h": { fee: 19.99, label: "Express (3h)" },
 } as const;
 
 // ─── Tax Rate ───
@@ -942,7 +941,6 @@ export type PartnerApplication = typeof partnerApplications.$inferSelect;
 
 // ─── SLA Configs ───
 export const SLA_CONFIGS = {
-  "express_3h": { hours: 3, warningHours: 2 },
   "same_day": { hours: 12, warningHours: 8 },
   "24h": { hours: 24, warningHours: 18 },
   "48h": { hours: 48, warningHours: 36 },

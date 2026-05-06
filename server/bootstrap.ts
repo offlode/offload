@@ -140,7 +140,6 @@ async function ensureAddOns() {
       { name: "stain_treatment",          displayName: "Stain Pre-Treatment",       price: 4.99, description: "Professional pre-treatment for tough stains.",     category: "treatment", isActive: 1 },
       { name: "folded_separately",        displayName: "Folded Separately",         price: 3.00, description: "Items folded by family member.",                   category: "service",   isActive: 1 },
       { name: "hangered_delivery",        displayName: "Hangered Delivery",          price: 5.99, description: "Delivered on hangers instead of folded.",          category: "service",   isActive: 1 },
-      { name: "rush_2hr",                 displayName: "Rush 2-Hour Service",        price: 14.99, description: "Wash and return within 2 hours (where available).", category: "service",   isActive: 1 },
       { name: "same_day",                 displayName: "Same-Day Service",            price: 9.99,  description: "Pickup and delivery the same day.",                category: "service",   isActive: 1 },
     ];
     for (const ad of seeds) {
@@ -160,10 +159,10 @@ async function ensurePricingTiers() {
       return;
     }
     const seeds = [
-      { name: "small_bag",  displayName: "Small Bag",     maxWeight: 10,  flatPrice: 19.99, overageRate: 1.99, description: "Perfect for 1-2 people, single load.",            icon: "ShoppingBag", isActive: 1, sortOrder: 1 },
-      { name: "medium_bag", displayName: "Medium Bag",    maxWeight: 20,  flatPrice: 34.99, overageRate: 1.79, description: "Family load — up to 20 lbs.",                     icon: "ShoppingBag", isActive: 1, sortOrder: 2 },
-      { name: "large_bag",  displayName: "Large Bag",     maxWeight: 35,  flatPrice: 54.99, overageRate: 1.59, description: "Big haul — up to 35 lbs.",                        icon: "ShoppingBag", isActive: 1, sortOrder: 3 },
-      { name: "xl_bag",     displayName: "Extra Large",   maxWeight: 60,  flatPrice: 89.99, overageRate: 1.39, description: "Comforters, sheets, and more — up to 60 lbs.",     icon: "ShoppingBag", isActive: 1, sortOrder: 4 },
+      { name: "small_bag",  displayName: "Small Bag",     maxWeight: 10,  flatPrice: 24.99, overageRate: 2.50, description: "Perfect for 1-2 people, single load.",            icon: "ShoppingBag", isActive: 1, sortOrder: 1 },
+      { name: "medium_bag", displayName: "Medium Bag",    maxWeight: 20,  flatPrice: 44.99, overageRate: 2.50, description: "Family load — up to 20 lbs.",                     icon: "ShoppingBag", isActive: 1, sortOrder: 2 },
+      { name: "large_bag",  displayName: "Large Bag",     maxWeight: 30,  flatPrice: 59.99, overageRate: 2.50, description: "Big haul — up to 30 lbs.",                        icon: "ShoppingBag", isActive: 1, sortOrder: 3 },
+      { name: "xl_bag",     displayName: "Extra Large",   maxWeight: 50,  flatPrice: 89.99, overageRate: 2.50, description: "Comforters, sheets, and more — up to 50 lbs.",     icon: "ShoppingBag", isActive: 1, sortOrder: 4 },
     ];
     for (const pt of seeds) {
       await storage.createPricingTier(pt as any);
@@ -226,9 +225,7 @@ async function ensurePricingConfig() {
     const haveKeys = new Set(existing.map((c: any) => c.key));
     const seeds: Array<{ key: string; value: string; category: string; description?: string }> = [
       { key: "delivery_fee_standard",    value: "5.99",  category: "delivery_fees",     description: "Standard delivery fee" },
-      { key: "delivery_fee_rush",        value: "12.99", category: "delivery_fees",     description: "Rush delivery fee" },
       { key: "delivery_fee_minimum",     value: "19.99", category: "delivery_fees",     description: "Minimum order for free delivery" },
-      { key: "speed_surcharge_2hr",      value: "14.99", category: "speed_surcharges",  description: "2-hour rush surcharge" },
       { key: "speed_surcharge_same_day", value: "9.99",  category: "speed_surcharges",  description: "Same-day service surcharge" },
       { key: "speed_surcharge_next_day", value: "4.99",  category: "speed_surcharges",  description: "Next-day service surcharge" },
       { key: "tax_rate_default",         value: "0.0875",category: "tax",                description: "Default sales tax rate (NYC)" },

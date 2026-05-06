@@ -284,7 +284,7 @@ async function calculateQuotePrice(input: {
   const laundryServicePrice = Math.round(tier.flatPrice * serviceMultiplier * 100) / 100;
 
   // 3. Delivery fee (flat rate based on speed)
-  const speed = (input.deliverySpeed === "express" ? "express_3h" : input.deliverySpeed === "express_24h" ? "24h" : input.deliverySpeed === "standard" ? "48h" : input.deliverySpeed) || "48h";
+  const speed = (input.deliverySpeed === "express" ? "48h" : input.deliverySpeed === "express_24h" ? "24h" : input.deliverySpeed === "standard" ? "48h" : input.deliverySpeed) || "48h";
   if (speed && !DELIVERY_FEES[speed as keyof typeof DELIVERY_FEES]) {
     throw new Error(`Invalid delivery speed: ${speed}. Valid options: ${Object.keys(DELIVERY_FEES).join(", ")}`);
   }
@@ -506,7 +506,7 @@ function calculatePricing(bags: any[], deliverySpeed: string) {
       subtotal += 24.99 * (bag.quantity || 1); // fallback to small bag
     }
   }
-  const normalizedSpeed = deliverySpeed === "express" ? "express_3h" : deliverySpeed === "express_24h" ? "24h" : deliverySpeed === "standard" ? "48h" : deliverySpeed;
+  const normalizedSpeed = deliverySpeed === "express" ? "48h" : deliverySpeed === "express_24h" ? "24h" : deliverySpeed === "standard" ? "48h" : deliverySpeed;
   const deliveryFeeConfig = DELIVERY_FEES[normalizedSpeed as keyof typeof DELIVERY_FEES] || DELIVERY_FEES["48h"];
   const deliveryFee = deliveryFeeConfig.fee;
   const tax = Math.round(subtotal * TAX_RATE * 100) / 100;
@@ -1213,7 +1213,7 @@ async function generateAIResponse(intent: ChatIntent, userId: number, message: s
 
     case "pricing": {
       return {
-        response: "Our pricing uses flat-rate bag sizes:\n\n• **Small Bag**: $24.99 (up to 10 lbs)\n• **Medium Bag**: $44.99 (up to 20 lbs)\n• **Large Bag**: $59.99 (up to 30 lbs)\n• **XL Bag**: $89.99 (up to 50 lbs)\n\nDelivery options: Standard (48h) is free, Next Day (24h) +$5.99, Same Day +$12.99, Express (3h) +$19.99. If your laundry goes over the bag weight limit, it's $2.50 per extra pound. Tax is 8.875% (NYC). Try promo code **WELCOME20** for 20% off your first order!",
+        response: "Our pricing uses flat-rate bag sizes:\n\n• **Small Bag**: $24.99 (up to 10 lbs)\n• **Medium Bag**: $44.99 (up to 20 lbs)\n• **Large Bag**: $59.99 (up to 30 lbs)\n• **XL Bag**: $89.99 (up to 50 lbs)\n\nDelivery options: Standard (48h) is free, Next Day (24h) +$5.99, Same Day (12h) +$12.99. If your laundry goes over the bag weight limit, it's $2.50 per extra pound. Tax is 8.875% (NYC). Try promo code **WELCOME20** for 20% off your first order!",
         resolved: true,
         escalate: false,
       };
@@ -3301,7 +3301,7 @@ export async function registerRoutes(
         // Tier-based flat rate pricing — the base price IS the flat rate
         surgeSubtotal = tierInfo.flatPrice + addOnsTotal;
         surgeTax = Math.round(surgeSubtotal * TAX_RATE * 100) / 100;
-        deliveryFee = speed === "express_3h" ? 19.99 : speed === "same_day" ? 12.99 : speed === "24h" ? 5.99 : 0;
+        deliveryFee = speed === "same_day" ? 12.99 : speed === "24h" ? 5.99 : 0;
         surgeTotal = Math.round((surgeSubtotal + surgeTax + deliveryFee) * 100) / 100;
       } else {
         // Legacy bag-count-based pricing
