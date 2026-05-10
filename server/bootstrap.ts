@@ -25,7 +25,8 @@ interface BootstrapAccount {
   password: string;
   name: string;
   phone: string;
-  role: "customer" | "admin" | "manager";
+  role: "customer" | "admin" | "manager" | "laundromat" | "driver";
+  vendorId?: number;
 }
 
 async function ensureAccount(account: BootstrapAccount) {
@@ -56,14 +57,16 @@ async function ensureAccount(account: BootstrapAccount) {
     }
     const passwordHash = hashPassword(account.password);
     const username = account.email.split("@")[0] + "_bootstrap_" + Date.now();
-    await storage.createUser({
+    const payload: any = {
       username,
       name: account.name,
       email: account.email,
       phone: account.phone,
       password: passwordHash,
       role: account.role,
-    } as any);
+    };
+    if (typeof account.vendorId === "number") payload.vendorId = account.vendorId;
+    await storage.createUser(payload);
     console.log(`[Bootstrap] Created ${account.role} account`);
   } catch (err: any) {
     console.error(`[Bootstrap] Failed to ensure ${account.role} account:`, err?.message || err);
@@ -273,6 +276,22 @@ export async function bootstrapAccounts() {
   await ensureAddOns();
   await ensurePricingTiers();
   await ensureDemoVendor();
+  // Demo vendor (laundromat) login + driver login — must run AFTER ensureDemoVendor so vendorId=1 exists
+  await ensureAccount({
+    email: process.env.BOOTSTRAP_VENDOR_EMAIL || "vendor@offloadusa.com",
+    password: process.env.BOOTSTRAP_VENDOR_PASSWORD || "OffloadVendor2026!",
+    name: "Offload Demo Laundromat",
+    phone: "5550000001",
+    role: "laundromat",
+    vendorId: 1,
+  });
+  await ensureAccount({
+    email: process.env.BOOTSTRAP_DRIVER_EMAIL || "driver@offloadusa.com",
+    password: process.env.BOOTSTRAP_DRIVER_PASSWORD || "OffloadDriver2026!",
+    name: "Offload Demo Driver",
+    phone: "5550000002",
+    role: "driver",
+  });
   await ensurePricingConfig();
   console.log("[Bootstrap] Done");
 }
