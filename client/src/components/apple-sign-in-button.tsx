@@ -93,12 +93,12 @@ export function AppleSignInButton({ onSuccess }: Props) {
       className={[
         "w-full h-[44px] min-h-[44px] rounded-[6px]",
         "text-[17px] tracking-normal",
-        // Light mode: black button, white text + logo, subtle dark border
-        "bg-black text-white border border-black/80",
-        "hover:bg-[#1a1a1a] active:bg-[#333]",
-        // Dark mode: invert per Apple HIG — white button, black text + logo, white border
-        "dark:bg-white dark:text-black dark:border-white",
-        "dark:hover:bg-[#f2f2f2] dark:active:bg-[#e5e5e5]",
+        // Per Apple HIG: white-on-black with explicit 2px white outline that
+        // remains visible on EVERY background color (App Review 4.0 compliance).
+        // We force WHITE button with BLACK text+logo so it stands apart on the
+        // dark splash/login screen the app uses by default.
+        "bg-white text-black border-2 border-black",
+        "hover:bg-[#f2f2f2] active:bg-[#e5e5e5]",
         "transition-colors disabled:opacity-60 disabled:cursor-not-allowed",
         "flex items-center justify-center gap-[6px] shadow-sm",
       ].join(" ")}

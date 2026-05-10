@@ -16,8 +16,17 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            storeFile file('offload-release.keystore')
+            storePassword System.getenv('OFFLOAD_KEYSTORE_PASSWORD') ?: 'OffloadAndroid2026!'
+            keyAlias 'offload'
+            keyPassword System.getenv('OFFLOAD_KEY_PASSWORD') ?: 'OffloadAndroid2026!'
+        }
+    }
     buildTypes {
         release {
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
