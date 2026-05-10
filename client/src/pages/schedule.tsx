@@ -417,8 +417,8 @@ export default function SchedulePage() {
         <div className="grid grid-cols-3 gap-2">
           {[
             { value: "48h", label: "Standard", sub: "48 hours", extra: "Free delivery" },
-            { value: "24h", label: "Express", sub: "24 hours", extra: "+$5.99" },
-            { value: "same_day", label: "Same Day", sub: "Today", extra: "+$9.99" },
+            { value: "24h", label: "Next Day", sub: "24 hours", extra: "+$5.99" },
+            { value: "same_day", label: "Same Day", sub: "12 hours", extra: "+$12.99" },
           ].map(s => (
             <button key={s.value} data-testid={`speed-${s.value}`} onClick={() => setDeliverySpeed(s.value)} className={`p-3 rounded-lg text-center transition-all ${deliverySpeed === s.value ? "bg-primary/10 border-2 border-primary" : "bg-card border border-border hover:border-primary/20"}`}>
               <p className="text-xs font-semibold">{s.label}</p>

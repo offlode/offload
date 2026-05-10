@@ -1774,6 +1774,10 @@ export async function registerRoutes(
       "http://offloadusa.com",
       "https://www.offloadusa.com",
       "https://admin.offloadusa.com",
+      // Render hostnames (admin + api + site)
+      "https://offload-admin.onrender.com",
+      "https://offload-api.onrender.com",
+      "https://offload-site.onrender.com",
       // Capacitor native shells (iOS/Android)
       "capacitor://localhost",
       "ionic://localhost",
