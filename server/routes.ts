@@ -6670,8 +6670,10 @@ export async function registerRoutes(
     };
   }
 
-  app.get("/api/admin/orders", requireAuth(ADMIN_ROLES), async (_req, res) => {
-    res.json(await Promise.all((await storage.getOrders()).map(enrichAdminOrder)));
+  app.get("/api/admin/orders", requireAuth(ADMIN_ROLES), async (req, res) => {
+    const pg = getPagination(req);
+    const enriched = await Promise.all((await storage.getOrders()).map(enrichAdminOrder));
+    res.json(paginatedResponse(enriched, pg));
   });
 
   app.get("/api/admin/orders/:id", requireAuth(ADMIN_ROLES), async (req, res) => {
