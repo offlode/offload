@@ -170,8 +170,21 @@ export default function DriverRoute() {
 
   const route = routeData;
 
+  // Loading state
+  if (isLoading) {
+    return (
+      <DriverLayout>
+        <div className="px-5 pt-14 space-y-3">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="bg-card rounded-2xl p-4 border border-white/5 animate-pulse h-28" />
+          ))}
+        </div>
+      </DriverLayout>
+    );
+  }
+
   // Show empty state when no active route
-  if (!isLoading && !route) {
+  if (!route) {
     return (
       <DriverLayout>
         <div className="px-5 pt-14 flex flex-col items-center justify-center min-h-[60vh] text-center gap-4">
@@ -190,8 +203,9 @@ export default function DriverRoute() {
     );
   }
 
+  // From here on, route is defined (narrowed)
   const completedCount = completedStops.size;
-  const totalStops = route?.stops.length ?? 0;
+  const totalStops = route.stops.length;
   const progressPct = totalStops > 0 ? (completedCount / totalStops) * 100 : 0;
 
   const markComplete = (stopId: number) => {

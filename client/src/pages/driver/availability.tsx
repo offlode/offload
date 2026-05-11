@@ -100,6 +100,17 @@ export default function DriverAvailability() {
       setStatus((driver.status as "available" | "busy" | "offline") ?? "offline");
       setZones(parseZones(driver.preferredZones));
       setMaxTrips(driver.maxTripsPerDay ?? 15);
+      // Restore saved work schedule
+      if ((driver as any).workSchedule) {
+        try {
+          const parsed = JSON.parse((driver as any).workSchedule);
+          if (Array.isArray(parsed.days)) setSelectedDays(parsed.days as DayKey[]);
+          if (typeof parsed.timeStart === "string") setTimeStart(parsed.timeStart);
+          if (typeof parsed.timeEnd === "string") setTimeEnd(parsed.timeEnd);
+        } catch {
+          // Ignore malformed JSON
+        }
+      }
     }
   }, [driver]);
 
@@ -153,7 +164,7 @@ export default function DriverAvailability() {
   const toggleDay = (day: DayKey) => {
     setSelectedDays((prev) => {
       const updated = prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day];
-      updateMutation.mutate({ schedule: JSON.stringify({ days: updated, timeStart, timeEnd }) });
+      updateMutation.mutate({ workSchedule: JSON.stringify({ days: updated, timeStart, timeEnd }) });
       return updated;
     });
   };
@@ -363,7 +374,7 @@ export default function DriverAvailability() {
                 value={timeStart}
                 onChange={(e) => {
                   setTimeStart(e.target.value);
-                  updateMutation.mutate({ schedule: JSON.stringify({ days: selectedDays, timeStart: e.target.value, timeEnd }) });
+                  updateMutation.mutate({ workSchedule: JSON.stringify({ days: selectedDays, timeStart: e.target.value, timeEnd }) });
                 }}
                 className="flex-1 bg-card border border-white/10 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-primary/50 transition-colors"
               />
@@ -377,7 +388,7 @@ export default function DriverAvailability() {
                 value={timeEnd}
                 onChange={(e) => {
                   setTimeEnd(e.target.value);
-                  updateMutation.mutate({ schedule: JSON.stringify({ days: selectedDays, timeStart, timeEnd: e.target.value }) });
+                  updateMutation.mutate({ workSchedule: JSON.stringify({ days: selectedDays, timeStart, timeEnd: e.target.value }) });
                 }}
                 className="flex-1 bg-card border border-white/10 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-primary/50 transition-colors"
               />

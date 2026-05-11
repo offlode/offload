@@ -3315,7 +3315,9 @@ export async function registerRoutes(
         // Tier-based flat rate pricing — the base price IS the flat rate
         surgeSubtotal = tierInfo.flatPrice + addOnsTotal;
         surgeTax = Math.round(surgeSubtotal * TAX_RATE * 100) / 100;
-        deliveryFee = speed === "same_day" ? 12.99 : speed === "24h" ? 5.99 : 0;
+        // Single source of truth: shared/schema.ts DELIVERY_FEES
+        const feeConfig = DELIVERY_FEES[speed as keyof typeof DELIVERY_FEES] || DELIVERY_FEES["48h"];
+        deliveryFee = feeConfig.fee;
         surgeTotal = Math.round((surgeSubtotal + surgeTax + deliveryFee) * 100) / 100;
       } else {
         // Legacy bag-count-based pricing
@@ -3939,7 +3941,11 @@ export async function registerRoutes(
       admin: "*",
     };
     const allowedFields = ROLE_FIELD_WHITELIST[currentUser.role];
-    if (allowedFields && allowedFields !== "*" && Array.isArray(allowedFields)) {
+    // Default-deny: unknown role has no permission to update any field
+    if (allowedFields === undefined) {
+      return res.status(403).json({ error: `Role '${currentUser.role}' is not permitted to update orders` });
+    }
+    if (allowedFields !== "*" && Array.isArray(allowedFields)) {
       const extraFields = Object.keys(req.body).filter(k => !allowedFields.includes(k));
       if (extraFields.length > 0) {
         return res.status(403).json({ error: `Role '${currentUser.role}' cannot update fields: ${extraFields.join(", ")}` });
@@ -5028,7 +5034,8 @@ export async function registerRoutes(
         if (req.body.refundAmount && req.body.refundAmount > 0) {
           const order = await storage.getOrder(dispute.orderId);
           if (order) {
-            // Issue Stripe refund if payment was captured
+            // Only attempt a Stripe refund (and mark refunded) if payment was actually captured.
+            // No fallback marking — never claim refunded without proof.
             if (order.paymentStatus === "captured" || order.paymentStatus === "paid") {
               try {
                 const refundCents = Math.round(Number(req.body.refundAmount) * 100);
@@ -5036,16 +5043,16 @@ export async function registerRoutes(
                   const refundResult = await issueStripeRefundForOrder(order, refundCents, "requested_by_customer", `dispute-${dispute.id}-${Date.now()}`);
                   if (refundResult?.errorStatus) {
                     console.error("[dispute] Stripe refund failed:", refundResult.error);
-                  } else {
-                    await storage.updateOrder(order.id, { paymentStatus: "refunded" });
+                    return res.status(500).json({ error: "Refund failed — please retry or contact Stripe support", stripeError: refundResult.error });
                   }
+                  await storage.updateOrder(order.id, { paymentStatus: "refunded" });
                 }
-              } catch (refundErr) {
+              } catch (refundErr: any) {
                 console.error("[dispute] Stripe refund exception", refundErr);
+                return res.status(500).json({ error: "Refund failed — please retry or contact Stripe support" });
               }
-            } else {
-              await storage.updateOrder(order.id, { paymentStatus: "refunded" });
             }
+            // If payment was never captured, do NOT mark as refunded (semantically wrong; nothing to refund).
           }
         }
       }
@@ -7680,7 +7687,9 @@ export async function registerRoutes(
           return res.status(500).json({ error: "Refund failed — please contact support" });
         }
       } else {
-        updateData.paymentStatus = order.paymentStatus || "refunded";
+        // Payment was never captured — do NOT mark refunded.
+        // Preserve prior paymentStatus (or null if it was never set).
+        if (order.paymentStatus) updateData.paymentStatus = order.paymentStatus;
       }
       if (order.vendorId) {
         const vendor = await storage.getVendor(order.vendorId);

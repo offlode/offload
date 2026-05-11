@@ -20,6 +20,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/auth-context";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Address, Vendor, PaymentMethod, PricingTier, AddOn } from "@shared/schema";
+import { DELIVERY_FEES, TAX_RATE } from "@shared/schema";
 import { VoiceOrderModal } from "@/components/voice-order";
 import type { FieldError } from "@/lib/inline-validation";
 import { scrollToFirstError } from "@/lib/inline-validation";
@@ -155,9 +156,11 @@ export default function SchedulePage() {
     return sum + (selectedAddOns[addon.id] ? addon.price : 0);
   }, 0);
 
-  const deliveryFee = deliverySpeed === "same_day" ? 12.99 : deliverySpeed === "24h" ? 5.99 : 0;
+  // Single source of truth — DELIVERY_FEES from shared/schema.ts
+  const deliveryFee = (DELIVERY_FEES[deliverySpeed as keyof typeof DELIVERY_FEES] || DELIVERY_FEES["48h"]).fee;
   const subtotal = tierPrice + addOnsTotal;
-  const tax = Math.round(subtotal * 0.07 * 100) / 100;
+  // Single source of truth — TAX_RATE from shared/schema.ts (NY combined: 8.875%)
+  const tax = Math.round(subtotal * TAX_RATE * 100) / 100;
   const total = Math.round((subtotal + tax + deliveryFee) * 100) / 100;
 
   const estimatedDelivery = deliverySpeed === "same_day" ? "Today by 9 PM" : deliverySpeed === "24h" ? "Tomorrow" : "Within 2 days";
@@ -415,11 +418,16 @@ export default function SchedulePage() {
       <div className="px-5 mb-5">
         <h3 className="text-sm font-semibold mb-3">How Fast?</h3>
         <div className="grid grid-cols-3 gap-2">
-          {[
-            { value: "48h", label: "Standard", sub: "48 hours", extra: "Free delivery" },
-            { value: "24h", label: "Next Day", sub: "24 hours", extra: "+$5.99" },
-            { value: "same_day", label: "Same Day", sub: "12 hours", extra: "+$12.99" },
-          ].map(s => (
+          {([
+            { value: "48h" as const, label: "Standard", sub: "48 hours" },
+            { value: "24h" as const, label: "Next Day", sub: "24 hours" },
+            { value: "same_day" as const, label: "Same Day", sub: "12 hours" },
+          ]).map(s => {
+            const fee = DELIVERY_FEES[s.value].fee as number;
+            const extra = fee === 0 ? "Free delivery" : `+$${fee.toFixed(2)}`;
+            return ({ ...s, extra });
+          }).map(s => (
+
             <button key={s.value} data-testid={`speed-${s.value}`} onClick={() => setDeliverySpeed(s.value)} className={`p-3 rounded-lg text-center transition-all ${deliverySpeed === s.value ? "bg-primary/10 border-2 border-primary" : "bg-card border border-border hover:border-primary/20"}`}>
               <p className="text-xs font-semibold">{s.label}</p>
               <p className="text-[10px] text-muted-foreground">{s.sub}</p>

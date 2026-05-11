@@ -134,6 +134,8 @@ export const drivers = pgTable("drivers", {
   onTimePickupRate: doublePrecision("on_time_pickup_rate").default(0.95),
   avgPickupTime: doublePrecision("avg_pickup_time").default(12), // minutes
   customerRatingAvg: doublePrecision("customer_rating_avg").default(4.8),
+  // Availability preferences — JSON: { days: string[], timeStart: "HH:MM", timeEnd: "HH:MM" }
+  workSchedule: text("work_schedule"),
 });
 
 export const insertDriverSchema = createInsertSchema(drivers).omit({ id: true });
