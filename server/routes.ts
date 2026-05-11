@@ -11,6 +11,7 @@ import { sendPushToUser } from "./push";
 import { sendSMS } from "./sms";
 import { distanceMatrix, isGoogleMapsConfigured } from "./maps";
 import { SLA_CONFIGS, WEIGHT_TOLERANCE, CONSENT_TIMEOUT_HOURS, LOYALTY_TIERS, SUBSCRIPTION_TIERS, PRICING_TIERS, DELIVERY_FEES, TAX_RATE as SCHEMA_TAX_RATE, QUOTE_VALIDITY_MINUTES, SERVICE_TYPE_MULTIPLIERS, insertNotificationRuleSchema, insertAddOnSchema } from "@shared/schema";
+import { pricingConfig } from "./pricing-config-service";
 import type { Order, Vendor, Driver, Quote } from "@shared/schema";
 import {
   VALID_TRANSITIONS as FSM_TRANSITIONS,
@@ -276,11 +277,12 @@ async function calculateQuotePrice(input: {
 }): Promise<QuotePriceBreakdown> {
   // 1. Resolve tier
   const normalizedTier = TIER_NAME_MAP[input.tierName] || input.tierName;
-  const tier = PRICING_TIERS[normalizedTier as keyof typeof PRICING_TIERS];
-  if (!tier) throw new Error(`Unknown pricing tier: ${input.tierName}`);
+  const tierConst = PRICING_TIERS[normalizedTier as keyof typeof PRICING_TIERS];
+  if (!tierConst) throw new Error(`Unknown pricing tier: ${input.tierName}`);
+  const tier = await pricingConfig.getBagPrice(normalizedTier);
 
   // 2. Laundry service price (flat rate from tier, adjusted by service type)
-  const serviceMultiplier = SERVICE_TYPE_MULTIPLIERS[input.serviceType || 'wash_fold'] || 1.0;
+  const serviceMultiplier = await pricingConfig.getServiceMultiplier(input.serviceType || 'wash_fold');
   const laundryServicePrice = Math.round(tier.flatPrice * serviceMultiplier * 100) / 100;
 
   // 3. Delivery fee (flat rate based on speed)
@@ -288,8 +290,7 @@ async function calculateQuotePrice(input: {
   if (speed && !DELIVERY_FEES[speed as keyof typeof DELIVERY_FEES]) {
     throw new Error(`Invalid delivery speed: ${speed}. Valid options: ${Object.keys(DELIVERY_FEES).join(", ")}`);
   }
-  const deliveryFeeConfig = DELIVERY_FEES[speed as keyof typeof DELIVERY_FEES] || DELIVERY_FEES["48h"];
-  const deliveryFee = deliveryFeeConfig.fee;
+  const deliveryFee = await pricingConfig.getDeliveryFee(speed as "48h" | "24h" | "same_day");
 
   // 4. Speed surcharge: $0 — speed cost is fully captured in the delivery fee
   const speedSurcharge = 0;
@@ -391,7 +392,8 @@ async function calculateQuotePrice(input: {
   ) / 100;
 
   // 8. Tax
-  const taxAmount = Math.round(subtotal * TAX_RATE * 100) / 100;
+  const dbTaxRate = await pricingConfig.getTaxRate();
+  const taxAmount = Math.round(subtotal * dbTaxRate * 100) / 100;
 
   // 9. Promo discount
   let discount = 0;
@@ -416,11 +418,12 @@ async function calculateQuotePrice(input: {
   const total = Math.max(0, Math.round((subtotal + taxAmount - discount) * 100) / 100);
 
   // Build line items for display
+  const deliveryFeeLabel = DELIVERY_FEES[speed as keyof typeof DELIVERY_FEES]?.label || `Delivery (${speed})`;
   const lineItems: Array<{ label: string; amount: number; type: string }> = [
-    { label: `${tier.displayName} — ${tier.description}`, amount: laundryServicePrice, type: "service" },
+    { label: `${tierConst.displayName} — ${tierConst.description}`, amount: laundryServicePrice, type: "service" },
   ];
   if (deliveryFee > 0) {
-    lineItems.push({ label: deliveryFeeConfig.label, amount: deliveryFee, type: "delivery" });
+    lineItems.push({ label: deliveryFeeLabel, amount: deliveryFee, type: "delivery" });
   } else {
     lineItems.push({ label: "Free Pickup & Delivery", amount: 0, type: "delivery" });
   }
@@ -455,7 +458,7 @@ async function calculateQuotePrice(input: {
   for (const ao of addOnItems) {
     lineItems.push({ label: `${ao.name} x${ao.qty}`, amount: ao.price * ao.qty, type: "addon" });
   }
-  lineItems.push({ label: "Tax (8.875%)", amount: taxAmount, type: "tax" });
+  lineItems.push({ label: `Tax (${(dbTaxRate * 100).toFixed(3)}%)`, amount: taxAmount, type: "tax" });
   if (discount > 0) {
     lineItems.push({ label: `Promo discount (${input.promoCode})`, amount: -discount, type: "discount" });
   }
@@ -477,7 +480,7 @@ async function calculateQuotePrice(input: {
     surgeReason: surge.reason,
     logisticsBase: logistics.logisticsBase,
     logisticsTotal: logisticsAfterSurge,
-    subtotal, taxRate: TAX_RATE, taxAmount, discount, total,
+    subtotal, taxRate: dbTaxRate, taxAmount, discount, total,
     lineItems, tierName: normalizedTier, tierFlatPrice: tier.flatPrice,
     tierMaxWeight: tier.maxWeight, overageRate: tier.overageRate, deliverySpeed: speed,
     vendorChoiceMode,
@@ -494,22 +497,22 @@ function generateQuoteNumber(): string {
 }
 
 // Legacy pricing function — used by existing POST /api/orders for backward compat
-function calculatePricing(bags: any[], deliverySpeed: string) {
-  // Use tier-based pricing when possible
+async function calculatePricing(bags: any[], deliverySpeed: string) {
   let subtotal = 0;
   for (const bag of bags) {
     const tierKey = TIER_NAME_MAP[bag.type];
     if (tierKey) {
-      const tier = PRICING_TIERS[tierKey as keyof typeof PRICING_TIERS];
-      subtotal += tier.flatPrice * (bag.quantity || 1);
+      const bagPrice = await pricingConfig.getBagPrice(tierKey);
+      subtotal += bagPrice.flatPrice * (bag.quantity || 1);
     } else {
-      subtotal += 24.99 * (bag.quantity || 1); // fallback to small bag
+      const fallbackBag = await pricingConfig.getBagPrice("small_bag");
+      subtotal += fallbackBag.flatPrice * (bag.quantity || 1);
     }
   }
-  const normalizedSpeed = deliverySpeed === "express" ? "48h" : deliverySpeed === "express_24h" ? "24h" : deliverySpeed === "standard" ? "48h" : deliverySpeed;
-  const deliveryFeeConfig = DELIVERY_FEES[normalizedSpeed as keyof typeof DELIVERY_FEES] || DELIVERY_FEES["48h"];
-  const deliveryFee = deliveryFeeConfig.fee;
-  const tax = Math.round(subtotal * TAX_RATE * 100) / 100;
+  const normalizedSpeed = (deliverySpeed === "express" ? "48h" : deliverySpeed === "express_24h" ? "24h" : deliverySpeed === "standard" ? "48h" : deliverySpeed) as "48h" | "24h" | "same_day";
+  const deliveryFee = await pricingConfig.getDeliveryFee(normalizedSpeed || "48h");
+  const taxRate = await pricingConfig.getTaxRate();
+  const tax = Math.round(subtotal * taxRate * 100) / 100;
   const total = Math.round((subtotal + tax + deliveryFee) * 100) / 100;
   return { subtotal, tax, deliveryFee, total };
 }
@@ -757,9 +760,13 @@ async function ownsVendorProfile(vendorProfileId: number, user: any): Promise<bo
 
 async function calculatePayouts(order: Order) {
   const vendor = order.vendorId ? await storage.getVendor(order.vendorId) : null;
-  const payoutRate = (vendor as any)?.payoutRate || 0.65;
+  const defaultRate = await pricingConfig.getDefaultVendorPayoutRate();
+  const payoutRate = (vendor as any)?.payoutRate || defaultRate;
   const vendorPayout = Math.round((order.subtotal || 0) * payoutRate * 100) / 100;
-  const driverPayout = 8.50 * 2; // $8.50 per trip (pickup + delivery = 2 trips)
+  const driver = (order as any).driverId ? await storage.getDriver((order as any).driverId) : null;
+  const defaultPerTrip = await pricingConfig.getDefaultDriverPayoutPerTrip();
+  const perTrip = (driver as any)?.payoutPerTrip || defaultPerTrip;
+  const driverPayout = Math.round(perTrip * 2 * 100) / 100; // pickup + delivery = 2 trips
   return { vendorPayout, driverPayout };
 }
 
@@ -839,10 +846,12 @@ async function recordPayoutsForCapturedOrder(order: Order): Promise<void> {
 //  LOYALTY ENGINE
 // ════════════════════════════════════════════════════════════════
 
-function getLoyaltyTier(points: number): string {
-  if (points >= LOYALTY_TIERS.platinum.minPoints) return "platinum";
-  if (points >= LOYALTY_TIERS.gold.minPoints) return "gold";
-  if (points >= LOYALTY_TIERS.silver.minPoints) return "silver";
+async function getLoyaltyTier(points: number): Promise<string> {
+  const loyaltyConfig = await pricingConfig.getLoyaltyConfig();
+  const tiers = loyaltyConfig.tiers as any;
+  if (tiers.platinum && points >= tiers.platinum.minPoints) return "platinum";
+  if (tiers.gold && points >= tiers.gold.minPoints) return "gold";
+  if (tiers.silver && points >= tiers.silver.minPoints) return "silver";
   return "bronze";
 }
 
@@ -850,10 +859,11 @@ async function awardLoyaltyPoints(userId: number, orderId: number, orderTotal: n
   const user = await storage.getUser(userId);
   if (!user) return;
 
-  // Base points: 10 per $1 spent
+  const loyaltyConfig = await pricingConfig.getLoyaltyConfig();
   const tier = user.loyaltyTier || "bronze";
-  const multiplier = LOYALTY_TIERS[tier as keyof typeof LOYALTY_TIERS]?.multiplier || 1.0;
-  const basePoints = Math.floor(orderTotal * 10);
+  const tierConfig = (loyaltyConfig.tiers as any)[tier];
+  const multiplier = tierConfig?.multiplier || 1.0;
+  const basePoints = Math.floor(orderTotal * loyaltyConfig.pointsPerDollarEarned);
   const pointsEarned = Math.floor(basePoints * multiplier);
 
   // Subscription bonus
@@ -864,7 +874,7 @@ async function awardLoyaltyPoints(userId: number, orderId: number, orderTotal: n
   const finalPoints = Math.floor(pointsEarned * bonusMultiplier);
 
   const newTotal = (user.loyaltyPoints || 0) + finalPoints;
-  const newTier = getLoyaltyTier(newTotal);
+  const newTier = await getLoyaltyTier(newTotal);
 
   await storage.updateUser(userId, {
     loyaltyPoints: newTotal,
@@ -2538,14 +2548,45 @@ export async function registerRoutes(
   //  QUOTES — REAL PRICING API
   // ─────────────────────────────────────────────────────────
 
-  // ── Public: Get pricing tiers for display ──
-  app.get("/api/pricing/tiers", (_req, res) => {
-    res.json({
-      tiers: PRICING_TIERS,
-      deliveryFees: DELIVERY_FEES,
-      taxRate: TAX_RATE,
-      quoteValidityMinutes: QUOTE_VALIDITY_MINUTES,
-    });
+  // ── Public: Get pricing tiers for display (DB-backed with constant fallback) ──
+  app.get("/api/pricing/tiers", async (_req, res) => {
+    try {
+      const [smallBag, mediumBag, largeBag, xlBag] = await Promise.all([
+        pricingConfig.getBagPrice("small_bag"),
+        pricingConfig.getBagPrice("medium_bag"),
+        pricingConfig.getBagPrice("large_bag"),
+        pricingConfig.getBagPrice("xl_bag"),
+      ]);
+      const [fee48h, fee24h, feeSameDay, taxRate] = await Promise.all([
+        pricingConfig.getDeliveryFee("48h"),
+        pricingConfig.getDeliveryFee("24h"),
+        pricingConfig.getDeliveryFee("same_day"),
+        pricingConfig.getTaxRate(),
+      ]);
+      res.json({
+        tiers: {
+          small_bag: { ...smallBag, displayName: "Small Bag", description: PRICING_TIERS.small_bag.description },
+          medium_bag: { ...mediumBag, displayName: "Medium Bag", description: PRICING_TIERS.medium_bag.description },
+          large_bag: { ...largeBag, displayName: "Large Bag", description: PRICING_TIERS.large_bag.description },
+          xl_bag: { ...xlBag, displayName: "XL Bag", description: PRICING_TIERS.xl_bag.description },
+        },
+        deliveryFees: {
+          "48h": { fee: fee48h, label: "Standard (48h)" },
+          "24h": { fee: fee24h, label: "Next Day (24h)" },
+          "same_day": { fee: feeSameDay, label: "Same Day" },
+        },
+        taxRate,
+        quoteValidityMinutes: QUOTE_VALIDITY_MINUTES,
+      });
+    } catch (err: any) {
+      console.error("[Pricing] tiers endpoint error:", err?.message);
+      res.json({
+        tiers: PRICING_TIERS,
+        deliveryFees: DELIVERY_FEES,
+        taxRate: TAX_RATE,
+        quoteValidityMinutes: QUOTE_VALIDITY_MINUTES,
+      });
+    }
   });
 
   // ── Public: Check serviceability ──
@@ -3008,7 +3049,7 @@ export async function registerRoutes(
       }
 
       // Record payment transaction
-      const CHECKOUT_FEE_RATE = 0.18;
+      const checkoutFeeRate = await pricingConfig.getPlatformFeeRate();
       await storage.createPaymentTransaction({
         orderId: order.id,
         type: "charge",
@@ -3018,7 +3059,7 @@ export async function registerRoutes(
         status: "pending",
         stripePaymentIntentId: paymentIntentId,
         recipientType: "platform",
-        platformFee: Math.round((quote.total || 0) * CHECKOUT_FEE_RATE * 100) / 100,
+        platformFee: Math.round((quote.total || 0) * checkoutFeeRate * 100) / 100,
         metadata: JSON.stringify({ quoteId: quote.id, email, phone: digits }),
         createdAt: ts,
       });
@@ -3466,10 +3507,9 @@ export async function registerRoutes(
       let tierInfo: { name: string; flatPrice: number; maxWeight: number; overageRate: number } | null = null;
 
       if (useTierPricing) {
-        // Look up tier from DB or constant
         const tierKey = tierName as keyof typeof PRICING_TIERS;
         if (tierKey && PRICING_TIERS[tierKey]) {
-          const t = PRICING_TIERS[tierKey];
+          const t = await pricingConfig.getBagPrice(tierKey);
           tierInfo = { name: tierKey, flatPrice: t.flatPrice, maxWeight: t.maxWeight, overageRate: t.overageRate };
         }
       }
@@ -3500,17 +3540,16 @@ export async function registerRoutes(
 
       if (tierInfo) {
         // Tier-based flat rate pricing — the base price IS the flat rate
-        surgeSubtotal = tierInfo.flatPrice + addOnsTotal;
-        surgeTax = Math.round(surgeSubtotal * TAX_RATE * 100) / 100;
-        // Single source of truth: shared/schema.ts DELIVERY_FEES
-        const feeConfig = DELIVERY_FEES[speed as keyof typeof DELIVERY_FEES] || DELIVERY_FEES["48h"];
-        deliveryFee = feeConfig.fee;
+        const bagPriceInfo = await pricingConfig.getBagPrice(tierInfo.name || "small_bag");
+        surgeSubtotal = bagPriceInfo.flatPrice + addOnsTotal;
+        surgeTax = Math.round(surgeSubtotal * (await pricingConfig.getTaxRate()) * 100) / 100;
+        deliveryFee = await pricingConfig.getDeliveryFee((speed as "48h" | "24h" | "same_day") || "48h");
         surgeTotal = Math.round((surgeSubtotal + surgeTax + deliveryFee) * 100) / 100;
       } else {
         // Legacy bag-count-based pricing
-        const pricing = calculatePricing(parsedBags, speed);
+        const pricing = await calculatePricing(parsedBags, speed);
         surgeSubtotal = Math.round(pricing.subtotal * surge.multiplier * demandMultiplier * 100) / 100;
-        surgeTax = Math.round(surgeSubtotal * TAX_RATE * 100) / 100;
+        surgeTax = Math.round(surgeSubtotal * (await pricingConfig.getTaxRate()) * 100) / 100;
         deliveryFee = pricing.deliveryFee;
         surgeTotal = Math.round((surgeSubtotal + surgeTax + deliveryFee) * 100) / 100;
       }
@@ -4891,7 +4930,8 @@ export async function registerRoutes(
     if (order.tierMaxWeight && order.tierFlatPrice != null) {
       const tierMaxWeight = order.tierMaxWeight;
       const tierFlatPrice = order.tierFlatPrice;
-      const overageRate = 2.50; // from PRICING_TIERS
+      const bagInfo = order.tierName ? await pricingConfig.getBagPrice(order.tierName as string) : null;
+      const overageRate = bagInfo?.overageRate ?? 2.50;
 
       const overageWeight = Math.max(0, Math.round((weight - tierMaxWeight) * 100) / 100);
       const overageCharge = Math.round(overageWeight * overageRate * 100) / 100;
@@ -5194,7 +5234,7 @@ export async function registerRoutes(
       const order = await storage.getOrder(consent.orderId);
       if (order) {
         const newSubtotal = (order.subtotal || 0) + consent.additionalCharge;
-        const newTax = Math.round(newSubtotal * TAX_RATE * 100) / 100;
+        const newTax = Math.round(newSubtotal * (await pricingConfig.getTaxRate()) * 100) / 100;
         const newTotal = Math.round((newSubtotal + newTax + (order.deliveryFee || 0)) * 100) / 100;
         await storage.updateOrder(order.id, { subtotal: newSubtotal, tax: newTax, total: newTotal });
       }
@@ -5506,7 +5546,7 @@ export async function registerRoutes(
   //  PRICING CALCULATOR (basic)
   // ─────────────────────────────────────────────────────────
 
-  app.post("/api/pricing/calculate", requireAuth(), (req, res) => {
+  app.post("/api/pricing/calculate", requireAuth(), async (req, res) => {
     const { bags, deliverySpeed } = req.body;
     let parsedBags: any[];
     try {
@@ -5520,7 +5560,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: `Invalid bag type '${bag.type}'. Must be one of: ${validBagTypes.join(", ")}` });
       }
     }
-    res.json(calculatePricing(parsedBags, deliverySpeed));
+    res.json(await calculatePricing(parsedBags, deliverySpeed));
   });
 
   // ─────────────────────────────────────────────────────────
@@ -5538,12 +5578,12 @@ export async function registerRoutes(
       }
       const speed = (deliverySpeed as string) || "48h";
 
-      const basePrice = calculatePricing(parsedBags, speed);
+      const basePrice = await calculatePricing(parsedBags, speed);
       const surge = getSurgePricingTier(pickupTime as string | undefined);
       const demandMultiplier = await getDemandMultiplier((serviceType as string) || "wash_fold");
 
       const surgedSubtotal = Math.round(basePrice.subtotal * surge.multiplier * demandMultiplier * 100) / 100;
-      const surgedTax = Math.round(surgedSubtotal * TAX_RATE * 100) / 100;
+      const surgedTax = Math.round(surgedSubtotal * (await pricingConfig.getTaxRate()) * 100) / 100;
       const surgedTotal = Math.round((surgedSubtotal + surgedTax + basePrice.deliveryFee) * 100) / 100;
 
       res.json({
@@ -5632,7 +5672,8 @@ export async function registerRoutes(
       return res.status(400).json({ error: `Insufficient points. You have ${user.loyaltyPoints || 0} points.` });
     }
 
-    const dollarValue = points / 100;
+    const loyaltyConfig = await pricingConfig.getLoyaltyConfig();
+    const dollarValue = points / loyaltyConfig.pointsPerDollarRedeemed;
     const newBalance = (user.loyaltyPoints || 0) - points;
 
     await storage.updateUser(Number(userId), { loyaltyPoints: newBalance });
@@ -7136,8 +7177,8 @@ export async function registerRoutes(
       }
       if (order.tierMaxWeight) {
         const overage = Math.max(0, weight - order.tierMaxWeight);
-        const tierInfo = order.tierName ? PRICING_TIERS[order.tierName as keyof typeof PRICING_TIERS] : null;
-        const overageRate = tierInfo?.overageRate || 2.50;
+        const bleBagInfo = order.tierName ? await pricingConfig.getBagPrice(order.tierName as string) : null;
+        const overageRate = bleBagInfo?.overageRate ?? 2.50;
         updateData.overageWeight = Math.round(overage * 100) / 100;
         updateData.overageCharge = Math.round(overage * overageRate * 100) / 100;
         const addOnsTotal = (await storage.getOrderAddOns(order.id)).reduce((sum, a) => sum + a.total, 0);
@@ -7161,9 +7202,8 @@ export async function registerRoutes(
   //  STRIPE CONNECT PAYMENT ROUTES
   // ─────────────────────────────────────────────────────────
 
-  const PLATFORM_FEE_RATE = 0.18;
-  const VENDOR_SHARE = 0.65;
-  const DRIVER_SHARE = 0.35;
+  // Fee model unified in Wave 3: vendor = subtotal × payoutRate, driver = flat per-trip.
+  // Old Model B constants (PLATFORM_FEE_RATE, VENDOR_SHARE, DRIVER_SHARE) removed.
   const hasStripe = !!process.env.STRIPE_SECRET_KEY;
   const stripe = hasStripe ? new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2024-12-18.acacia" as any }) : null;
 
@@ -7345,7 +7385,7 @@ export async function registerRoutes(
       amountCents,
       status: "pending", stripePaymentIntentId: intentId,
       recipientType: "platform",
-      platformFee: Math.round(amount * PLATFORM_FEE_RATE * 100) / 100,
+      platformFee: Math.round(amount * (await pricingConfig.getPlatformFeeRate()) * 100) / 100,
       metadata: JSON.stringify({ demo: !hasStripe, amountCents }), createdAt: now(),
     });
 
@@ -7450,11 +7490,12 @@ export async function registerRoutes(
     }
 
     const transactionsRaw = await storage.getPaymentTransactionsByOrder(orderId);
+    // Unified fee model (Model A): vendor = subtotal × payoutRate, driver = flat per-trip
+    const { vendorPayout, driverPayout } = await calculatePayouts(order);
     const total = order.finalPrice || order.total || 0;
-    const platformFee = Math.round(total * PLATFORM_FEE_RATE * 100) / 100;
-    const remaining = total - platformFee;
-    const vendorShare = Math.round(remaining * VENDOR_SHARE * 100) / 100;
-    const driverShare = Math.round(remaining * DRIVER_SHARE * 100) / 100;
+    const platformFee = Math.round((total - vendorPayout - driverPayout) * 100) / 100;
+    const vendorShare = vendorPayout;
+    const driverShare = driverPayout;
 
     // Only admin/manager see internal splits. Vendors see their own share. Drivers see their own. Customer sees neither.
     const isAdminMgr = isAdminOrManager(currentUser);
@@ -8473,7 +8514,7 @@ export async function registerRoutes(
       lineItems,
       subtotal: order.subtotal || order.total || 0,
       tax: order.tax || 0,
-      taxRate: TAX_RATE,
+      taxRate: await pricingConfig.getTaxRate(),
       deliveryFee: order.deliveryFee || 0,
       discount: order.discount || 0,
       total: order.finalPrice || order.total || 0,
@@ -9189,6 +9230,99 @@ export async function registerRoutes(
       res.json({ deactivated: true, id });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || "Failed to deactivate add-on" });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  //  PRICING CONFIG ADMIN CRUD (Wave 3)
+  // ═══════════════════════════════════════════════════════════════
+
+  app.get("/api/admin/pricing-config", requireAuth(["admin", "manager"]), async (_req, res) => {
+    try {
+      const items = await storage.getAllPricingConfig();
+      res.json(items);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to fetch pricing config" });
+    }
+  });
+
+  app.get("/api/admin/pricing-config/category/:category", requireAuth(["admin", "manager"]), async (req, res) => {
+    try {
+      const items = await storage.getPricingConfigByCategory(String(req.params.category));
+      res.json(items);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to fetch pricing config by category" });
+    }
+  });
+
+  app.get("/api/admin/pricing-config/:key", requireAuth(["admin", "manager"]), async (req, res) => {
+    try {
+      const item = await storage.getPricingConfig(String(req.params.key));
+      if (!item) return res.status(404).json({ error: "Pricing config key not found" });
+      res.json(item);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to fetch pricing config" });
+    }
+  });
+
+  app.put("/api/admin/pricing-config/:key", requireAuth(["admin"]), async (req, res) => {
+    try {
+      const { value, category, description } = req.body;
+      if (value === undefined || value === null) return res.status(400).json({ error: "value is required" });
+      const key = String(req.params.key);
+
+      // Validate based on key pattern
+      const numVal = Number(value);
+      if (key.startsWith("tax_rate") && (numVal < 0 || numVal >= 0.25)) {
+        return res.status(400).json({ error: "Tax rate must be between 0 and 0.25" });
+      }
+      if ((key.startsWith("delivery_fee") || key.startsWith("bag_") || key.includes("overage")) && typeof value === "string" && !key.startsWith("bag_")) {
+        if (numVal < 0) return res.status(400).json({ error: "Fee/price must be >= 0" });
+      }
+      if ((key.includes("platform_fee") || key.includes("vendor_payout_default") || key.includes("vendor_share")) && (numVal < 0 || numVal > 1)) {
+        return res.status(400).json({ error: "Rate must be between 0 and 1" });
+      }
+
+      const currentUser = (req as any).currentUser;
+      const existing = await storage.getPricingConfig(key);
+      const oldValue = existing?.value ?? null;
+
+      const item = await storage.upsertPricingConfig(
+        key,
+        typeof value === "object" ? JSON.stringify(value) : String(value),
+        category || existing?.category || "general",
+        description || existing?.description,
+        currentUser?.id,
+      );
+
+      // Invalidate cache for this key
+      pricingConfig.invalidate(key);
+
+      // Write to pricing_audit_log
+      try {
+        await storage.createPricingAuditEntry({
+          action: "config_change",
+          details: JSON.stringify({ key, oldValue, newValue: item.value, category: item.category }),
+          actorId: currentUser?.id || null,
+          actorRole: currentUser?.role || null,
+          timestamp: now(),
+        });
+      } catch {}
+
+      res.json(item);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to update pricing config" });
+    }
+  });
+
+  // Audit log for pricing changes
+  app.get("/api/admin/pricing-audit-log", requireAuth(["admin", "manager"]), async (req, res) => {
+    try {
+      const limit = Number(req.query.limit) || 100;
+      const logs = await storage.getPricingAuditLog(limit);
+      res.json(logs);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to fetch audit log" });
     }
   });
 

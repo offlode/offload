@@ -227,15 +227,43 @@ async function ensurePricingConfig() {
     const existing = await storage.getAllPricingConfig();
     const haveKeys = new Set(existing.map((c: any) => c.key));
     const seeds: Array<{ key: string; value: string; category: string; description?: string }> = [
-      { key: "delivery_fee_standard",    value: "5.99",  category: "delivery_fees",     description: "Standard delivery fee" },
+      // Delivery fees per speed tier (matches DELIVERY_FEES constant)
+      { key: "delivery_fee_48h",         value: "0.00",  category: "delivery_fees",     description: "Standard 48h delivery fee" },
+      { key: "delivery_fee_24h",         value: "5.99",  category: "delivery_fees",     description: "Next Day 24h delivery fee" },
+      { key: "delivery_fee_same_day",    value: "12.99", category: "delivery_fees",     description: "Same Day delivery fee" },
       { key: "delivery_fee_minimum",     value: "19.99", category: "delivery_fees",     description: "Minimum order for free delivery" },
-      { key: "speed_surcharge_same_day", value: "9.99",  category: "speed_surcharges",  description: "Same-day service surcharge" },
-      { key: "speed_surcharge_next_day", value: "4.99",  category: "speed_surcharges",  description: "Next-day service surcharge" },
-      { key: "tax_rate_default",         value: "0.0875",category: "tax",                description: "Default sales tax rate (NYC)" },
+      // Tax
+      { key: "tax_rate_default",         value: "0.08875", category: "tax",             description: "Default sales tax rate (NYC 8.875%)" },
+      // Logistics
       { key: "max_radius_miles",         value: "10",    category: "logistics",          description: "Max pickup radius from vendor" },
-      { key: "vendor_payout_default",    value: "0.65",  category: "logistics",          description: "Default vendor payout share" },
-      { key: "driver_payout_default",    value: "0.20",  category: "logistics",          description: "Default driver payout share" },
-      { key: "platform_fee_default",     value: "0.15",  category: "logistics",          description: "Default Offload platform fee" },
+      { key: "vendor_payout_default",    value: "0.65",  category: "logistics",          description: "Default vendor payout rate (fraction of subtotal)" },
+      { key: "driver_payout_per_trip",   value: "8.50",  category: "logistics",          description: "Default driver payout per trip ($8.50 x 2 trips = $17/order)" },
+      { key: "platform_fee_default",     value: "0.18",  category: "logistics",          description: "Default Offload platform fee rate" },
+      // Commissions (new category)
+      { key: "platform_fee_rate",        value: "0.18",  category: "commissions",        description: "Platform fee rate applied to subtotal" },
+      { key: "vendor_share_rate",        value: "0.65",  category: "commissions",        description: "Vendor payout share of subtotal" },
+      { key: "driver_payout_per_trip_default", value: "8.50", category: "commissions",   description: "Driver payout per trip (pickup or delivery)" },
+      // Bag tier prices (matches PRICING_TIERS constant)
+      { key: "bag_small_bag",            value: JSON.stringify({ flatPrice: 24.99, overageRate: 2.50, maxWeight: 10 }), category: "service_tiers", description: "Small Bag pricing" },
+      { key: "bag_medium_bag",           value: JSON.stringify({ flatPrice: 44.99, overageRate: 2.50, maxWeight: 20 }), category: "service_tiers", description: "Medium Bag pricing" },
+      { key: "bag_large_bag",            value: JSON.stringify({ flatPrice: 59.99, overageRate: 2.50, maxWeight: 30 }), category: "service_tiers", description: "Large Bag pricing" },
+      { key: "bag_xl_bag",              value: JSON.stringify({ flatPrice: 89.99, overageRate: 2.50, maxWeight: 50 }), category: "service_tiers", description: "XL Bag pricing" },
+      // Service type multipliers
+      { key: "multiplier_wash_fold",     value: "1.0",   category: "service_multipliers", description: "Wash & Fold multiplier" },
+      { key: "multiplier_dry_cleaning",  value: "1.65",  category: "service_multipliers", description: "Dry Cleaning multiplier" },
+      { key: "multiplier_comforters",    value: "1.40",  category: "service_multipliers", description: "Comforters multiplier" },
+      { key: "multiplier_mixed",         value: "1.25",  category: "service_multipliers", description: "Mixed service multiplier" },
+      { key: "multiplier_alterations",   value: "1.50",  category: "service_multipliers", description: "Alterations multiplier" },
+      { key: "multiplier_commercial",    value: "0.85",  category: "service_multipliers", description: "Commercial bulk discount multiplier" },
+      // Loyalty config
+      { key: "loyalty_points_per_dollar", value: "10",   category: "loyalty",            description: "Base loyalty points earned per dollar spent" },
+      { key: "loyalty_points_per_dollar_redeemed", value: "100", category: "loyalty",     description: "Points required per $1 redemption" },
+      { key: "loyalty_tiers",            value: JSON.stringify({
+        bronze:   { minPoints: 0,    multiplier: 1.0, perks: ["5% off first order"] },
+        silver:   { minPoints: 500,  multiplier: 1.25, perks: ["Free delivery", "10% off"] },
+        gold:     { minPoints: 2000, multiplier: 1.5, perks: ["Free delivery", "15% off", "Priority matching"] },
+        platinum: { minPoints: 5000, multiplier: 2.0, perks: ["Free delivery", "20% off", "Priority matching", "Dedicated support"] },
+      }), category: "loyalty", description: "Loyalty tier definitions" },
     ];
     let created = 0;
     for (const s of seeds) {
