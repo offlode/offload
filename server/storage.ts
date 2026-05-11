@@ -140,6 +140,8 @@ async function ensureExtraTables() {
     ["orders", "customer_handoff_at TEXT"],
     ["orders", "pickup_wait_minutes DOUBLE PRECISION DEFAULT 0"],
     ["orders", "pickup_wait_fee DOUBLE PRECISION DEFAULT 0"],
+    // Wave 2: payout idempotency flag
+    ["orders", "payout_recorded INTEGER DEFAULT 0"],
     ["quotes", "pickup_floor INTEGER"],
     ["quotes", "pickup_has_elevator INTEGER DEFAULT 1"],
     ["quotes", "pickup_handoff TEXT DEFAULT 'curbside'"],

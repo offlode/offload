@@ -763,19 +763,56 @@ async function calculatePayouts(order: Order) {
   return { vendorPayout, driverPayout };
 }
 
-async function processPaymentCapture(order: Order): Promise<{ alreadyCaptured: boolean; success?: boolean }> {
-  if (order.paymentStatus === "captured") return { alreadyCaptured: true };
-  // In a real system, this would call Stripe/payment gateway
-  // For now, we simulate the capture
-  await storage.updateOrder(order.id, {
-    paymentStatus: "captured",
-  });
+// Wave 2: real-Stripe gate. Local code NEVER marks an order "captured".
+// The only path to paymentStatus="captured" is the Stripe webhook handler on
+// payment_intent.succeeded (line ~8743). This function now (a) refuses to
+// auto-capture demo orders, (b) records vendor/driver payouts only AFTER the
+// webhook has flipped the order to "captured".
+async function processPaymentCapture(order: Order): Promise<{ alreadyCaptured: boolean; success?: boolean; reason?: string }> {
+  if (order.paymentStatus === "captured") {
+    // Webhook already captured. Record payouts (idempotent — guarded below).
+    await recordPayoutsForCapturedOrder(order);
+    return { alreadyCaptured: true };
+  }
 
-  // Calculate and record payouts
+  // Check whether a REAL Stripe charge exists for this order.
+  const txns = await storage.getPaymentTransactionsByOrder(order.id);
+  const realChargeTxn = txns.find((t: any) =>
+    t.type === "charge" &&
+    t.stripePaymentIntentId &&
+    !String(t.stripePaymentIntentId).startsWith("pi_demo_") &&
+    !String(t.stripePaymentIntentId).startsWith("pi_quote_")
+  );
+
+  if (!realChargeTxn) {
+    // No real Stripe charge. Do NOT mark this order "captured". Operationally
+    // an admin must either collect payment (Stripe Elements) or flag the order.
+    console.warn(`[Payment] Order ${order.id} delivered without a real Stripe charge — paymentStatus left as "${order.paymentStatus}". Admin must collect.`);
+    return { alreadyCaptured: false, success: false, reason: "no_real_stripe_charge" };
+  }
+
+  // Real PaymentIntent exists. Don't flip status here — the webhook is the
+  // single source of truth. If the intent has already succeeded, the webhook
+  // will (or already did) flip paymentStatus to "captured" and call
+  // recordPayoutsForCapturedOrder. If it hasn't, do nothing.
+  return { alreadyCaptured: false, success: true, reason: "waiting_for_webhook" };
+}
+
+// Wave 2: idempotent payout recording. Called when an order transitions to
+// "captured" (either by webhook or admin confirm). Safe to call multiple times
+// for the same order — payoutRecorded flag prevents double-counting.
+async function recordPayoutsForCapturedOrder(order: Order): Promise<void> {
+  // Idempotency guard: never re-record payouts for the same order.
+  if ((order as any).payoutRecorded) return;
+  if (order.paymentStatus !== "captured") return;
+
   const { vendorPayout, driverPayout } = await calculatePayouts(order);
-  await storage.updateOrder(order.id, { vendorPayout, driverPayout });
+  await storage.updateOrder(order.id, {
+    vendorPayout,
+    driverPayout,
+    payoutRecorded: 1,
+  } as any);
 
-  // Update vendor earnings
   if (order.vendorId) {
     const vendor = await storage.getVendor(order.vendorId);
     if (vendor) {
@@ -786,7 +823,6 @@ async function processPaymentCapture(order: Order): Promise<{ alreadyCaptured: b
     }
   }
 
-  // Update driver earnings
   if (order.driverId) {
     const driver = await storage.getDriver(order.driverId);
     if (driver) {
@@ -797,8 +833,6 @@ async function processPaymentCapture(order: Order): Promise<{ alreadyCaptured: b
       });
     }
   }
-
-  return { alreadyCaptured: false, success: true };
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -2938,12 +2972,27 @@ export async function registerRoutes(
           console.error("[Stripe] PaymentIntent creation failed:", err.message);
           return res.status(500).json({ error: "Payment processing failed. Please try again." });
         }
-      } else {
-        // Demo / zero-amount fallback
-        paymentIntentId = `pi_demo_${Date.now()}_${randomBytes(4).toString("hex")}`;
-        clientSecret = `demo_secret_${paymentIntentId}`;
-        // Auto-authorize for demo
+      } else if (amountCents === 0) {
+        // Genuine zero-dollar order (e.g. credit/loyalty fully covers) — mark authorized.
+        paymentIntentId = `pi_zero_${Date.now()}_${randomBytes(4).toString("hex")}`;
+        clientSecret = ""; // No client confirmation needed
         await storage.updateOrder(order.id, { paymentStatus: "authorized" });
+      } else {
+        // Wave 2: Stripe not configured. Refuse to fake an authorization.
+        // The just-created order is marked "cancelled" so audit trail is preserved,
+        // but no payment path proceeds.
+        console.error(`[Checkout] Stripe not configured, refusing demo authorization for order ${order.id}.`);
+        try {
+          await storage.updateOrder(order.id, {
+            status: "cancelled",
+            cancelledAt: ts,
+            cancellationReason: "payment_unavailable",
+          } as any);
+        } catch (_) { /* best-effort */ }
+        return res.status(503).json({
+          error: "Payment processing is temporarily unavailable. Please try again in a few minutes.",
+          code: "PAYMENT_UNAVAILABLE",
+        });
       }
 
       // Record payment transaction
@@ -3097,7 +3146,11 @@ export async function registerRoutes(
         finalPrice: quote.total,
         certifiedOnly: 1,
         customerNotes: customerNotes || null,
-        paymentStatus: "authorized",
+        // Wave 2: quote conversion no longer auto-authorizes. The order stays
+        // "pending" until the customer completes payment via
+        // POST /api/quotes/:id/create-payment + client confirmPayment() and
+        // the Stripe webhook fires payment_intent.succeeded.
+        paymentStatus: "pending",
         paymentMethodId: paymentMethodId || null,
         slaDeadline,
         slaStatus: "on_track",
@@ -3580,31 +3633,27 @@ export async function registerRoutes(
       });
 
       // ── STEP 1: Payment status ──
-      // S4 fix: do NOT mark payment as "authorized" without a real Stripe PaymentIntent.
-      // The authenticated SPA order flow currently has no client-side card confirmation step
-      // (unlike the public /api/checkout/place path which creates a PaymentIntent and returns
-      // a clientSecret). Marking "authorized" here was a lie that could let unpaid orders
-      // proceed to fulfillment. Until the saved-payment-method flow is implemented (Stage 2),
-      // keep paymentStatus as "pending" and require manual capture by staff at delivery,
-      // OR (for zero-amount/demo) auto-authorize.
-      const isDemoOrZero = finalTotal <= 0 || !process.env.STRIPE_SECRET_KEY;
-      if (isDemoOrZero) {
+      // Wave 2 (S4 follow-up): Only genuine zero-dollar orders auto-authorize.
+      // Any positive amount stays "pending" until the customer completes payment
+      // via /api/payments/create-intent + client confirmPayment + webhook.
+      // We no longer treat "Stripe missing" as a license to fake authorization —
+      // if Stripe isn't configured, the order stays pending and admin sees the
+      // gap on the operations dashboard.
+      if (finalTotal <= 0) {
         await storage.updateOrder(order.id, { paymentStatus: "authorized" });
         await storage.createOrderEvent({
           orderId: order.id,
           eventType: "payment_authorized",
-          description: finalTotal <= 0
-            ? "Zero-dollar order \u2014 no payment required"
-            : "Demo mode \u2014 payment auto-authorized",
+          description: "Zero-dollar order \u2014 no payment required",
           actorRole: "system",
           timestamp: now(),
         });
       } else {
-        // Keep paymentStatus = "pending" until charge is captured at delivery / via webhook.
+        // Keep paymentStatus = "pending" until webhook confirms the charge.
         await storage.createOrderEvent({
           orderId: order.id,
           eventType: "payment_pending",
-          description: `Payment of $${finalTotal.toFixed(2)} pending capture at delivery`,
+          description: `Payment of $${finalTotal.toFixed(2)} pending \u2014 awaiting customer payment confirmation`,
           actorRole: "system",
           timestamp: now(),
         });
@@ -3837,7 +3886,33 @@ export async function registerRoutes(
     }
     if (status === "cancelled") {
       updateData.cancelledAt = ts_;
-      updateData.paymentStatus = "refunded";
+      // Wave 2: only mark "refunded" if there was actually something to refund.
+      // If a real Stripe charge was captured, attempt a real refund. Otherwise
+      // preserve current paymentStatus ("pending" / "failed" / etc.).
+      if (order.paymentStatus === "captured" || order.paymentStatus === "paid") {
+        const totalCents = Math.round(((order as any).finalPrice ?? order.total ?? 0) * 100);
+        if (totalCents > 0) {
+          try {
+            const refundResult: any = await issueStripeRefundForOrder(
+              order,
+              totalCents,
+              "requested_by_customer",
+              `patch-cancel-${order.id}-${Date.now()}`
+            );
+            if (refundResult && "errorStatus" in refundResult) {
+              return res.status(refundResult.errorStatus as number).json({
+                error: refundResult.error || "Refund failed",
+              });
+            }
+            updateData.paymentStatus = refundResult?.paymentStatus || "refunded";
+          } catch (err: any) {
+            console.error("[PATCH cancel] Stripe refund failed:", err?.message);
+            return res.status(500).json({ error: "Refund failed; cancel aborted." });
+          }
+        } else {
+          updateData.paymentStatus = "refunded";
+        }
+      }
       // Release vendor capacity
       if (order.vendorId) {
         const vendor = await storage.getVendor(order.vendorId);
@@ -7270,24 +7345,64 @@ export async function registerRoutes(
   });
 
   app.post("/api/payments/confirm", requireAuth(["admin", "manager"]), async (req, res) => {
-    // Security: only admin/manager can confirm payments — real payment confirmation
-    // comes through the Stripe webhook, not from client-side requests
+    // Wave 2: admin manual confirm is only allowed when the order has a REAL
+    // Stripe PaymentIntent that has actually succeeded. We verify with Stripe
+    // directly. Demo/zero-amount intents (pi_demo_*, pi_quote_*, pi_zero_*) are
+    // not eligible — the webhook is the only path to "captured" for them too.
     const { orderId } = req.body;
     if (!orderId) return res.status(400).json({ error: "orderId required" });
     const order = await storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
+    if (order.paymentStatus === "captured") {
+      return res.json({ status: "already_captured", orderId: order.id });
+    }
 
     const txns = await storage.getPaymentTransactionsByOrder(Number(orderId));
-    const chargeTxn = txns.find(t => t.type === "charge" && t.status === "pending");
-    if (chargeTxn) await storage.updatePaymentTransaction(chargeTxn.id, { status: "completed", completedAt: now() });
+    const chargeTxn = txns.find((t: any) => t.type === "charge" && t.status === "pending");
+    if (!chargeTxn) {
+      return res.status(400).json({ error: "No pending charge transaction found for this order" });
+    }
 
+    const pi = chargeTxn.stripePaymentIntentId || "";
+    const isFakeIntent = !pi || pi.startsWith("pi_demo_") || pi.startsWith("pi_quote_") || pi.startsWith("pi_zero_");
+    if (isFakeIntent) {
+      return res.status(400).json({
+        error: "This order has no real Stripe PaymentIntent. Manual confirmation is disabled until Stripe is configured.",
+        code: "NO_REAL_PAYMENT_INTENT",
+      });
+    }
+    if (!stripe) {
+      return res.status(503).json({
+        error: "Stripe is not configured on this server. Cannot verify payment.",
+        code: "STRIPE_NOT_CONFIGURED",
+      });
+    }
+
+    let stripePi: Stripe.PaymentIntent;
+    try {
+      stripePi = await stripe.paymentIntents.retrieve(pi);
+    } catch (err: any) {
+      console.error("[Payments] confirm: Stripe retrieve failed", err?.message);
+      return res.status(502).json({ error: "Failed to verify payment with Stripe", details: err?.message });
+    }
+    if (stripePi.status !== "succeeded") {
+      return res.status(400).json({
+        error: `Cannot confirm: PaymentIntent status is "${stripePi.status}", expected "succeeded".`,
+        intentStatus: stripePi.status,
+      });
+    }
+
+    // Verified by Stripe. Flip txn + order, record payouts.
+    await storage.updatePaymentTransaction(chargeTxn.id, { status: "completed", completedAt: now() });
     await storage.updateOrder(order.id, { paymentStatus: "captured" });
+    const fresh = await storage.getOrder(order.id);
+    if (fresh) await recordPayoutsForCapturedOrder(fresh);
     await storage.createOrderEvent({
       orderId: order.id, eventType: "payment_captured",
-      description: `Payment of $${order.total?.toFixed(2)} captured${hasStripe ? "" : " (demo)"}`,
+      description: `Payment of $${order.total?.toFixed(2)} captured (admin-verified via Stripe)`,
       timestamp: now(),
     });
-    res.json({ status: "completed", orderId: order.id, demoMode: !hasStripe });
+    res.json({ status: "completed", orderId: order.id, intentStatus: stripePi.status });
   });
 
   app.post("/api/payments/refund", requireAuth(["admin", "manager"]), async (req, res) => {
@@ -8749,6 +8864,9 @@ export async function registerRoutes(
 	                description: `Payment of $${(pi.amount / 100).toFixed(2)} confirmed via Stripe`,
                 timestamp: now(),
               });
+              // Wave 2: record vendor/driver payouts now that payment is captured.
+              const freshOrder = await storage.getOrder(orderId);
+              if (freshOrder) await recordPayoutsForCapturedOrder(freshOrder);
               // Trigger email notification
               sendOrderEmail(order, "payment_confirmed");
             }
@@ -8778,6 +8896,57 @@ export async function registerRoutes(
               description: `Refund of $${(charge.amount_refunded / 100).toFixed(2)} processed`,
               timestamp: now(),
             });
+          }
+          break;
+        }
+        // Wave 2: dispute lifecycle handling. We do NOT auto-refund — admin reviews.
+        case "charge.dispute.created": {
+          const dispute = event.data?.object as any;
+          const orderIdRaw = dispute?.metadata?.orderId || dispute?.payment_intent_metadata?.orderId;
+          if (orderIdRaw) {
+            const orderId = Number(orderIdRaw);
+            await storage.updateOrder(orderId, { paymentStatus: "disputed" } as any);
+            await storage.createOrderEvent({
+              orderId, eventType: "payment_disputed",
+              description: `Dispute opened (${dispute.reason || "unknown reason"}). Amount $${((dispute.amount || 0) / 100).toFixed(2)}.`,
+              details: JSON.stringify({ disputeId: dispute.id, reason: dispute.reason, status: dispute.status }),
+              timestamp: now(),
+            });
+            console.warn(`[Stripe Webhook] Dispute opened on order ${orderId}: ${dispute.id} (${dispute.reason})`);
+          }
+          break;
+        }
+        case "charge.dispute.closed": {
+          const dispute = event.data?.object as any;
+          const orderIdRaw = dispute?.metadata?.orderId || dispute?.payment_intent_metadata?.orderId;
+          if (orderIdRaw) {
+            const orderId = Number(orderIdRaw);
+            const won = dispute.status === "won";
+            // If lost, Stripe has already reversed funds — mark as refunded for accounting.
+            // If won, restore paymentStatus to captured.
+            await storage.updateOrder(orderId, { paymentStatus: won ? "captured" : "refunded" } as any);
+            await storage.createOrderEvent({
+              orderId, eventType: won ? "dispute_won" : "dispute_lost",
+              description: `Dispute ${dispute.status}. ${won ? "Funds retained." : "Funds reversed by Stripe."}`,
+              details: JSON.stringify({ disputeId: dispute.id, status: dispute.status }),
+              timestamp: now(),
+            });
+          }
+          break;
+        }
+        case "payment_intent.canceled": {
+          const pi = event.data?.object as any;
+          if (pi?.metadata?.orderId) {
+            const orderId = Number(pi.metadata.orderId);
+            const order = await storage.getOrder(orderId);
+            if (order && order.paymentStatus !== "captured" && order.paymentStatus !== "refunded") {
+              await storage.updateOrder(orderId, { paymentStatus: "failed" });
+              await storage.createOrderEvent({
+                orderId, eventType: "payment_canceled",
+                description: `PaymentIntent canceled or expired`,
+                timestamp: now(),
+              });
+            }
           }
           break;
         }

@@ -229,6 +229,9 @@ export const orders = pgTable("orders", {
   vendorPayout: doublePrecision("vendor_payout").default(0),
   driverPayout: doublePrecision("driver_payout").default(0),
   platformFee: doublePrecision("platform_fee").default(0), // Offload's commission
+  // Wave 2: idempotency flag for recordPayoutsForCapturedOrder() — prevents double-counting
+  // vendor/driver earnings if the capture path is invoked more than once for the same order.
+  payoutRecorded: integer("payout_recorded").default(0),
   // Photos
   pickupPhotoUrl: text("pickup_photo_url"),
   deliveryPhotoUrl: text("delivery_photo_url"),
