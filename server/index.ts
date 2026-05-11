@@ -9,6 +9,7 @@ import { sanitizeMiddleware } from "./sanitize";
 import { scheduleBackups } from "./backup";
 import { bootstrapAccounts } from "./bootstrap";
 import { storage } from "./storage";
+import { errorHandler, AppError } from "./error-handler";
 
 // ── BugSnag Error Tracking ──
 if (process.env.BUGSNAG_API_KEY) {
@@ -229,14 +230,10 @@ app.use((req, res, next) => {
     };
     ERROR_LOG.push(entry);
     if (ERROR_LOG.length > MAX_ERRORS) ERROR_LOG.shift();
-    console.error(`[Error ${status}] ${req.method} ${req.originalUrl}: ${message}`);
     if (process.env.BUGSNAG_API_KEY) Bugsnag.notify(err instanceof Error ? err : new Error(message));
 
-    if (res.headersSent) {
-      return next(err);
-    }
-
-    return res.status(status).json({ message });
+    // Delegate to centralized error handler (sanitizes err.message in production)
+    errorHandler(err, req, res, next);
   });
 
   // Global unhandled rejection / exception tracking

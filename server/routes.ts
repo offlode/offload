@@ -1,4 +1,5 @@
 import type { Express, Request, Response, NextFunction } from "express";
+import { z } from "zod";
 import { createServer, type Server } from "http";
 import { createHash, randomBytes } from "crypto";
 import { Resend } from "resend";
@@ -10,8 +11,9 @@ import { isR2Enabled, uploadToR2, getPresignedDownloadUrl, getPresignedUploadUrl
 import { sendPushToUser } from "./push";
 import { sendSMS } from "./sms";
 import { distanceMatrix, isGoogleMapsConfigured } from "./maps";
-import { SLA_CONFIGS, WEIGHT_TOLERANCE, CONSENT_TIMEOUT_HOURS, LOYALTY_TIERS, SUBSCRIPTION_TIERS, PRICING_TIERS, DELIVERY_FEES, TAX_RATE as SCHEMA_TAX_RATE, QUOTE_VALIDITY_MINUTES, SERVICE_TYPE_MULTIPLIERS, insertNotificationRuleSchema, insertAddOnSchema } from "@shared/schema";
+import { SLA_CONFIGS, WEIGHT_TOLERANCE, CONSENT_TIMEOUT_HOURS, LOYALTY_TIERS, SUBSCRIPTION_TIERS, PRICING_TIERS, DELIVERY_FEES, TAX_RATE as SCHEMA_TAX_RATE, QUOTE_VALIDITY_MINUTES, SERVICE_TYPE_MULTIPLIERS, insertNotificationRuleSchema, insertAddOnSchema, insertAddressSchema, insertPaymentMethodSchema, insertVendorSchema, insertDriverSchema, insertServiceTypeSchema, insertDisputeSchema, insertReviewSchema, insertMessageSchema, insertVendorPayoutSchema, insertPromoCodeSchema, insertUserSchema } from "@shared/schema";
 import { pricingConfig } from "./pricing-config-service";
+import { logAdminAction } from "./audit-helpers";
 import type { Order, Vendor, Driver, Quote } from "@shared/schema";
 import {
   VALID_TRANSITIONS as FSM_TRANSITIONS,
@@ -545,9 +547,9 @@ function scoreVendor(vendor: Vendor, order: Order, pickupLat: number, pickupLng:
 
   // 5. Capability match (max 5 pts)
   let prefs: any = {};
-  try { prefs = order.preferences ? JSON.parse(order.preferences) : {}; } catch (_) {}
+  try { prefs = order.preferences ? JSON.parse(order.preferences) : {}; } catch (e) { console.warn("[vendor-match] Failed to parse order preferences:", e); }
   let caps: any[] = [];
-  try { caps = vendor.capabilities ? JSON.parse(vendor.capabilities) : []; } catch (_) {}
+  try { caps = vendor.capabilities ? JSON.parse(vendor.capabilities) : []; } catch (e) { console.warn("[vendor-match] Failed to parse vendor capabilities:", e); }
   if (!prefs.washType || caps.includes(prefs.washType) || caps.includes("custom")) {
     score += 5;
   }
@@ -1444,7 +1446,7 @@ async function calculateFraudRisk(orderId: number): Promise<{
       flags.push(`Unusually large order: ${totalBags} bags`);
       riskScore += 10;
     }
-  } catch (_) {}
+  } catch (e) { console.warn("[fraud] Failed to parse order bags:", e); }
 
   // 6. High value with first-time promo code
   if (order.promoCode && (order.total || 0) > 150) {
@@ -1780,6 +1782,19 @@ export async function registerRoutes(
   io?: SocketIOServer,
 ): Promise<Server> {
 
+  // ── Pagination helper (backward-compatible: returns array unless ?paginated=true) ──
+  function getPagination(req: Request) {
+    const paginated = req.query.paginated === "true";
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    return { paginated, limit, offset };
+  }
+  function paginatedResponse<T>(items: T[], pagination: { paginated: boolean; limit: number; offset: number }) {
+    if (!pagination.paginated) return items;
+    const sliced = items.slice(pagination.offset, pagination.offset + pagination.limit);
+    return { items: sliced, total: items.length, limit: pagination.limit, offset: pagination.offset };
+  }
+
   // Set Socket.io reference for emit helpers
   setIO(io);
 
@@ -1961,10 +1976,18 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.post("/api/auth/register", async (req, res) => {
-    const { name, email, phone, password, referralCode } = req.body;
-    if (!name || !email || !password) {
-      return res.status(400).json({ error: "Missing required fields" });
+    const RegisterBody = z.object({
+      name: z.string().min(1),
+      email: z.string().email(),
+      phone: z.string().optional().nullable(),
+      password: z.string().min(8, "Password must be at least 8 characters"),
+      referralCode: z.string().optional(),
+    });
+    const parsed = RegisterBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
     }
+    const { name, email, phone, password, referralCode } = parsed.data;
     const existingUser = await storage.getUserByEmail(email);
     if (existingUser) {
       return res.status(409).json({ error: "Email already in use" });
@@ -2030,10 +2053,12 @@ export async function registerRoutes(
       return res.status(429).json({ error: "Too many login attempts. Try again in 15 minutes." });
     }
 
-    const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ error: "Missing email or password" });
+    const LoginBody = z.object({ email: z.string().email(), password: z.string().min(1) });
+    const parsed = LoginBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
     }
+    const { email, password } = parsed.data;
     const user = await storage.getUserByEmail(email);
     if (!user || !verifyPassword(password, user.password)) {
       recordLoginAttempt(ip);
@@ -2145,10 +2170,12 @@ export async function registerRoutes(
 
   // ── Forgot Password ──
   app.post("/api/auth/forgot-password", async (req, res) => {
-    const { email } = req.body;
-    if (!email) {
-      return res.status(400).json({ error: "Email is required" });
+    const ForgotBody = z.object({ email: z.string().email() });
+    const parsed = ForgotBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
     }
+    const { email } = parsed.data;
 
     // Always return 200 to avoid leaking whether email exists
     const successMsg = { message: "If an account with that email exists, a password reset link has been sent." };
@@ -2200,13 +2227,12 @@ export async function registerRoutes(
 
   // ── Reset Password ──
   app.post("/api/auth/reset-password", async (req, res) => {
-    const { token, password } = req.body;
-    if (!token || !password) {
-      return res.status(400).json({ error: "Token and new password are required" });
+    const ResetBody = z.object({ token: z.string().min(1), password: z.string().min(8, "Password must be at least 8 characters") });
+    const parsed = ResetBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
     }
-    if (password.length < 8) {
-      return res.status(400).json({ error: "Password must be at least 8 characters" });
-    }
+    const { token, password } = parsed.data;
 
     const resetRecord = await storage.getPasswordResetToken(token);
     if (!resetRecord) {
@@ -2342,9 +2368,10 @@ export async function registerRoutes(
   app.get("/api/vendors", requireAuth(), async (req, res) => {
     // F19: customers see only a sanitized view (no internal owner/financial fields).
     const cu = (req as any).currentUser;
+    const pg = getPagination(req);
     const all = await storage.getVendors();
     if (isAdminOrManager(cu) || cu.role === "laundromat" || cu.role === "vendor" || cu.role === "support") {
-      return res.json(all);
+      return res.json(paginatedResponse(all, pg));
     }
     // Customer / driver view
     const sanitized = all
@@ -2383,20 +2410,33 @@ export async function registerRoutes(
   });
 
   app.post("/api/vendors", requireAuth(["admin", "manager"]), async (req, res) => {
-    const vendor = await storage.createVendor(req.body);
+    const parsed = insertVendorSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
+    const vendor = await storage.createVendor(parsed.data);
+    logAdminAction(req, { action: "vendor.create", entityType: "vendor", entityId: vendor.id, newValue: { name: vendor.name, email: vendor.email } });
     res.status(201).json(vendor);
   });
 
   app.patch("/api/vendors/:id", requireAuth(["admin", "manager", "laundromat", "vendor"]), async (req, res) => {
     const currentUser = (req as any).currentUser;
+    const vendorId = Number(String(req.params.id));
     if (currentUser.role === "laundromat" || currentUser.role === "vendor") {
-      const vendor = await storage.getVendor(Number(String(req.params.id)));
+      const vendor = await storage.getVendor(vendorId);
       if (!vendor || (await storage.getVendorByUserId(currentUser.id))?.id !== vendor.id) {
         return res.status(403).json({ error: "Access denied" });
       }
     }
-    const updated = await storage.updateVendor(Number(String(req.params.id)), req.body);
+    const VendorPatch = insertVendorSchema.partial();
+    const parsed = VendorPatch.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
+    const before = await storage.getVendor(vendorId);
+    const updated = await storage.updateVendor(vendorId, parsed.data);
     if (!updated) return res.status(404).json({ error: "Vendor not found" });
+    logAdminAction(req, { action: "vendor.update", entityType: "vendor", entityId: vendorId, oldValue: before, newValue: parsed.data });
     res.json(updated);
   });
 
@@ -2404,8 +2444,9 @@ export async function registerRoutes(
   //  DRIVERS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/drivers", requireAuth(["admin", "manager"]), async (_req, res) => {
-    res.json(await storage.getDrivers());
+  app.get("/api/drivers", requireAuth(["admin", "manager"]), async (req, res) => {
+    const pg = getPagination(req);
+    res.json(paginatedResponse(await storage.getDrivers(), pg));
   });
 
   app.get("/api/drivers/user/:userId", requireAuth(["driver", "admin", "manager"]), async (req, res) => {
@@ -2467,31 +2508,46 @@ export async function registerRoutes(
   });
 
   app.post("/api/drivers", requireAuth(["admin", "manager"]), async (req, res) => {
+    const DriverBody = insertDriverSchema.omit({ userId: true });
+    const parsed = DriverBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
     const driverUser = await storage.createUser({
-      username: req.body.name.toLowerCase().replace(/\s/g, "_") + "_driver",
+      username: parsed.data.name.toLowerCase().replace(/\s/g, "_") + "_driver",
       password: hashPassword("driver123"),
-      name: req.body.name,
-      email: req.body.email || `${req.body.name.toLowerCase().replace(/\s/g, ".")}@offload.com`,
-      phone: req.body.phone,
+      name: parsed.data.name,
+      email: req.body.email || `${parsed.data.name.toLowerCase().replace(/\s/g, ".")}@offload.com`,
+      phone: parsed.data.phone,
       role: "driver",
     });
     const driver = await storage.createDriver({
-      ...req.body,
+      ...parsed.data,
       userId: driverUser.id,
     });
+    logAdminAction(req, { action: "driver.create", entityType: "driver", entityId: driver.id, newValue: { name: driver.name, phone: driver.phone } });
     res.status(201).json(driver);
   });
 
   app.patch("/api/drivers/:id", requireAuth(["driver", "admin", "manager"]), async (req, res) => {
     const currentUser = (req as any).currentUser;
+    const driverId = Number(String(req.params.id));
     if (currentUser.role === "driver") {
       const myDriver = await storage.getDriverByUserId(currentUser.id);
-      if (!myDriver || myDriver.id !== Number(String(req.params.id))) {
+      if (!myDriver || myDriver.id !== driverId) {
         return res.status(403).json({ error: "Access denied" });
       }
     }
-    const updated = await storage.updateDriver(Number(String(req.params.id)), req.body);
+    const DriverPatch = insertDriverSchema.omit({ userId: true }).partial();
+    const parsed = DriverPatch.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
+    const updated = await storage.updateDriver(driverId, parsed.data);
     if (!updated) return res.status(404).json({ error: "Driver not found" });
+    if (isAdminOrManager(currentUser)) {
+      logAdminAction(req, { action: "driver.update", entityType: "driver", entityId: driverId, newValue: parsed.data });
+    }
     res.json(updated);
   });
 
@@ -2540,7 +2596,12 @@ export async function registerRoutes(
   });
 
   app.post("/api/service-types", requireAuth(["admin"]), async (req, res) => {
-    const st = await storage.createServiceType(req.body);
+    const parsed = insertServiceTypeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
+    const st = await storage.createServiceType(parsed.data);
+    logAdminAction(req, { action: "service_type.create", entityType: "service_type", entityId: st.id, newValue: { name: st.name } });
     res.status(201).json(st);
   });
 
@@ -2749,7 +2810,7 @@ export async function registerRoutes(
       });
     } catch (err: any) {
       console.error("[/api/quote/dynamic] error:", err);
-      res.status(400).json({ error: err.message });
+      res.status(400).json({ error: "Failed to generate dynamic quote", code: "QUOTE_ERROR" });
     }
   });
 
@@ -2881,7 +2942,8 @@ export async function registerRoutes(
         lineItems: breakdown.lineItems,
       });
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      console.error("[/api/quotes] error:", err);
+      res.status(400).json({ error: "Failed to create quote", code: "QUOTE_ERROR" });
     }
   });
 
@@ -3094,7 +3156,7 @@ export async function registerRoutes(
 
     } catch (err: any) {
       console.error("[Checkout] Error:", err);
-      res.status(500).json({ error: err.message || "Checkout failed" });
+      res.status(500).json({ error: "Checkout failed", code: "CHECKOUT_ERROR" });
     }
   });
 
@@ -3136,7 +3198,8 @@ export async function registerRoutes(
 
       res.json(updated);
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      console.error("[/api/quotes/:id/accept] error:", err);
+      res.status(400).json({ error: "Failed to accept quote", code: "QUOTE_ERROR" });
     }
   });
 
@@ -3322,7 +3385,8 @@ export async function registerRoutes(
 
       res.status(201).json(await storage.getOrder(order.id));
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      console.error("[/api/quotes/:id/convert] error:", err);
+      res.status(400).json({ error: "Failed to convert quote to order", code: "ORDER_ERROR" });
     }
   });
 
@@ -3359,6 +3423,7 @@ export async function registerRoutes(
   app.get("/api/orders", requireAuth(), async (req, res) => {
     const user = (req as any).currentUser;
     const userRole = user?.role || "customer";
+    const pg = getPagination(req);
 
     // Admin/manager can see all orders with optional filters
     if (["admin", "manager", "support"].includes(userRole)) {
@@ -3366,11 +3431,11 @@ export async function registerRoutes(
       const vendorId = req.query.vendorId ? Number(req.query.vendorId) : undefined;
       const driverId = req.query.driverId ? Number(req.query.driverId) : undefined;
       const status = typeof req.query.status === "string" ? req.query.status : undefined;
-      if (customerId) return res.json(await Promise.all((await storage.getOrdersByCustomer(customerId)).map(enrichAdminOrder)));
-      if (vendorId) return res.json(await Promise.all((await storage.getOrdersByVendor(vendorId)).map(enrichAdminOrder)));
-      if (driverId) return res.json(await Promise.all((await storage.getOrdersByDriver(driverId)).map(enrichAdminOrder)));
-      if (status) return res.json(await Promise.all((await storage.getOrdersByStatus(status)).map(enrichAdminOrder)));
-      return res.json(await Promise.all((await storage.getOrders()).map(enrichAdminOrder)));
+      if (customerId) return res.json(paginatedResponse(await Promise.all((await storage.getOrdersByCustomer(customerId)).map(enrichAdminOrder)), pg));
+      if (vendorId) return res.json(paginatedResponse(await Promise.all((await storage.getOrdersByVendor(vendorId)).map(enrichAdminOrder)), pg));
+      if (driverId) return res.json(paginatedResponse(await Promise.all((await storage.getOrdersByDriver(driverId)).map(enrichAdminOrder)), pg));
+      if (status) return res.json(paginatedResponse(await Promise.all((await storage.getOrdersByStatus(status)).map(enrichAdminOrder)), pg));
+      return res.json(paginatedResponse(await Promise.all((await storage.getOrders()).map(enrichAdminOrder)), pg));
     }
 
     // Vendor sees only their assigned orders
@@ -3794,7 +3859,8 @@ export async function registerRoutes(
 
       res.status(201).json(await storage.getOrder(order.id));
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      console.error("[/api/orders] error:", err);
+      res.status(400).json({ error: "Failed to create order", code: "ORDER_ERROR" });
     }
   });
 
@@ -4324,7 +4390,7 @@ export async function registerRoutes(
       }
 
       // Live update via socket so customer app can show countdown
-      try { emitToOrder(order.id, "driver_arrived", { orderId: order.id, arrivedAt, freeMinutes: WAIT_FEE_CONFIG.freeMinutes }); } catch (_) {}
+      try { emitToOrder(order.id, "driver_arrived", { orderId: order.id, arrivedAt, freeMinutes: WAIT_FEE_CONFIG.freeMinutes }); } catch (e) { console.warn("[socket] Failed to emit driver_arrived:", e); }
 
       res.json({
         orderId: order.id,
@@ -4335,7 +4401,8 @@ export async function registerRoutes(
       });
     } catch (err: any) {
       console.error("[/api/orders/:id/driver-arrived] error:", err);
-      res.status(500).json({ error: err?.message || "Failed to mark arrival" });
+      console.error("[driver-arrived] error:", err);
+      res.status(500).json({ error: "Failed to mark arrival", code: "INTERNAL_ERROR" });
     }
   });
 
@@ -4392,7 +4459,7 @@ export async function registerRoutes(
         }
       }
 
-      try { emitToOrder(order.id, "customer_handoff", { orderId: order.id, handoffAt, waitMinutes, waitFee, newTotal }); } catch (_) {}
+      try { emitToOrder(order.id, "customer_handoff", { orderId: order.id, handoffAt, waitMinutes, waitFee, newTotal }); } catch (e) { console.warn("[socket] Failed to emit customer_handoff:", e); }
 
       res.json({
         orderId: order.id,
@@ -4405,7 +4472,8 @@ export async function registerRoutes(
       });
     } catch (err: any) {
       console.error("[/api/orders/:id/customer-handoff] error:", err);
-      res.status(500).json({ error: err?.message || "Failed to mark handoff" });
+      console.error("[customer-handoff] error:", err);
+      res.status(500).json({ error: "Failed to mark handoff", code: "INTERNAL_ERROR" });
     }
   });
 
@@ -5043,14 +5111,19 @@ export async function registerRoutes(
 
   app.post("/api/addresses", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
-    req.body.userId = currentUser.id;
-    if (req.body.isDefault) {
-      const existing = await storage.getAddressesByUser(currentUser.id);
-      existing.forEach(async a => {
-        if (a.isDefault) await storage.updateAddress(a.id, { isDefault: 0 });
-      });
+    const AddressBody = insertAddressSchema.omit({ userId: true });
+    const parsed = AddressBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
     }
-    const address = await storage.createAddress(req.body);
+    const data = { ...parsed.data, userId: currentUser.id };
+    if (data.isDefault) {
+      const existing = await storage.getAddressesByUser(currentUser.id);
+      for (const a of existing) {
+        if (a.isDefault) await storage.updateAddress(a.id, { isDefault: 0 });
+      }
+    }
+    const address = await storage.createAddress(data);
     res.status(201).json(address);
   });
 
@@ -5061,11 +5134,16 @@ export async function registerRoutes(
     if (addr.userId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    if (req.body.isDefault) {
+    const AddressPatch = insertAddressSchema.omit({ userId: true }).partial();
+    const parsed = AddressPatch.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
+    if (parsed.data.isDefault) {
       const allAddr = await storage.getAddressesByUser(addr.userId);
       for (const a of allAddr) { await storage.updateAddress(a.id, { isDefault: 0 }); }
     }
-    const updated = await storage.updateAddress(Number(String(req.params.id)), req.body);
+    const updated = await storage.updateAddress(Number(String(req.params.id)), parsed.data);
     res.json(updated);
   });
 
@@ -5092,8 +5170,12 @@ export async function registerRoutes(
 
   app.post("/api/payment-methods", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
-    req.body.userId = currentUser.id;
-    res.status(201).json(await storage.createPaymentMethod(req.body));
+    const PMBody = insertPaymentMethodSchema.omit({ userId: true });
+    const parsed = PMBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
+    res.status(201).json(await storage.createPaymentMethod({ ...parsed.data, userId: currentUser.id }));
   });
 
   app.patch("/api/payment-methods/:id", requireAuth(), async (req, res) => {
@@ -5104,16 +5186,20 @@ export async function registerRoutes(
     if (!method && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const { isDefault, userId } = req.body;
-    if (isDefault) {
+    const PMPatch = insertPaymentMethodSchema.omit({ userId: true }).partial();
+    const parsed = PMPatch.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
+    if (parsed.data.isDefault) {
       const existing = await storage.getPaymentMethodsByUser(method?.userId || currentUser.id);
-      existing.forEach(async pm => {
+      for (const pm of existing) {
         if (pm.id !== id && pm.isDefault) {
           await storage.updatePaymentMethod(pm.id, { isDefault: 0 });
         }
-      });
+      }
     }
-    const updated = await storage.updatePaymentMethod(id, req.body);
+    const updated = await storage.updatePaymentMethod(id, parsed.data);
     if (!updated) return res.status(404).json({ error: "Payment method not found" });
     res.json(updated);
   });
@@ -5296,14 +5382,19 @@ export async function registerRoutes(
 
   app.post("/api/disputes", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
-    const order = await storage.getOrder(Number(req.body.orderId));
+    const DisputeBody = insertDisputeSchema.omit({ customerId: true, createdAt: true });
+    const parsed = DisputeBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
+    const order = await storage.getOrder(parsed.data.orderId);
     if (!order || order.customerId !== currentUser.id) {
       return res.status(403).json({ error: "Access denied" });
     }
 
     const ts_ = now();
     const dispute = await storage.createDispute({
-      ...req.body,
+      ...parsed.data,
       customerId: currentUser.id,
       createdAt: ts_,
     });
@@ -5335,22 +5426,30 @@ export async function registerRoutes(
   });
 
   app.patch("/api/disputes/:id", requireAuth(["admin", "manager"]), async (req, res) => {
-    const updated = await storage.updateDispute(Number(String(req.params.id)), req.body);
+    const disputeId = Number(String(req.params.id));
+    const DisputePatch = insertDisputeSchema.partial();
+    const parsed = DisputePatch.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
+    const beforeDispute = await storage.getDispute(disputeId);
+    const updated = await storage.updateDispute(disputeId, parsed.data);
     if (!updated) return res.status(404).json({ error: "Dispute not found" });
+    logAdminAction(req, { action: "dispute.update", entityType: "dispute", entityId: disputeId, oldValue: { status: beforeDispute?.status }, newValue: parsed.data });
 
     // If resolved, notify customer
-    if (req.body.status === "resolved" || req.body.status === "closed") {
+    if (parsed.data.status === "resolved" || parsed.data.status === "closed") {
       const dispute = await storage.getDispute(Number(String(req.params.id)));
       if (dispute) {
         await notifyUser(dispute.customerId, dispute.orderId, "system",
           "Dispute Resolved",
-          `Your dispute has been ${req.body.status}. ${req.body.resolution || ""}`,
+          `Your dispute has been ${parsed.data.status}. ${parsed.data.resolution || ""}`,
           `/orders/${dispute.orderId}`
         );
         // Accept refund amount under any of the three field names the admin UIs currently send.
         // C-B1 fix: offload-admin sends `creditAmount`, offload-admin alternate sends `resolutionAmount`.
         // Without this alias the dispute was marked resolved but Stripe was never called — customer never got refunded.
-        const requestedRefund = Number(req.body.refundAmount ?? req.body.creditAmount ?? req.body.resolutionAmount ?? 0);
+        const requestedRefund = Number(parsed.data.refundAmount ?? parsed.data.creditAmount ?? req.body.resolutionAmount ?? 0);
         if (requestedRefund > 0) {
           const order = await storage.getOrder(dispute.orderId);
           if (order) {
@@ -5438,16 +5537,20 @@ export async function registerRoutes(
     const existing = await storage.getReviewByOrder(order.id);
     if (existing) return res.status(409).json({ error: "Order already reviewed" });
 
+    const ReviewBody = insertReviewSchema.pick({ vendorRating: true, driverRating: true, overallRating: true, comment: true });
+    const parsed = ReviewBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
     const review = await storage.createReview({
       orderId: order.id,
-      // Always trust server-side currentUser, never req.body, for customer attribution.
       customerId: currentUser.id,
       vendorId: order.vendorId || undefined,
       driverId: order.driverId || undefined,
-      vendorRating: req.body.vendorRating,
-      driverRating: req.body.driverRating,
-      overallRating: req.body.overallRating || req.body.rating,
-      comment: req.body.comment,
+      vendorRating: parsed.data.vendorRating,
+      driverRating: parsed.data.driverRating,
+      overallRating: parsed.data.overallRating || req.body.rating,
+      comment: parsed.data.comment,
       createdAt: now(),
     });
 
@@ -5613,7 +5716,8 @@ export async function registerRoutes(
         savings: surge.tier === "off_peak" ? Math.round((basePrice.total - surgedTotal) * 100) / 100 : 0,
       });
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      console.error("[/api/pricing/calculate] error:", err);
+      res.status(400).json({ error: "Pricing calculation failed", code: "PRICING_ERROR" });
     }
   });
 
@@ -5902,19 +6006,24 @@ export async function registerRoutes(
       expiresAt: expiresAt || null,
       createdAt: now(),
     });
+    logAdminAction(req, { action: "promo.create", entityType: "promo", entityId: promo.id, newValue: { code: promo.code, type, value } });
 
     res.status(201).json(promo);
   });
 
   app.patch("/api/admin/promos/:id", requireAuth(["admin"]), async (req, res) => {
-    const updated = await storage.updatePromoCode(Number(String(req.params.id)), req.body);
+    const promoId = Number(String(req.params.id));
+    const updated = await storage.updatePromoCode(promoId, req.body);
     if (!updated) return res.status(404).json({ error: "Promo code not found" });
+    logAdminAction(req, { action: "promo.update", entityType: "promo", entityId: promoId, newValue: req.body });
     res.json(updated);
   });
 
   app.delete("/api/admin/promos/:id", requireAuth(["admin"]), async (req, res) => {
-    const updated = await storage.updatePromoCode(Number(String(req.params.id)), { isActive: 0 });
+    const promoId = Number(String(req.params.id));
+    const updated = await storage.updatePromoCode(promoId, { isActive: 0 });
     if (!updated) return res.status(404).json({ error: "Promo code not found" });
+    logAdminAction(req, { action: "promo.deactivate", entityType: "promo", entityId: promoId });
     res.json({ success: true, message: "Promo code deactivated" });
   });
 
@@ -5962,7 +6071,7 @@ export async function registerRoutes(
     } else {
       // Append to existing session
       let existingMessages: any[] = [];
-      try { existingMessages = session.messagesJson ? JSON.parse(session.messagesJson) : []; } catch (_) {}
+      try { existingMessages = session.messagesJson ? JSON.parse(session.messagesJson) : []; } catch (e) { console.warn("[chat] Failed to parse session messages:", e); }
       existingMessages.push({ role: "user", content: message, timestamp: ts_ });
       existingMessages.push({ role: "assistant", content: response, timestamp: ts_, intent });
 
@@ -6303,10 +6412,12 @@ export async function registerRoutes(
 
   // Fraud alert actions
   app.post("/api/admin/fraud-alerts/:alertId/clear", requireAuth(["admin"]), (req, res) => {
+    logAdminAction(req, { action: "fraud_alert.clear", entityType: "fraud_alert", entityId: String(req.params.alertId) });
     res.json({ success: true, message: "Alert cleared" });
   });
 
   app.post("/api/admin/fraud-alerts/:alertId/escalate", requireAuth(["admin"]), (req, res) => {
+    logAdminAction(req, { action: "fraud_alert.escalate", entityType: "fraud_alert", entityId: String(req.params.alertId) });
     res.json({ success: true, message: "Alert escalated" });
   });
 
@@ -6590,7 +6701,8 @@ export async function registerRoutes(
     });
   });
 
-  app.get("/api/admin/payments", requireAuth(ADMIN_ROLES), async (_req, res) => {
+  app.get("/api/admin/payments", requireAuth(ADMIN_ROLES), async (req, res) => {
+    const pg = getPagination(req);
     const orders2 = await storage.getOrders();
     const paymentArrays = await Promise.all(orders2.map(async order => {
       const txns = await storage.getPaymentTransactionsByOrder(order.id);
@@ -6602,7 +6714,7 @@ export async function registerRoutes(
       }));
     }));
     const payments = paymentArrays.flat();
-    res.json(payments);
+    res.json(paginatedResponse(payments, pg));
   });
 
   app.get("/api/admin/drivers", requireAuth(ADMIN_ROLES), async (_req, res) => {
@@ -6709,25 +6821,31 @@ export async function registerRoutes(
   });
 
   app.post("/api/promo-codes", requireAuth(["admin"]), async (req, res) => {
-    // Coerce isActive boolean → integer (DB column is integer, 1=active/0=inactive)
-    const body: any = { ...req.body };
-    if (typeof body.isActive === "boolean") body.isActive = body.isActive ? 1 : 0;
-    if (typeof body.status === "string" && body.isActive === undefined) {
-      body.isActive = body.status === "active" ? 1 : 0;
-      delete body.status;
+    const PromoBody = insertPromoCodeSchema.omit({ createdAt: true });
+    const parsed = PromoBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
     }
-    res.status(201).json(await storage.createPromoCode({ ...body, createdAt: now() }));
+    // Coerce isActive boolean → integer (DB column is integer, 1=active/0=inactive)
+    const body: any = { ...parsed.data };
+    if (typeof body.isActive === "boolean") body.isActive = body.isActive ? 1 : 0;
+    const created = await storage.createPromoCode({ ...body, createdAt: now() });
+    logAdminAction(req, { action: "promo_code.create", entityType: "promo_code", entityId: created.id, newValue: body });
+    res.status(201).json(created);
   });
 
   app.patch("/api/promo-codes/:id", requireAuth(["admin"]), async (req, res) => {
-    const body: any = { ...req.body };
-    if (typeof body.isActive === "boolean") body.isActive = body.isActive ? 1 : 0;
-    if (typeof body.status === "string" && body.isActive === undefined) {
-      body.isActive = body.status === "active" ? 1 : 0;
-      delete body.status;
+    const PromoPatch = insertPromoCodeSchema.partial();
+    const parsed = PromoPatch.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
     }
-    const updated = await storage.updatePromoCode(Number(String(req.params.id)), body);
+    const body: any = { ...parsed.data };
+    if (typeof body.isActive === "boolean") body.isActive = body.isActive ? 1 : 0;
+    const promoId = Number(String(req.params.id));
+    const updated = await storage.updatePromoCode(promoId, body);
     if (!updated) return res.status(404).json({ error: "Promo code not found" });
+    logAdminAction(req, { action: "promo_code.update", entityType: "promo_code", entityId: promoId, newValue: body });
     res.json(updated);
   });
 
@@ -6868,15 +6986,16 @@ export async function registerRoutes(
 
   // Admin: all users list
   app.get("/api/admin/users", requireAuth(["admin"]), async (req, res) => {
+    const pg = getPagination(req);
     const role = req.query.role as string | undefined;
     if (role) {
-      const users = await storage.getUsersByRole(role);
-      return res.json(users.map(u => ({ ...u, password: undefined })));
+      const users = (await storage.getUsersByRole(role)).map(u => ({ ...u, password: undefined }));
+      return res.json(paginatedResponse(users, pg));
     }
     const allRoles = ["customer", "driver", "laundromat", "vendor", "manager", "admin"];
     const allUserArrays = await Promise.all(allRoles.map(r => storage.getUsersByRole(r)));
-    const allUsers = allUserArrays.flat();
-    res.json(allUsers.map(u => ({ ...u, password: undefined })));
+    const allUsers = allUserArrays.flat().map(u => ({ ...u, password: undefined }));
+    res.json(paginatedResponse(allUsers, pg));
   });
 
   // Admin: search users
@@ -7067,15 +7186,24 @@ export async function registerRoutes(
       ordersCount: ordersCount || 0,
       createdAt: now(),
     });
+    logAdminAction(req, { action: "vendor_payout.create", entityType: "vendor_payout", entityId: payout.id, newValue: { vendorId, amount } });
     res.status(201).json(payout);
   });
 
   app.patch("/api/vendor-payouts/:id", requireAuth(["admin"]), async (req, res) => {
-    const updated = await storage.updateVendorPayout(Number(String(req.params.id)), req.body);
+    const payoutId = Number(String(req.params.id));
+    const PayoutPatch = insertVendorPayoutSchema.partial();
+    const parsed = PayoutPatch.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
+    const beforePayout = await storage.getVendorPayout(payoutId);
+    const updated = await storage.updateVendorPayout(payoutId, parsed.data);
     if (!updated) return res.status(404).json({ error: "Payout not found" });
+    logAdminAction(req, { action: "vendor_payout.update", entityType: "vendor_payout", entityId: payoutId, oldValue: { status: beforePayout?.status }, newValue: parsed.data });
 
     // If completed, clear pendingPayout for vendor
-    if (req.body.status === "completed") {
+    if (parsed.data.status === "completed") {
       const payout = updated;
       const vendor = await storage.getVendor(payout.vendorId);
       if (vendor) {
@@ -7124,7 +7252,7 @@ export async function registerRoutes(
       });
     } else {
       let existingMessages: any[] = [];
-      try { existingMessages = session.messagesJson ? JSON.parse(session.messagesJson) : []; } catch (_) {}
+      try { existingMessages = session.messagesJson ? JSON.parse(session.messagesJson) : []; } catch (e) { console.warn("[chat] Failed to parse session messages:", e); }
       existingMessages.push({ role: "user", content: message, timestamp: ts_ });
       existingMessages.push({ role: "assistant", content: response, timestamp: ts_, intent });
       session = await storage.updateChatSession(session.id, {
@@ -7435,7 +7563,7 @@ export async function registerRoutes(
       stripePi = await stripe.paymentIntents.retrieve(pi);
     } catch (err: any) {
       console.error("[Payments] confirm: Stripe retrieve failed", err?.message);
-      return res.status(502).json({ error: "Failed to verify payment with Stripe", details: err?.message });
+      return res.status(502).json({ error: "Failed to verify payment with Stripe", code: "STRIPE_ERROR" });
     }
     if (stripePi.status !== "succeeded") {
       return res.status(400).json({
@@ -7454,6 +7582,7 @@ export async function registerRoutes(
       description: `Payment of $${order.total?.toFixed(2)} captured (admin-verified via Stripe)`,
       timestamp: now(),
     });
+    logAdminAction(req, { action: "payment.confirm", entityType: "order", entityId: order.id, newValue: { paymentStatus: "captured" } });
     res.json({ status: "completed", orderId: order.id, intentStatus: stripePi.status });
   });
 
@@ -7468,6 +7597,7 @@ export async function registerRoutes(
     if ("errorStatus" in result) {
       return res.status(result.errorStatus as number).json(result);
     }
+    logAdminAction(req, { action: "payment.refund", entityType: "order", entityId: order.id, newValue: { amountCents, reason } });
     res.json({
       refundId: result.txn.id,
       stripeRefundId: result.stripeRefundId,
@@ -7804,7 +7934,7 @@ export async function registerRoutes(
     const summaries = await Promise.all(photos.map(async (p) => {
       let downloadUrl: string | undefined;
       if (p.r2Key) {
-        try { downloadUrl = await getPresignedDownloadUrl(p.r2Key); } catch {}
+        try { downloadUrl = await getPresignedDownloadUrl(p.r2Key); } catch (e) { console.warn("[r2] Failed to get presigned download URL:", e); }
       }
       return {
         id: p.id, orderId: p.orderId, type: p.type,
@@ -8345,7 +8475,12 @@ export async function registerRoutes(
   // ── Send a message ──
   app.post("/api/messages", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
-    const { orderId, content, messageType, recipientId } = req.body;
+    const MessageBody = insertMessageSchema.pick({ orderId: true, content: true, messageType: true });
+    const parsed = MessageBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
+    const { orderId, content, messageType } = parsed.data;
 
     if (!content || !orderId) {
       return res.status(400).json({ error: "orderId and content are required" });
@@ -8650,6 +8785,7 @@ export async function registerRoutes(
     if ("errorStatus" in result) {
       return res.status(result.errorStatus as number).json(result);
     }
+    logAdminAction(req, { action: "payment.partial_refund", entityType: "order", entityId: order.id, newValue: { amount: Number(amount), reasonCode, notes } });
 
     res.json({
       refundId: result.txn.id,
@@ -8762,9 +8898,10 @@ export async function registerRoutes(
         features: getFeatureFlags(),
       });
     } catch (err: any) {
+      console.error("[health/deep] error:", err);
       res.status(503).json({
         status: "unhealthy",
-        error: err.message,
+        error: "Health check failed",
         timestamp: now(),
       });
     }
@@ -8796,9 +8933,16 @@ export async function registerRoutes(
     const flag = String(req.params.flag);
     if (!FEATURE_FLAGS[flag]) return res.status(404).json({ error: `Unknown feature flag: ${flag}` });
 
-    const { enabled, rolloutPercent } = req.body;
+    const FlagBody = z.object({ enabled: z.boolean().optional(), rolloutPercent: z.number().min(0).max(100).optional() });
+    const parsed = FlagBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
+    const { enabled, rolloutPercent } = parsed.data;
+    const oldFlags = { enabled: FEATURE_FLAGS[flag].enabled, rolloutPercent: FEATURE_FLAGS[flag].rolloutPercent };
     if (typeof enabled === "boolean") FEATURE_FLAGS[flag].enabled = enabled;
     if (typeof rolloutPercent === "number") FEATURE_FLAGS[flag].rolloutPercent = Math.max(0, Math.min(100, rolloutPercent));
+    logAdminAction(req, { action: "feature_flag.update", entityType: "feature_flag", entityId: flag, oldValue: oldFlags, newValue: { enabled: FEATURE_FLAGS[flag].enabled, rolloutPercent: FEATURE_FLAGS[flag].rolloutPercent } });
 
     await storage.createPricingAuditEntry({
       action: "feature_flag_updated",
@@ -9109,7 +9253,8 @@ export async function registerRoutes(
       const rules = await storage.getNotificationRules();
       res.json(rules);
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || "Failed to fetch notification rules" });
+      console.error("[notification-rules] fetch error:", err);
+      res.status(500).json({ error: "Failed to fetch notification rules", code: "INTERNAL_ERROR" });
     }
   });
 
@@ -9118,9 +9263,11 @@ export async function registerRoutes(
       const parsed = insertNotificationRuleSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ error: "Validation error", details: parsed.error.flatten() });
       const rule = await storage.createNotificationRule(parsed.data);
+      logAdminAction(req, { action: "notification_rule.create", entityType: "notification_rule", entityId: rule.id, newValue: { name: rule.name, trigger: rule.trigger } });
       res.status(201).json(rule);
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || "Failed to create notification rule" });
+      console.error("[notification-rules] create error:", err);
+      res.status(500).json({ error: "Failed to create notification rule", code: "INTERNAL_ERROR" });
     }
   });
 
@@ -9129,9 +9276,11 @@ export async function registerRoutes(
       const id = Number(req.params.id);
       const rule = await storage.updateNotificationRule(id, req.body);
       if (!rule) return res.status(404).json({ error: "Rule not found" });
+      logAdminAction(req, { action: "notification_rule.update", entityType: "notification_rule", entityId: id, newValue: req.body });
       res.json(rule);
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || "Failed to update notification rule" });
+      console.error("[notification-rules] update error:", err);
+      res.status(500).json({ error: "Failed to update notification rule", code: "INTERNAL_ERROR" });
     }
   });
 
@@ -9140,9 +9289,11 @@ export async function registerRoutes(
       const id = Number(req.params.id);
       const deleted = await storage.deleteNotificationRule(id);
       if (!deleted) return res.status(404).json({ error: "Rule not found" });
+      logAdminAction(req, { action: "notification_rule.delete", entityType: "notification_rule", entityId: id });
       res.json({ deleted: true });
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || "Failed to delete notification rule" });
+      console.error("[notification-rules] delete error:", err);
+      res.status(500).json({ error: "Failed to delete notification rule", code: "INTERNAL_ERROR" });
     }
   });
 
@@ -9155,7 +9306,8 @@ export async function registerRoutes(
       const items = await storage.getAllAddOns();
       res.json(items);
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || "Failed to fetch add-ons" });
+      console.error("[add-ons] fetch error:", err);
+      res.status(500).json({ error: "Failed to fetch add-ons", code: "INTERNAL_ERROR" });
     }
   });
 
@@ -9165,7 +9317,8 @@ export async function registerRoutes(
       if (!item) return res.status(404).json({ error: "Add-on not found" });
       res.json(item);
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || "Failed to fetch add-on" });
+      console.error("[add-ons] fetch error:", err);
+      res.status(500).json({ error: "Failed to fetch add-on", code: "INTERNAL_ERROR" });
     }
   });
 
@@ -9182,10 +9335,11 @@ export async function registerRoutes(
           actorRole: (req as any).currentUser?.role || null,
           timestamp: now(),
         });
-      } catch {}
+      } catch (e) { console.warn("[audit] Failed to log add-on create:", e); }
       res.status(201).json(item);
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || "Failed to create add-on" });
+      console.error("[add-ons] create error:", err);
+      res.status(500).json({ error: "Failed to create add-on", code: "INTERNAL_ERROR" });
     }
   });
 
@@ -9204,10 +9358,11 @@ export async function registerRoutes(
           actorRole: (req as any).currentUser?.role || null,
           timestamp: now(),
         });
-      } catch {}
+      } catch (e) { console.warn("[audit] Failed to log add-on update:", e); }
       res.json(item);
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || "Failed to update add-on" });
+      console.error("[add-ons] update error:", err);
+      res.status(500).json({ error: "Failed to update add-on", code: "INTERNAL_ERROR" });
     }
   });
 
@@ -9226,10 +9381,11 @@ export async function registerRoutes(
           actorRole: (req as any).currentUser?.role || null,
           timestamp: now(),
         });
-      } catch {}
+      } catch (e) { console.warn("[audit] Failed to log add-on deactivate:", e); }
       res.json({ deactivated: true, id });
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || "Failed to deactivate add-on" });
+      console.error("[add-ons] deactivate error:", err);
+      res.status(500).json({ error: "Failed to deactivate add-on", code: "INTERNAL_ERROR" });
     }
   });
 
@@ -9242,7 +9398,8 @@ export async function registerRoutes(
       const items = await storage.getAllPricingConfig();
       res.json(items);
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || "Failed to fetch pricing config" });
+      console.error("[pricing-config] fetch error:", err);
+      res.status(500).json({ error: "Failed to fetch pricing config", code: "INTERNAL_ERROR" });
     }
   });
 
@@ -9251,7 +9408,8 @@ export async function registerRoutes(
       const items = await storage.getPricingConfigByCategory(String(req.params.category));
       res.json(items);
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || "Failed to fetch pricing config by category" });
+      console.error("[pricing-config] category fetch error:", err);
+      res.status(500).json({ error: "Failed to fetch pricing config by category", code: "INTERNAL_ERROR" });
     }
   });
 
@@ -9261,7 +9419,8 @@ export async function registerRoutes(
       if (!item) return res.status(404).json({ error: "Pricing config key not found" });
       res.json(item);
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || "Failed to fetch pricing config" });
+      console.error("[pricing-config] fetch error:", err);
+      res.status(500).json({ error: "Failed to fetch pricing config", code: "INTERNAL_ERROR" });
     }
   });
 
@@ -9307,11 +9466,12 @@ export async function registerRoutes(
           actorRole: currentUser?.role || null,
           timestamp: now(),
         });
-      } catch {}
+      } catch (e) { console.warn("[audit] Failed to log pricing config change:", e); }
 
       res.json(item);
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || "Failed to update pricing config" });
+      console.error("[pricing-config] update error:", err);
+      res.status(500).json({ error: "Failed to update pricing config", code: "INTERNAL_ERROR" });
     }
   });
 
@@ -9322,7 +9482,31 @@ export async function registerRoutes(
       const logs = await storage.getPricingAuditLog(limit);
       res.json(logs);
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || "Failed to fetch audit log" });
+      console.error("[pricing-config] audit log fetch error:", err);
+      res.status(500).json({ error: "Failed to fetch audit log", code: "INTERNAL_ERROR" });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  //  ADMIN AUDIT LOG (Wave 4)
+  // ═══════════════════════════════════════════════════════════════
+
+  app.get("/api/admin/audit-log", requireAuth(["admin"]), async (req, res) => {
+    try {
+      const limit = Math.min(Number(req.query.limit) || 50, 200);
+      const offset = Math.max(Number(req.query.offset) || 0, 0);
+      const entityType = req.query.entityType ? String(req.query.entityType) : undefined;
+      const entityId = req.query.entityId ? String(req.query.entityId) : undefined;
+      const actorId = req.query.actorId ? Number(req.query.actorId) : undefined;
+      const opts = { entityType, entityId, actorId, limit, offset };
+      const [items, total] = await Promise.all([
+        storage.getAdminAuditLog(opts),
+        storage.countAdminAuditLog(opts),
+      ]);
+      res.json({ items, total, limit, offset });
+    } catch (err: any) {
+      console.error("[admin-audit-log] error:", err);
+      res.status(500).json({ error: "Failed to fetch audit log", code: "INTERNAL_ERROR" });
     }
   });
 
@@ -9601,7 +9785,7 @@ export async function registerRoutes(
       });
     } catch (err: any) {
       console.error("[PartnerApp] create error:", err);
-      res.status(500).json({ error: err.message || "Failed to submit application" });
+      res.status(500).json({ error: "Failed to submit application", code: "APPLICATION_ERROR" });
     }
   });
 
@@ -9729,10 +9913,11 @@ export async function registerRoutes(
       );
 
       // F17: do NOT echo tempPassword in JSON response. It is delivered via email only.
+      logAdminAction(req, { action: "partner_application.approve", entityType: "partner_application", entityId: app.id, newValue: { userId: user.id, driverId, vendorId } });
       res.json({ ok: true, userId: user.id, driverId, vendorId, tempPasswordSent: !!tempPassword });
     } catch (err: any) {
       console.error("[PartnerApp] approve error:", err);
-      res.status(500).json({ error: err.message || "Failed to approve application" });
+      res.status(500).json({ error: "Failed to approve application", code: "APPLICATION_ERROR" });
     }
   });
 
@@ -9775,10 +9960,11 @@ export async function registerRoutes(
         </div>`,
       ).catch(() => {});
 
+      logAdminAction(req, { action: "partner_application.decline", entityType: "partner_application", entityId: String(req.params.id), newValue: { reason: req.body.reason } });
       res.json({ ok: true });
     } catch (err: any) {
       console.error("[PartnerApp] decline error:", err);
-      res.status(500).json({ error: err.message || "Failed to decline application" });
+      res.status(500).json({ error: "Failed to decline application", code: "APPLICATION_ERROR" });
     }
   });
 

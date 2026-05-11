@@ -753,6 +753,26 @@ export const insertPricingAuditLogSchema = createInsertSchema(pricingAuditLog).o
 export type InsertPricingAuditLog = z.infer<typeof insertPricingAuditLogSchema>;
 export type PricingAuditLog = typeof pricingAuditLog.$inferSelect;
 
+// ─── Admin Audit Log (Wave 4) ───
+export const adminAuditLog = pgTable("admin_audit_log", {
+  id: serial("id").primaryKey(),
+  actorId: integer("actor_id").notNull(),
+  actorRole: text("actor_role").notNull(),
+  action: text("action").notNull(),
+  entityType: text("entity_type").notNull(),
+  entityId: text("entity_id"),
+  oldValue: text("old_value"),
+  newValue: text("new_value"),
+  ip: text("ip"),
+  userAgent: text("user_agent"),
+  notes: text("notes"),
+  timestamp: text("timestamp").notNull(),
+});
+
+export const insertAdminAuditLogSchema = createInsertSchema(adminAuditLog).omit({ id: true });
+export type InsertAdminAuditLog = z.infer<typeof insertAdminAuditLogSchema>;
+export type AdminAuditLog = typeof adminAuditLog.$inferSelect;
+
 // ─── Sessions (DB-backed) ───
 export const sessions = pgTable("sessions", {
   token: text("token").primaryKey(),

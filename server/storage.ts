@@ -109,6 +109,24 @@ async function ensureExtraTables() {
     );
     CREATE INDEX IF NOT EXISTS idx_partner_apps_status ON partner_applications(status);
     CREATE INDEX IF NOT EXISTS idx_partner_apps_type ON partner_applications(applicant_type);
+
+    CREATE TABLE IF NOT EXISTS admin_audit_log (
+      id SERIAL PRIMARY KEY,
+      actor_id INTEGER NOT NULL,
+      actor_role TEXT NOT NULL,
+      action TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT,
+      old_value TEXT,
+      new_value TEXT,
+      ip TEXT,
+      user_agent TEXT,
+      notes TEXT,
+      timestamp TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_admin_audit_log_entity ON admin_audit_log(entity_type, entity_id);
+    CREATE INDEX IF NOT EXISTS idx_admin_audit_log_actor ON admin_audit_log(actor_id);
+    CREATE INDEX IF NOT EXISTS idx_admin_audit_log_ts ON admin_audit_log(timestamp);
   `);
 
   // Add amount_cents column if missing (idempotent)
@@ -279,6 +297,7 @@ export interface IStorage {
   createChatSession(data: schema.InsertChatSession): Promise<schema.ChatSession>;
   updateChatSession(id: number, data: Partial<schema.InsertChatSession>): Promise<schema.ChatSession | undefined>;
   // Vendor Payouts
+  getVendorPayout(id: number): Promise<schema.VendorPayout | undefined>;
   getVendorPayouts(vendorId: number): Promise<schema.VendorPayout[]>;
   createVendorPayout(data: schema.InsertVendorPayout): Promise<schema.VendorPayout>;
   updateVendorPayout(id: number, data: Partial<schema.InsertVendorPayout>): Promise<schema.VendorPayout | undefined>;
@@ -342,6 +361,10 @@ export interface IStorage {
   // Pricing Audit
   createPricingAuditEntry(data: schema.InsertPricingAuditLog): Promise<schema.PricingAuditLog>;
   getPricingAuditLog(limit?: number): Promise<schema.PricingAuditLog[]>;
+  // Admin Audit Log
+  createAdminAuditLog(data: schema.InsertAdminAuditLog): Promise<schema.AdminAuditLog>;
+  getAdminAuditLog(opts?: { entityType?: string; entityId?: string; actorId?: number; limit?: number; offset?: number }): Promise<schema.AdminAuditLog[]>;
+  countAdminAuditLog(opts?: { entityType?: string; entityId?: string; actorId?: number }): Promise<number>;
   // Stats
   getCustomerStats(id: number): Promise<any>;
   // Sessions (DB-backed)
@@ -756,6 +779,10 @@ class DatabaseStorage implements IStorage {
   }
 
   // ─── Vendor Payouts ───
+  async getVendorPayout(id: number) {
+    const [row] = await db.select().from(schema.vendorPayouts).where(eq(schema.vendorPayouts.id, id));
+    return row;
+  }
   async getVendorPayouts(vendorId: number) {
     return db.select().from(schema.vendorPayouts).where(eq(schema.vendorPayouts.vendorId, vendorId))
       .orderBy(desc(schema.vendorPayouts.createdAt));
@@ -983,6 +1010,35 @@ class DatabaseStorage implements IStorage {
   }
   async getPricingAuditLog(limit = 100) {
     return db.select().from(schema.pricingAuditLog).orderBy(desc(schema.pricingAuditLog.timestamp)).limit(limit);
+  }
+
+  // ─── Admin Audit Log ───
+  async createAdminAuditLog(data: schema.InsertAdminAuditLog) {
+    const [row] = await db.insert(schema.adminAuditLog).values(data).returning();
+    return row;
+  }
+  async getAdminAuditLog(opts?: { entityType?: string; entityId?: string; actorId?: number; limit?: number; offset?: number }) {
+    const conditions: any[] = [];
+    if (opts?.entityType) conditions.push(eq(schema.adminAuditLog.entityType, opts.entityType));
+    if (opts?.entityId) conditions.push(eq(schema.adminAuditLog.entityId, opts.entityId));
+    if (opts?.actorId) conditions.push(eq(schema.adminAuditLog.actorId, opts.actorId));
+    const limit = Math.min(opts?.limit || 50, 200);
+    const offset = opts?.offset || 0;
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+    return db.select().from(schema.adminAuditLog)
+      .where(where)
+      .orderBy(desc(schema.adminAuditLog.timestamp))
+      .limit(limit)
+      .offset(offset);
+  }
+  async countAdminAuditLog(opts?: { entityType?: string; entityId?: string; actorId?: number }) {
+    const conditions: any[] = [];
+    if (opts?.entityType) conditions.push(eq(schema.adminAuditLog.entityType, opts.entityType));
+    if (opts?.entityId) conditions.push(eq(schema.adminAuditLog.entityId, opts.entityId));
+    if (opts?.actorId) conditions.push(eq(schema.adminAuditLog.actorId, opts.actorId));
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+    const [row] = await db.select({ count: sql<number>`count(*)` }).from(schema.adminAuditLog).where(where);
+    return Number(row?.count || 0);
   }
 
   // ─── Customer Stats ───
