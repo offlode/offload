@@ -126,25 +126,25 @@ function AppRouter() {
 
       {/* Staff routes */}
       <Route path="/staff">
-        {() => <RequireAuth allowedRoles={["laundromat"]}><StaffLayout><StaffOrdersPage /></StaffLayout></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff"]}><StaffLayout><StaffOrdersPage /></StaffLayout></RequireAuth>}
       </Route>
       <Route path="/staff/active">
-        {() => <RequireAuth allowedRoles={["laundromat"]}><StaffLayout><StaffActivePage /></StaffLayout></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff"]}><StaffLayout><StaffActivePage /></StaffLayout></RequireAuth>}
       </Route>
       <Route path="/staff/profile">
-        {() => <RequireAuth allowedRoles={["laundromat"]}><StaffLayout><StaffProfilePage /></StaffLayout></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff"]}><StaffLayout><StaffProfilePage /></StaffLayout></RequireAuth>}
       </Route>
       <Route path="/staff/queue">
-        {() => <RequireAuth allowedRoles={["laundromat"]}><StaffLayout><StaffQueue /></StaffLayout></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff"]}><StaffLayout><StaffQueue /></StaffLayout></RequireAuth>}
       </Route>
       <Route path="/staff/quality">
-        {() => <RequireAuth allowedRoles={["laundromat"]}><StaffLayout><StaffQuality /></StaffLayout></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff"]}><StaffLayout><StaffQuality /></StaffLayout></RequireAuth>}
       </Route>
       <Route path="/staff/weigh/:id">
-        {() => <RequireAuth allowedRoles={["laundromat"]}><WeighPhotoPage /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff"]}><WeighPhotoPage /></RequireAuth>}
       </Route>
       <Route path="/staff/wash/:id">
-        {() => <RequireAuth allowedRoles={["laundromat"]}><StartWashingPage /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff"]}><StartWashingPage /></RequireAuth>}
       </Route>
 
       {/* Driver routes */}

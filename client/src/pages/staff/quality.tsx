@@ -134,7 +134,8 @@ function CustomTooltip({
 export default function StaffQuality() {
   const { user } = useAuth();
   const { toast } = useToast();
-  const vendorId = user?.vendorId ?? 1;
+  // C-A1 fix: derive from authenticated profile, never fall back to vendor #1.
+  const vendorId = (user as any)?.vendorProfile?.id ?? null;
 
   const [checklist, setChecklist] = useState<ChecklistState>({ ...EMPTY_CHECKLIST });
   const [selfRating, setSelfRating] = useState(0);
@@ -149,7 +150,7 @@ export default function StaffQuality() {
       const res = await apiRequest(`/api/staff/quality-stats?vendorId=${vendorId}`);
       return res.json();
     },
-    enabled: !!vendorId,
+    enabled: vendorId !== null,
   });
 
   // Fetch orders ready for quality check (wash_complete status)
@@ -160,7 +161,7 @@ export default function StaffQuality() {
       const all: Order[] = await res.json();
       return all.filter(o => o.status === "wash_complete");
     },
-    enabled: !!vendorId,
+    enabled: vendorId !== null,
   });
 
   const submitQualityMutation = useMutation({
@@ -198,6 +199,18 @@ export default function StaffQuality() {
       toast({ title: "Submit failed", description: err.message, variant: "destructive" });
     },
   });
+
+  // Rules-of-hooks: this guard runs AFTER every hook above.
+  if (vendorId === null && user) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <div className="max-w-sm text-center">
+          <p className="text-sm font-semibold text-foreground mb-2">No vendor profile linked</p>
+          <p className="text-xs text-muted-foreground">Your account is missing a vendor record. Please contact Offload support so we can link it.</p>
+        </div>
+      </div>
+    );
+  }
 
   const weeklyData = stats?.weeklyScores ?? FALLBACK_WEEKLY;
   const myScore = stats?.myScore ?? 4.5;

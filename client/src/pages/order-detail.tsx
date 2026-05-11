@@ -539,21 +539,16 @@ export default function OrderDetailPage() {
               <p className="text-sm font-semibold">{driver.name}</p>
               <p className="text-xs text-muted-foreground">{driver.vehicleType} — {driver.licensePlate}</p>
             </div>
-            <Button
-              variant="secondary"
-              size="icon"
-              className="shrink-0 hover:text-cyan-400 transition-colors"
-              onClick={() => toast({ title: `Calling ${driver.name}...`, description: "Connecting you now." })}
-              data-testid="button-call-driver"
-            >
-              <Phone className="w-4 h-4 text-cyan-400" />
-            </Button>
+            {/* H1-A fix: the “Call” button used to fire a toast with no real call. We don’t
+                relay driver phone numbers yet (masked-number Twilio integration is a Stage 2
+                item) so the safest pre-launch behavior is in-app messaging only. */}
             <Button
               variant="secondary"
               size="icon"
               className="shrink-0 hover:text-emerald-400 transition-colors"
               onClick={() => setMessageSheetOpen(true)}
               data-testid="button-message-driver"
+              aria-label={`Message ${driver.name}`}
             >
               <MessageSquare className="w-4 h-4 text-emerald-400" />
             </Button>

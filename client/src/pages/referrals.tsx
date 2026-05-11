@@ -99,7 +99,7 @@ export default function ReferralsPage() {
     if (navigator.share) {
       try {
         await navigator.share({
-          title: "Try Offload — fresh laundry delivered!",
+          title: "Try Offload — fresh clothes, zero hassle",
           text: `Use my referral code ${referralCode} and we both get $10 credit!`,
           url: referralLink,
         });

@@ -28,16 +28,29 @@ const WASHING_STATUSES = ["at_laundromat", "washing", "wash_complete", "packing"
 export default function StaffOrdersPage() {
   const [, navigate] = useLocation();
   const { user } = useAuth();
-  const vendorId = user?.vendorId || 1;
+  // C-A1 fix: derive from authenticated profile, never fall back to vendor #1.
+  const vendorId = (user as any)?.vendorProfile?.id ?? null;
   const [tab, setTab] = useState<"orders" | "washing">("orders");
 
   const { data: orders = [], isLoading } = useQuery<Order[]>({
     queryKey: ["/api/orders", `vendorId=${vendorId}`],
+    enabled: vendorId !== null,
     queryFn: async () => {
       const res = await apiRequest(`/api/orders?vendorId=${vendorId}`);
       return res.json();
     },
   });
+
+  if (vendorId === null && user) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <div className="max-w-sm text-center">
+          <p className="text-sm font-semibold text-foreground mb-2">No vendor profile linked</p>
+          <p className="text-xs text-muted-foreground">Your account is missing a vendor record. Please contact Offload support so we can link it.</p>
+        </div>
+      </div>
+    );
+  }
 
   // Filter to orders that are relevant for staff (at laundromat through delivery)
   const staffOrders = orders.filter((o) =>

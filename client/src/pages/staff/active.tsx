@@ -35,10 +35,14 @@ export default function StaffActivePage() {
   const [, navigate] = useLocation();
   const { user } = useAuth();
   const { toast } = useToast();
-  const vendorId = user?.vendorId || 1;
+  // C-A1 fix: derive vendorId from authenticated profile, do NOT fall back to vendorId=1
+  // (that hardcoded fallback would silently leak vendor #1's orders to any staff account
+  // whose vendor row wasn't loaded).
+  const vendorId = (user as any)?.vendorProfile?.id ?? null;
 
   const { data: orders = [], isLoading } = useQuery<Order[]>({
     queryKey: ["/api/orders", `vendorId=${vendorId}`],
+    enabled: vendorId !== null,
     queryFn: async () => {
       const res = await apiRequest(`/api/orders?vendorId=${vendorId}`);
       return res.json();
@@ -99,6 +103,18 @@ export default function StaffActivePage() {
       });
     },
   });
+
+  // Rules-of-hooks: run early return AFTER all hook calls.
+  if (vendorId === null && user) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <div className="max-w-sm text-center">
+          <p className="text-sm font-semibold text-foreground mb-2">No vendor profile linked</p>
+          <p className="text-xs text-muted-foreground">Your account is missing a vendor record. Please contact Offload support so we can link it.</p>
+        </div>
+      </div>
+    );
+  }
 
   function OrderCard({ order }: { order: Order }) {
     const badge = statusBadgeMap[order.status];

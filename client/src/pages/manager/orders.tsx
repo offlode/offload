@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { useLocation } from "wouter";
 import {
   Search,
   SlidersHorizontal,
@@ -63,6 +64,7 @@ const activeStatuses = [
 ];
 
 export default function ManagerOrders() {
+  const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState<FilterTab>("all");
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -304,9 +306,10 @@ export default function ManagerOrders() {
                     </span>
                   </div>
 
-                  {/* View Details */}
+                  {/* H1-B fix: this button used to be dead. Wire to existing order-detail route. */}
                   <button
                     data-testid={`btn-view-details-${order.id}`}
+                    onClick={() => navigate(`/orders/${order.id}`)}
                     className="w-full mt-2 py-2.5 rounded-full border border-white/10 text-white text-sm font-medium hover:bg-white/5 transition-colors"
                   >
                     View Details

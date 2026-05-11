@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
   ArrowLeft, CreditCard, Plus, Trash2, Smartphone, Wallet,
-  Star, Pencil, Shield
+  Star, Shield
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -253,17 +253,14 @@ export default function PaymentsPage() {
                             )}
                           </div>
                           <div className="flex items-center gap-1 shrink-0">
-                            <button
-                              className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-                              onClick={() => toast({ title: "Edit", description: `Editing ${pm.label}` })}
-                              data-testid={`button-edit-${pm.id}`}
-                            >
-                              <Pencil className="w-3.5 h-3.5" />
-                            </button>
+                            {/* H2-A fix: removed the fake "Edit" toast button. Editing a saved
+                                card requires removing and re-adding (Stripe never exposes the card
+                                number for in-place edit). Delete + re-add is the supported flow. */}
                             <button
                               className="w-8 h-8 rounded-lg flex items-center justify-center text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
                               onClick={() => setDeleteId(pm.id)}
                               data-testid={`button-delete-${pm.id}`}
+                              aria-label={`Remove ${pm.label}`}
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>

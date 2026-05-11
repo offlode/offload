@@ -132,52 +132,19 @@ export default function AdminFraud() {
     },
   });
 
-  // Simulated data
-  const simData: FraudSummary = {
-    totalFlagged: 12,
-    highRisk: 3,
-    mediumRisk: 6,
-    cleared: 24,
-    alerts: [
-      {
-        id: 1, orderId: 1001, orderNumber: "ORD-1001",
-        customerId: 42, customerName: "James Wilson",
-        riskScore: 88, riskLevel: "high",
-        flags: ["unusual_amount", "new_account", "address_mismatch"],
-        status: "flagged", amount: 285.00, createdAt: "2024-01-15T14:23:00Z",
-      },
-      {
-        id: 2, orderId: 1002, orderNumber: "ORD-1002",
-        customerId: 71, customerName: "Sarah Chen",
-        riskScore: 74, riskLevel: "high",
-        flags: ["promo_abuse", "velocity"],
-        status: "escalated", amount: 145.50, createdAt: "2024-01-15T12:10:00Z",
-      },
-      {
-        id: 3, orderId: 1003, orderNumber: "ORD-1003",
-        customerId: 88, customerName: "Mike Rodriguez",
-        riskScore: 62, riskLevel: "medium",
-        flags: ["multiple_cancellations"],
-        status: "flagged", amount: 67.25, createdAt: "2024-01-14T18:55:00Z",
-      },
-      {
-        id: 4, orderId: 1004, orderNumber: "ORD-1004",
-        customerId: 105, customerName: "Emma Thompson",
-        riskScore: 55, riskLevel: "medium",
-        flags: ["device_mismatch", "promo_abuse"],
-        status: "flagged", amount: 98.00, createdAt: "2024-01-14T10:30:00Z",
-      },
-      {
-        id: 5, orderId: 1005, orderNumber: "ORD-1005",
-        customerId: 119, customerName: "David Kim",
-        riskScore: 45, riskLevel: "medium",
-        flags: ["chargeback_history"],
-        status: "cleared", amount: 52.75, createdAt: "2024-01-13T16:20:00Z",
-      },
-    ],
+  // H6 fix: removed the seeded simulated alerts. We never want fake customer names
+  // ("James Wilson", "Sarah Chen") rendered to admins — it looks real and could
+  // trigger actual investigations. Show an honest empty state until the fraud feed
+  // endpoint returns data.
+  const emptyData: FraudSummary = {
+    totalFlagged: 0,
+    highRisk: 0,
+    mediumRisk: 0,
+    cleared: 0,
+    alerts: [],
   };
 
-  const displayData = data ?? simData;
+  const displayData = data ?? emptyData;
 
   return (
     <AdminLayout>

@@ -88,35 +88,45 @@ export default function SchedulePage() {
 
   const userId = user?.id;
 
-  const { data: addresses } = useQuery<Address[]>({
+  // E1 fix: previously these five queries silently failed (no isError / error state),
+  // leaving the schedule page broken with no explanation. Now surface a clear error UI
+  // whenever any required data fails to load.
+  const addressesQ = useQuery<Address[]>({
     queryKey: [`/api/addresses?userId=${userId}`],
     enabled: !!userId,
   });
-
-  const { data: vendors } = useQuery<Vendor[]>({
+  const vendorsQ = useQuery<Vendor[]>({
     queryKey: ["/api/vendors"],
   });
-
-  const { data: paymentMethods } = useQuery<PaymentMethod[]>({
+  const paymentMethodsQ = useQuery<PaymentMethod[]>({
     queryKey: [`/api/payment-methods?userId=${userId}`],
     enabled: !!userId,
   });
-
-  const { data: pricingTiers } = useQuery<PricingTier[]>({
+  const pricingTiersQ = useQuery<PricingTier[]>({
     queryKey: ["/api/pricing-tiers"],
     queryFn: async () => {
       const res = await apiRequest("/api/pricing-tiers");
       return res.json();
     },
   });
-
-  const { data: addOns } = useQuery<AddOn[]>({
+  const addOnsQ = useQuery<AddOn[]>({
     queryKey: ["/api/add-ons"],
     queryFn: async () => {
       const res = await apiRequest("/api/add-ons");
       return res.json();
     },
   });
+
+  const addresses = addressesQ.data;
+  const vendors = vendorsQ.data;
+  const paymentMethods = paymentMethodsQ.data;
+  const pricingTiers = pricingTiersQ.data;
+  const addOns = addOnsQ.data;
+
+  const dataError = addressesQ.isError || vendorsQ.isError || paymentMethodsQ.isError || pricingTiersQ.isError || addOnsQ.isError;
+  const refetchAll = () => {
+    addressesQ.refetch(); vendorsQ.refetch(); paymentMethodsQ.refetch(); pricingTiersQ.refetch(); addOnsQ.refetch();
+  };
 
   useEffect(() => {
     if (addresses && !selectedAddressId) {
@@ -266,6 +276,30 @@ export default function SchedulePage() {
   const toggleAddOn = (id: number) => {
     setSelectedAddOns(prev => ({ ...prev, [id]: !prev[id] }));
   };
+
+  if (dataError) {
+    return (
+      <div className="pb-24 max-w-lg mx-auto px-5 pt-5">
+        <div className="flex items-center gap-3 mb-6">
+          <button onClick={() => navigate("/")} data-testid="button-back" aria-label="Go back" className="hover:text-primary transition-colors active:scale-95">
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h1 className="text-lg font-bold">Schedule Pickup</h1>
+        </div>
+        <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-6 text-center">
+          <p className="text-sm font-semibold text-foreground mb-1">We couldn’t load your scheduling info</p>
+          <p className="text-xs text-muted-foreground mb-4">This is usually a network blip. Try again in a moment.</p>
+          <button
+            onClick={refetchAll}
+            data-testid="button-retry-schedule"
+            className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="pb-24 max-w-lg mx-auto">

@@ -2092,7 +2092,7 @@ export async function registerRoutes(
           </div>
           <p style="color:#888;font-size:12px;">This link expires in 1 hour. If you didn't request this, you can safely ignore this email.</p>
           <hr style="border:none;border-top:1px solid #eee;margin:24px 0;" />
-          <p style="color:#aaa;font-size:11px;text-align:center;">&copy; ${new Date().getFullYear()} Offload USA &mdash; Fresh laundry, delivered.</p>
+          <p style="color:#aaa;font-size:11px;text-align:center;">&copy; ${new Date().getFullYear()} Offload USA &mdash; Fresh clothes, zero hassle.</p>
         </div>`,
       }).then(() => {
         console.log(`[Email] Password reset sent to user#${user.id}`);
@@ -2141,9 +2141,25 @@ export async function registerRoutes(
   });
 
   // Session validation endpoint
-  app.get("/api/auth/me", requireAuth(), (req, res) => {
+  app.get("/api/auth/me", requireAuth(), async (req, res) => {
     const user = (req as any).currentUser;
-    res.json({ user: { ...user, password: undefined } });
+    // C-A1 support: surface vendorProfile / driverProfile so staff & driver SPAs don't
+    // have to fall back to a hardcoded vendorId/driverId. If lookup fails (e.g. the user
+    // is a vendor account whose vendor row was deleted) return null and let the client
+    // show a real error state rather than silently leaking another vendor's data.
+    let vendorProfile: any = null;
+    let driverProfile: any = null;
+    try {
+      if (["vendor", "laundromat", "manager", "staff"].includes(user.role)) {
+        vendorProfile = await (storage as any).getVendorByUserId?.(user.id) ?? null;
+      }
+      if (user.role === "driver") {
+        driverProfile = await (storage as any).getDriverByUserId?.(user.id) ?? null;
+      }
+    } catch (_err) {
+      // swallow — the client must handle null profile.
+    }
+    res.json({ user: { ...user, password: undefined, vendorProfile, driverProfile } });
   });
 
   // ─────────────────────────────────────────────────────────
@@ -3457,15 +3473,36 @@ export async function registerRoutes(
         timestamp: ts_,
       });
 
-      // ── STEP 1: Authorize payment ──
-      await storage.updateOrder(order.id, { paymentStatus: "authorized" });
-      await storage.createOrderEvent({
-        orderId: order.id,
-        eventType: "payment_authorized",
-        description: `Payment of $${finalTotal.toFixed(2)} authorized`,
-        actorRole: "system",
-        timestamp: now(),
-      });
+      // ── STEP 1: Payment status ──
+      // S4 fix: do NOT mark payment as "authorized" without a real Stripe PaymentIntent.
+      // The authenticated SPA order flow currently has no client-side card confirmation step
+      // (unlike the public /api/checkout/place path which creates a PaymentIntent and returns
+      // a clientSecret). Marking "authorized" here was a lie that could let unpaid orders
+      // proceed to fulfillment. Until the saved-payment-method flow is implemented (Stage 2),
+      // keep paymentStatus as "pending" and require manual capture by staff at delivery,
+      // OR (for zero-amount/demo) auto-authorize.
+      const isDemoOrZero = finalTotal <= 0 || !process.env.STRIPE_SECRET_KEY;
+      if (isDemoOrZero) {
+        await storage.updateOrder(order.id, { paymentStatus: "authorized" });
+        await storage.createOrderEvent({
+          orderId: order.id,
+          eventType: "payment_authorized",
+          description: finalTotal <= 0
+            ? "Zero-dollar order \u2014 no payment required"
+            : "Demo mode \u2014 payment auto-authorized",
+          actorRole: "system",
+          timestamp: now(),
+        });
+      } else {
+        // Keep paymentStatus = "pending" until charge is captured at delivery / via webhook.
+        await storage.createOrderEvent({
+          orderId: order.id,
+          eventType: "payment_pending",
+          description: `Payment of $${finalTotal.toFixed(2)} pending capture at delivery`,
+          actorRole: "system",
+          timestamp: now(),
+        });
+      }
 
       // ── STEP 2: Auto-confirm ──
       await storage.updateOrder(order.id, { status: "scheduled", confirmedAt: now() });
@@ -5031,14 +5068,18 @@ export async function registerRoutes(
           `Your dispute has been ${req.body.status}. ${req.body.resolution || ""}`,
           `/orders/${dispute.orderId}`
         );
-        if (req.body.refundAmount && req.body.refundAmount > 0) {
+        // Accept refund amount under any of the three field names the admin UIs currently send.
+        // C-B1 fix: offload-admin sends `creditAmount`, offload-admin alternate sends `resolutionAmount`.
+        // Without this alias the dispute was marked resolved but Stripe was never called — customer never got refunded.
+        const requestedRefund = Number(req.body.refundAmount ?? req.body.creditAmount ?? req.body.resolutionAmount ?? 0);
+        if (requestedRefund > 0) {
           const order = await storage.getOrder(dispute.orderId);
           if (order) {
             // Only attempt a Stripe refund (and mark refunded) if payment was actually captured.
             // No fallback marking — never claim refunded without proof.
             if (order.paymentStatus === "captured" || order.paymentStatus === "paid") {
               try {
-                const refundCents = Math.round(Number(req.body.refundAmount) * 100);
+                const refundCents = Math.round(requestedRefund * 100);
                 if (refundCents > 0) {
                   const refundResult = await issueStripeRefundForOrder(order, refundCents, "requested_by_customer", `dispute-${dispute.id}-${Date.now()}`);
                   if (refundResult?.errorStatus) {
@@ -5070,14 +5111,34 @@ export async function registerRoutes(
   });
 
   app.get("/api/orders/:id/review", requireAuth(), async (req, res) => {
-    const review = await storage.getReviewByOrder(Number(String(req.params.id)));
+    const currentUser = (req as any).currentUser;
+    const orderId = Number(String(req.params.id));
+    const order = await storage.getOrder(orderId);
+    if (!order) return res.status(404).json({ error: "Order not found" });
+    // S3 IDOR fix: only the order's customer, an admin, or a manager may read the review.
+    const isStaff = ["admin", "manager"].includes(currentUser.role);
+    if (!isStaff && order.customerId !== currentUser.id) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const review = await storage.getReviewByOrder(orderId);
     if (!review) return res.status(404).json({ error: "No review yet" });
     res.json(review);
   });
 
   app.post("/api/orders/:id/review", requireAuth(), async (req, res) => {
+    const currentUser = (req as any).currentUser;
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
+
+    // S2 IDOR fix: only the order's customer may post a review for that order.
+    if (order.customerId !== currentUser.id) {
+      return res.status(403).json({ error: "You can only review your own orders" });
+    }
+
+    // Reviews are only meaningful for completed/delivered orders.
+    if (!["delivered", "completed"].includes(order.status)) {
+      return res.status(400).json({ error: "Reviews are only available for completed orders" });
+    }
 
     // Check if already reviewed
     const existing = await storage.getReviewByOrder(order.id);
@@ -5085,7 +5146,8 @@ export async function registerRoutes(
 
     const review = await storage.createReview({
       orderId: order.id,
-      customerId: order.customerId,
+      // Always trust server-side currentUser, never req.body, for customer attribution.
+      customerId: currentUser.id,
       vendorId: order.vendorId || undefined,
       driverId: order.driverId || undefined,
       vendorRating: req.body.vendorRating,
@@ -8005,8 +8067,21 @@ export async function registerRoutes(
 
   // ── Generate receipt for an order ──
   app.get("/api/orders/:id/receipt", requireAuth(), async (req, res) => {
+    const currentUser = (req as any).currentUser;
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
+    // S1 IDOR fix: only the order's customer, the assigned vendor/laundromat,
+    // an admin or a manager may pull the receipt.
+    {
+      const role = currentUser.role;
+      const isStaff = ["admin", "manager"].includes(role);
+      let allowed = isStaff || order.customerId === currentUser.id;
+      if (!allowed && (role === "laundromat" || role === "vendor") && order.vendorId) {
+        const myVendor = await storage.getVendorByUserId(currentUser.id);
+        if (myVendor && myVendor.id === order.vendorId) allowed = true;
+      }
+      if (!allowed) return res.status(403).json({ error: "Forbidden" });
+    }
     if (!["delivered", "completed"].includes(order.status)) {
       return res.status(400).json({ error: "Receipt only available for completed orders" });
     }

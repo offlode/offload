@@ -1,5 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "wouter";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   ArrowLeft,
   DollarSign,
@@ -63,10 +64,47 @@ export default function ManagerPayouts() {
     queryKey: ["/api/manager/earnings"],
   });
 
-  const handleProcessPayout = (vendorName: string, amount: number) => {
-    toast({
-      title: "Payout processed",
-      description: `$${amount.toFixed(2)} payout initiated for ${vendorName}`,
+  // H2-B fix: wire to the real /api/vendor-payouts endpoint instead of firing a fake toast.
+  // The endpoint creates a payout record in status=pending; actually disbursing money
+  // is a Stage-2 Stripe Connect transfer (admin marks it completed in payouts.patch).
+  const processPayoutMutation = useMutation({
+    mutationFn: async ({ vendorId, amount }: { vendorId: number; amount: number }) => {
+      const res = await apiRequest("/api/vendor-payouts", {
+        method: "POST",
+        body: JSON.stringify({ vendorId, amount }),
+      });
+      return res.json();
+    },
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/manager/earnings"] });
+      toast({ title: "Payout queued", description: `$${vars.amount.toFixed(2)} queued for the next disbursement run.` });
+    },
+    onError: (err: any) => {
+      toast({ title: "Couldn’t queue payout", description: err?.message || "Please try again.", variant: "destructive" });
+    },
+  });
+
+  const handleProcessPayout = (vendorId: number, _vendorName: string, amount: number) => {
+    if (amount <= 0) return;
+    processPayoutMutation.mutate({ vendorId, amount });
+  };
+
+  const handleProcessAll = () => {
+    if (!earnings?.vendorBreakdown?.length) return;
+    const queueable = earnings.vendorBreakdown.filter(v => (v.pending > 0 ? v.pending : v.payout) > 0);
+    if (queueable.length === 0) {
+      toast({ title: "Nothing to queue", description: "No vendors with pending payouts." });
+      return;
+    }
+    Promise.all(
+      queueable.map(v => processPayoutMutation.mutateAsync({
+        vendorId: v.vendorId,
+        amount: v.pending > 0 ? v.pending : v.payout,
+      }))
+    ).then(() => {
+      toast({ title: "All eligible payouts queued", description: `${queueable.length} vendor payout(s) queued.` });
+    }).catch((err: any) => {
+      toast({ title: "Some payouts failed", description: err?.message || "Retry from the per-vendor button.", variant: "destructive" });
     });
   };
 
@@ -186,10 +224,11 @@ export default function ManagerPayouts() {
                         </div>
                         <button
                           data-testid={`btn-process-payout-${v.vendorId}`}
-                          onClick={() => handleProcessPayout(v.vendorName, v.pending > 0 ? v.pending : v.payout)}
-                          className="px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-medium hover:bg-primary/20 transition-colors"
+                          onClick={() => handleProcessPayout(v.vendorId, v.vendorName, v.pending > 0 ? v.pending : v.payout)}
+                          disabled={processPayoutMutation.isPending || (v.pending <= 0 && v.payout <= 0)}
+                          className="px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-medium hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                         >
-                          Process Payout
+                          {processPayoutMutation.isPending ? "Queuing…" : "Process Payout"}
                         </button>
                       </div>
 
@@ -218,15 +257,11 @@ export default function ManagerPayouts() {
             {/* Global Process All Payouts */}
             <button
               data-testid="btn-process-all-payouts"
-              onClick={() =>
-                toast({
-                  title: "All payouts processed",
-                  description: `$${earnings.totalVendorPayouts.toFixed(2)} in vendor payouts initiated`,
-                })
-              }
-              className="w-full py-3 rounded-full bg-green-500 text-white font-semibold text-sm hover:bg-green-600 transition-colors"
+              onClick={handleProcessAll}
+              disabled={processPayoutMutation.isPending}
+              className="w-full py-3 rounded-full bg-green-500 text-white font-semibold text-sm hover:bg-green-600 transition-colors disabled:opacity-50"
             >
-              Process All Pending Payouts
+              {processPayoutMutation.isPending ? "Queuing…" : "Process All Pending Payouts"}
             </button>
           </>
         ) : (
