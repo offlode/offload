@@ -7322,7 +7322,7 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    const transactions = await storage.getPaymentTransactionsByOrder(orderId);
+    const transactionsRaw = await storage.getPaymentTransactionsByOrder(orderId);
     const total = order.finalPrice || order.total || 0;
     const platformFee = Math.round(total * PLATFORM_FEE_RATE * 100) / 100;
     const remaining = total - platformFee;
@@ -7333,6 +7333,29 @@ export async function registerRoutes(
     const isAdminMgr = isAdminOrManager(currentUser);
     const isVendor = currentUser.role === "laundromat" || currentUser.role === "vendor";
     const isDriver = currentUser.role === "driver";
+
+    // Sanitize each transaction row so split columns are not leaked to roles that
+    // should not see them. Admin/manager see everything; vendor/driver see only
+    // their own share columns; customer sees neither.
+    const sanitizeTxn = (t: any) => {
+      if (isAdminMgr) return t;
+      const out: any = { ...t };
+      if (isVendor) {
+        delete out.platformFee;
+        delete out.driverShare;
+      } else if (isDriver) {
+        delete out.platformFee;
+        delete out.vendorShare;
+      } else {
+        // customer (or any other role): strip all split columns
+        delete out.platformFee;
+        delete out.vendorShare;
+        delete out.driverShare;
+      }
+      return out;
+    };
+    const transactions = Array.isArray(transactionsRaw) ? transactionsRaw.map(sanitizeTxn) : transactionsRaw;
+
     const payload: any = { orderId, paymentStatus: order.paymentStatus, total, transactions, demoMode: !hasStripe };
     if (isAdminMgr) {
       payload.platformFee = platformFee;
