@@ -1888,6 +1888,18 @@ export async function registerRoutes(
     });
   });
 
+  // Wave 2: Expose Stripe publishable key to SPA for Elements integration.
+  // Returns empty string when not configured so clients can detect availability
+  // without leaking server status. NEVER exposes the secret key.
+  app.get("/api/config/stripe", (_req, res) => {
+    const pk = process.env.STRIPE_PUBLISHABLE_KEY || "";
+    res.json({
+      publishableKey: pk,
+      configured: pk.startsWith("pk_"),
+      mode: pk.startsWith("pk_live_") ? "live" : (pk.startsWith("pk_test_") ? "test" : "none"),
+    });
+  });
+
   // ── REQUEST BODY SIZE LIMIT ──
   app.use("/api/", (req, res, next) => {
     const contentLength = parseInt(req.headers["content-length"] || "0", 10);
