@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect } from "react";
 import type { User } from "@shared/schema";
-import { apiRequest, setCurrentUserId, setAuthToken } from "@/lib/queryClient";
+import { apiRequest, setCurrentUserId, setAuthToken, queryClient, setOnUnauthorized } from "@/lib/queryClient";
 import { useIOSPushRegistration } from "@/hooks/use-ios-push-registration";
 
 type AuthContextType = {
@@ -30,6 +30,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setCurrentUserId(user ? user.id : null);
   }, [user]);
 
+  // Global 401 interceptor: server returned 401 on an authenticated request
+  // (e.g. expired session). Clear token, clear cache, redirect to /login.
+  useEffect(() => {
+    setOnUnauthorized(() => {
+      try {
+        setUserState(null);
+        setCurrentUserId(null);
+        setAuthToken(null);
+        queryClient.clear();
+      } finally {
+        if (typeof window !== "undefined") {
+          const path = window.location.pathname;
+          if (path !== "/login" && path !== "/register" && path !== "/" && !path.startsWith("/auth")) {
+            window.location.href = "/login";
+          }
+        }
+      }
+    });
+    return () => setOnUnauthorized(null);
+  }, []);
+
   const setUser = useCallback((u: User | null) => {
     setUserState(u);
     setCurrentUserId(u ? u.id : null);
@@ -46,6 +67,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setUser(null);
       setAuthToken(null);
+      try {
+        queryClient.clear();
+      } catch (_) {
+        // Defensive: never let cache clearing block logout completion
+      }
     }
   }, [setUser]);
 

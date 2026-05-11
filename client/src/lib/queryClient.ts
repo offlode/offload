@@ -48,6 +48,50 @@ export function getCurrentUserId(): number | null {
   return _currentUserId;
 }
 
+// Global 401 interceptor — auth context registers a handler that clears
+// session token, clears the React Query cache, and redirects to /login.
+// Endpoints that legitimately may return 401 (e.g. probing /api/auth/me
+// at app startup) can opt out by including them in the bypass list below.
+type UnauthorizedHandler = () => void;
+let _onUnauthorized: UnauthorizedHandler | null = null;
+let _suppressUnauthorized = false;
+
+export function setOnUnauthorized(handler: UnauthorizedHandler | null) {
+  _onUnauthorized = handler;
+}
+
+export function suppressUnauthorizedHandler(suppress: boolean) {
+  _suppressUnauthorized = suppress;
+}
+
+// Paths that are allowed to return 401 without triggering global logout.
+// These are auth-probing endpoints called before/after login.
+const UNAUTHORIZED_BYPASS_PATHS = [
+  "/api/auth/me",
+  "/api/auth/login",
+  "/api/auth/register",
+  "/api/auth/logout",
+  "/api/auth/forgot-password",
+  "/api/auth/reset-password",
+];
+
+function shouldBypassUnauthorized(path: string): boolean {
+  if (_suppressUnauthorized) return true;
+  return UNAUTHORIZED_BYPASS_PATHS.some((p) => path.startsWith(p));
+}
+
+function handleUnauthorizedResponse(path: string, status: number) {
+  if (status !== 401) return;
+  if (shouldBypassUnauthorized(path)) return;
+  if (_onUnauthorized) {
+    try {
+      _onUnauthorized();
+    } catch (_) {
+      // Never let handler errors crash the request pipeline
+    }
+  }
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
@@ -71,6 +115,9 @@ export async function apiRequest(path: string, options?: RequestInit): Promise<R
     credentials: "include",
     headers,
   });
+  if (res.status === 401) {
+    handleUnauthorizedResponse(path, res.status);
+  }
   await throwIfResNotOk(res);
   return res;
 }
@@ -91,8 +138,14 @@ export const getQueryFn: <T>(options: {
 
     const res = await fetch(`${API_BASE}${path}`, { headers, credentials: "include" });
 
-    if (unauthorizedBehavior === "returnNull" && res.status === 401) {
-      return null;
+    if (res.status === 401) {
+      // Bypass global handler only when caller opts into "returnNull" semantics
+      // (still trigger handler for protected query endpoints expecting auth)
+      if (unauthorizedBehavior === "throw") {
+        handleUnauthorizedResponse(path, res.status);
+      } else {
+        return null;
+      }
     }
 
     await throwIfResNotOk(res);

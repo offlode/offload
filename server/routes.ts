@@ -715,6 +715,42 @@ function getOrderOwnershipAllowed(order: any, user: any, driverRecord?: any, ven
   return false;
 }
 
+// Convenience: fetches driver/vendor profiles and calls getOrderOwnershipAllowed.
+// Use this when you don't already have the profile records loaded.
+async function canAccessOrder(order: any, user: any): Promise<boolean> {
+  if (!order || !user) return false;
+  const role = user.role;
+  if (role === "admin" || role === "manager" || role === "support") return true;
+  if (role === "customer") return order.customerId === user.id;
+  if (role === "driver") {
+    const dp = await storage.getDriverByUserId(user.id);
+    return !!(dp && order.driverId === dp.id);
+  }
+  if (role === "laundromat" || role === "vendor") {
+    const vp = await storage.getVendorByUserId(user.id);
+    return !!(vp && order.vendorId === vp.id);
+  }
+  return false;
+}
+
+// Convenience: verify the requesting user owns a driver profile by profile id.
+async function ownsDriverProfile(profileId: number, user: any): Promise<boolean> {
+  if (!user) return false;
+  if (user.role === "admin" || user.role === "manager") return true;
+  if (user.role !== "driver") return false;
+  const dp = await storage.getDriverByUserId(user.id);
+  return !!(dp && dp.id === Number(profileId));
+}
+
+// Convenience: verify the requesting user owns a vendor profile by profile id (or order.vendorId).
+async function ownsVendorProfile(vendorProfileId: number, user: any): Promise<boolean> {
+  if (!user) return false;
+  if (user.role === "admin" || user.role === "manager") return true;
+  if (!(user.role === "laundromat" || user.role === "vendor")) return false;
+  const vp = await storage.getVendorByUserId(user.id);
+  return !!(vp && vp.id === Number(vendorProfileId));
+}
+
 // ════════════════════════════════════════════════════════════════
 //  FINANCIAL ENGINE
 // ════════════════════════════════════════════════════════════════
@@ -2247,8 +2283,30 @@ export async function registerRoutes(
   //  VENDORS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/vendors", requireAuth(), async (_req, res) => {
-    res.json(await storage.getVendors());
+  app.get("/api/vendors", requireAuth(), async (req, res) => {
+    // F19: customers see only a sanitized view (no internal owner/financial fields).
+    const cu = (req as any).currentUser;
+    const all = await storage.getVendors();
+    if (isAdminOrManager(cu) || cu.role === "laundromat" || cu.role === "vendor" || cu.role === "support") {
+      return res.json(all);
+    }
+    // Customer / driver view
+    const sanitized = all
+      .filter((v: any) => (v.status ?? "active") === "active")
+      .map((v: any) => ({
+        id: v.id,
+        name: v.name,
+        address: v.address,
+        city: v.city,
+        state: v.state,
+        zip: v.zip,
+        rating: v.rating,
+        offersDryCleaning: v.offersDryCleaning,
+        offersComforters: v.offersComforters,
+        offersCommercial: v.offersCommercial,
+        operatingHours: v.operatingHours,
+      }));
+    res.json(sanitized);
   });
 
   app.get("/api/vendors/:id", requireAuth(["admin", "manager", "laundromat", "vendor"]), async (req, res) => {
@@ -2301,13 +2359,55 @@ export async function registerRoutes(
   });
 
   app.get("/api/drivers/:id", requireAuth(), async (req, res) => {
+    // F18: restrict to driver themselves, admin/manager, or a customer with an active order assigned to this driver.
     const d = await storage.getDriver(Number(String(req.params.id)));
     if (!d) return res.status(404).json({ error: "Driver not found" });
-    res.json(d);
+    const cu = (req as any).currentUser;
+    if (isAdminOrManager(cu) || cu.role === "support") return res.json(d);
+    if (cu.role === "driver") {
+      const me = await storage.getDriverByUserId(cu.id);
+      if (me && me.id === d.id) return res.json(d);
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    if (cu.role === "customer") {
+      // Allow only if the customer has an active order assigned to this driver. Return a sanitized view.
+      const myOrders = await storage.getOrdersByCustomer(cu.id);
+      const hasLink = myOrders.some(o => o.driverId === d.id && !["delivered", "cancelled"].includes(o.status));
+      if (!hasLink) return res.status(403).json({ error: "Forbidden" });
+      return res.json({
+        id: d.id,
+        name: d.name,
+        rating: (d as any).rating ?? null,
+        vehicleType: (d as any).vehicleType ?? null,
+        status: (d as any).status ?? null,
+      });
+    }
+    if (cu.role === "laundromat" || cu.role === "vendor") {
+      // Vendor can see the driver only if currently handling an order linking them.
+      const vp = await storage.getVendorByUserId(cu.id);
+      if (!vp) return res.status(403).json({ error: "Forbidden" });
+      const allOrders = await storage.getOrders();
+      const hasLink = allOrders.some(o => o.vendorId === vp.id && o.driverId === d.id);
+      if (!hasLink) return res.status(403).json({ error: "Forbidden" });
+      return res.json({
+        id: d.id,
+        name: d.name,
+        rating: (d as any).rating ?? null,
+        vehicleType: (d as any).vehicleType ?? null,
+        status: (d as any).status ?? null,
+      });
+    }
+    return res.status(403).json({ error: "Forbidden" });
   });
 
   app.get("/api/drivers/:id/stats", requireAuth(["driver", "admin", "manager"]), async (req, res) => {
-    res.json(await storage.getDriverStats(Number(String(req.params.id))));
+    // F8: driver ownership check.
+    const __statsId = Number(String(req.params.id));
+    const __cuStats = (req as any).currentUser;
+    if (!(await ownsDriverProfile(__statsId, __cuStats))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    res.json(await storage.getDriverStats(__statsId));
   });
 
   app.post("/api/drivers", requireAuth(["admin", "manager"]), async (req, res) => {
@@ -2360,11 +2460,17 @@ export async function registerRoutes(
 
   // Driver go online/offline
   app.patch("/api/drivers/:id/status", requireAuth(["driver", "admin"]), async (req, res) => {
+    // F7: driver ownership check.
+    const __sid = Number(String(req.params.id));
+    const __cuS = (req as any).currentUser;
+    if (!(await ownsDriverProfile(__sid, __cuS))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const { status } = req.body;
     if (!["available", "busy", "offline"].includes(status)) {
       return res.status(400).json({ error: "Invalid status" });
     }
-    const updated = await storage.updateDriver(Number(String(req.params.id)), { status });
+    const updated = await storage.updateDriver(__sid, { status });
     if (!updated) return res.status(404).json({ error: "Driver not found" });
     res.json(updated);
   });
@@ -4438,6 +4544,11 @@ export async function registerRoutes(
   app.get("/api/orders/:id/eta", requireAuth(), async (req, res) => {
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
+    // F9: ownership check.
+    {
+      const __cu = (req as any).currentUser;
+      if (!(await canAccessOrder(order, __cu))) return res.status(403).json({ error: "Forbidden" });
+    }
     if (order.status === "delivered" || order.status === "cancelled") {
       return res.json({ message: "Order is no longer active", status: order.status, deliveredAt: order.deliveredAt });
     }
@@ -4455,9 +4566,15 @@ export async function registerRoutes(
   //  STAFF QUALITY STATS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/staff/quality-stats", requireAuth(), async (req, res) => {
+  app.get("/api/staff/quality-stats", requireAuth(["admin", "manager", "laundromat", "vendor", "support"]), async (req, res) => {
+    // F21: restrict role + vendor scope (a vendor can only see their own stats).
     const vendorId = Number(req.query.vendorId);
     if (!vendorId) return res.status(400).json({ error: "vendorId required" });
+    const cu = (req as any).currentUser;
+    if (cu.role === "laundromat" || cu.role === "vendor") {
+      const vp = await storage.getVendorByUserId(cu.id);
+      if (!vp || vp.id !== vendorId) return res.status(403).json({ error: "Forbidden" });
+    }
 
     const allOrders = (await storage.getOrders()).filter(o => o.vendorId === vendorId);
     const completedOrders = allOrders.filter(o =>
@@ -4536,6 +4653,13 @@ export async function registerRoutes(
 
   // Staff records intake weight
   app.post("/api/orders/:id/intake", requireAuth(["laundromat", "vendor", "admin"]), async (req, res) => {
+    // F5: vendor ownership check.
+    {
+      const __cu = (req as any).currentUser;
+      const __ord = await storage.getOrder(Number(String(req.params.id)));
+      if (!__ord) return res.status(404).json({ error: "Order not found" });
+      if (!(await canAccessOrder(__ord, __cu))) return res.status(403).json({ error: "Forbidden" });
+    }
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -4563,6 +4687,13 @@ export async function registerRoutes(
 
   // Staff records output weight (after wash)
   app.post("/api/orders/:id/output-weight", requireAuth(["laundromat", "vendor", "admin"]), async (req, res) => {
+    // F5: vendor ownership check.
+    {
+      const __cu = (req as any).currentUser;
+      const __ord = await storage.getOrder(Number(String(req.params.id)));
+      if (!__ord) return res.status(404).json({ error: "Order not found" });
+      if (!(await canAccessOrder(__ord, __cu))) return res.status(403).json({ error: "Forbidden" });
+    }
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -4619,6 +4750,13 @@ export async function registerRoutes(
 
   // Driver records dirty weight at pickup
   app.post("/api/orders/:id/record-dirty-weight", requireAuth(["driver", "laundromat", "vendor", "admin"]), async (req, res) => {
+    // F5: order participant check (driver assigned OR vendor owner OR admin).
+    {
+      const __cu = (req as any).currentUser;
+      const __ord = await storage.getOrder(Number(String(req.params.id)));
+      if (!__ord) return res.status(404).json({ error: "Order not found" });
+      if (!(await canAccessOrder(__ord, __cu))) return res.status(403).json({ error: "Forbidden" });
+    }
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -4642,6 +4780,13 @@ export async function registerRoutes(
 
   // Staff records clean weight after wash — auto-calculates overage and final price
   app.post("/api/orders/:id/record-clean-weight", requireAuth(["laundromat", "vendor", "admin"]), async (req, res) => {
+    // F5: vendor ownership check.
+    {
+      const __cu = (req as any).currentUser;
+      const __ord = await storage.getOrder(Number(String(req.params.id)));
+      if (!__ord) return res.status(404).json({ error: "Order not found" });
+      if (!(await canAccessOrder(__ord, __cu))) return res.status(403).json({ error: "Forbidden" });
+    }
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -4703,6 +4848,13 @@ export async function registerRoutes(
 
   // Weight comparison breakdown
   app.get("/api/orders/:id/weight-comparison", requireAuth(), async (req, res) => {
+    // F10: ownership check.
+    {
+      const __cu = (req as any).currentUser;
+      const __ord = await storage.getOrder(Number(String(req.params.id)));
+      if (!__ord) return res.status(404).json({ error: "Order not found" });
+      if (!(await canAccessOrder(__ord, __cu))) return res.status(403).json({ error: "Forbidden" });
+    }
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -5106,8 +5258,23 @@ export async function registerRoutes(
   //  REVIEWS
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/reviews", requireAuth(), async (_req, res) => {
-    res.json(await storage.getReviews());
+  app.get("/api/reviews", requireAuth(), async (req, res) => {
+    // F20: scope reviews to caller.
+    const cu = (req as any).currentUser;
+    const all = await storage.getReviews();
+    if (isAdminOrManager(cu) || cu.role === "support") return res.json(all);
+    if (cu.role === "customer") {
+      return res.json(all.filter((r: any) => r.customerId === cu.id));
+    }
+    if (cu.role === "laundromat" || cu.role === "vendor") {
+      const vp = await storage.getVendorByUserId(cu.id);
+      return res.json(vp ? all.filter((r: any) => r.vendorId === vp.id) : []);
+    }
+    if (cu.role === "driver") {
+      const dp = await storage.getDriverByUserId(cu.id);
+      return res.json(dp ? all.filter((r: any) => r.driverId === dp.id) : []);
+    }
+    return res.json([]);
   });
 
   app.get("/api/orders/:id/review", requireAuth(), async (req, res) => {
@@ -5430,13 +5597,14 @@ export async function registerRoutes(
       .filter(r => r.status === "rewarded")
       .reduce((sum, r) => sum + (r.referrerReward || 0), 0);
 
-    // Enrich referrals with user info
+    // Enrich referrals with user info. F16: only admin/manager sees referee email (PII).
+    const isAdmin = cuR.role === "admin" || cuR.role === "manager";
     const enrichedReferrals = asReferrer.map(async r => {
-  const referee = await storage.getUser(r.refereeId);
+      const referee = await storage.getUser(r.refereeId);
       return {
         ...r,
         refereeName: referee ? referee.name : "Unknown",
-        refereeEmail: referee ? referee.email : null,
+        ...(isAdmin ? { refereeEmail: referee ? referee.email : null } : {}),
       };
     });
 
@@ -5459,12 +5627,15 @@ export async function registerRoutes(
   });
 
   app.post("/api/referrals/apply", requireAuth(), async (req, res) => {
-    const { userId, referralCode } = req.body;
-    if (!userId || !referralCode) {
-      return res.status(400).json({ error: "userId and referralCode are required" });
+    // F1: ALWAYS derive userId from session — never trust client body.
+    const currentUser = (req as any).currentUser;
+    const { referralCode } = req.body;
+    if (!referralCode) {
+      return res.status(400).json({ error: "referralCode is required" });
     }
+    const userId = currentUser.id;
 
-    const user = await storage.getUser(Number(userId));
+    const user = await storage.getUser(userId);
     if (!user) return res.status(404).json({ error: "User not found" });
     if (user.referredBy) {
       return res.status(409).json({ error: "User has already been referred" });
@@ -5476,14 +5647,14 @@ export async function registerRoutes(
     if (!referrer) {
       return res.status(404).json({ error: "Invalid referral code" });
     }
-    if (referrer.id === Number(userId)) {
+    if (referrer.id === userId) {
       return res.status(400).json({ error: "Cannot refer yourself" });
     }
 
     // Create referral record
     const referral = await storage.createReferral({
       referrerId: referrer.id,
-      refereeId: Number(userId),
+      refereeId: userId,
       status: "pending",
       referrerReward: 10,
       refereeReward: 10,
@@ -5491,7 +5662,7 @@ export async function registerRoutes(
     });
 
     // Update user's referredBy
-    await storage.updateUser(Number(userId), { referredBy: referrer.id });
+    await storage.updateUser(userId, { referredBy: referrer.id });
 
     // Give referee 100 bonus points
     await storage.updateUser(Number(userId), {
@@ -6804,7 +6975,13 @@ export async function registerRoutes(
     const ts_ = now();
 
     let session;
-    if (sessionId) session = await storage.getChatSession(Number(sessionId));
+    if (sessionId) {
+      session = await storage.getChatSession(Number(sessionId));
+      // F24: ensure the session belongs to the caller (or admin).
+      if (session && session.userId !== userId && !isAdminOrManager(currentUser)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+    }
     if (!session) {
       const newMessages = [
         { role: "user", content: message, timestamp: ts_ },
@@ -6849,10 +7026,10 @@ export async function registerRoutes(
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
+    // F4: namespace-correct ownership (driver/vendor profile, not user id).
     const currentUser = (req as any).currentUser;
-    const isAssigned = order.driverId === currentUser.id || order.vendorId === currentUser.id;
-    if (!isAssigned && !["admin", "manager"].includes(currentUser.role)) {
-      return res.status(403).json({ error: "Access denied" });
+    if (!(await canAccessOrder(order, currentUser))) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     const { weight, deviceName, rawReading, taredReading, weightType, actorId } = req.body;
@@ -7136,9 +7313,14 @@ export async function registerRoutes(
   });
 
   app.get("/api/payments/order/:id", requireAuth(), async (req, res) => {
+    // F2: ownership check + redact financial splits for non-admin roles.
     const orderId = Number(String(req.params.id));
     const order = await storage.getOrder(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
+    const currentUser = (req as any).currentUser;
+    if (!(await canAccessOrder(order, currentUser))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     const transactions = await storage.getPaymentTransactionsByOrder(orderId);
     const total = order.finalPrice || order.total || 0;
@@ -7147,7 +7329,21 @@ export async function registerRoutes(
     const vendorShare = Math.round(remaining * VENDOR_SHARE * 100) / 100;
     const driverShare = Math.round(remaining * DRIVER_SHARE * 100) / 100;
 
-    res.json({ orderId, paymentStatus: order.paymentStatus, total, platformFee, vendorShare, driverShare, transactions, demoMode: !hasStripe });
+    // Only admin/manager see internal splits. Vendors see their own share. Drivers see their own. Customer sees neither.
+    const isAdminMgr = isAdminOrManager(currentUser);
+    const isVendor = currentUser.role === "laundromat" || currentUser.role === "vendor";
+    const isDriver = currentUser.role === "driver";
+    const payload: any = { orderId, paymentStatus: order.paymentStatus, total, transactions, demoMode: !hasStripe };
+    if (isAdminMgr) {
+      payload.platformFee = platformFee;
+      payload.vendorShare = vendorShare;
+      payload.driverShare = driverShare;
+    } else if (isVendor) {
+      payload.vendorShare = vendorShare;
+    } else if (isDriver) {
+      payload.driverShare = driverShare;
+    }
+    res.json(payload);
   });
 
   app.post("/api/payments/setup-connect", requireAuth(), (_req, res) => {
@@ -7336,10 +7532,10 @@ export async function registerRoutes(
     const order = await storage.getOrder(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
 
+    // F4: namespace-correct ownership (driver/vendor profile, not user id).
     const currentUser = (req as any).currentUser;
-    const isAssigned = order.driverId === currentUser.id || order.vendorId === currentUser.id || order.customerId === currentUser.id;
-    if (!isAssigned && !["admin", "manager"].includes(currentUser.role)) {
-      return res.status(403).json({ error: "Access denied" });
+    if (!(await canAccessOrder(order, currentUser))) {
+      return res.status(403).json({ error: "Forbidden" });
     }
     if (currentUser.role === "customer" && ["pickup_proof", "delivery_proof"].includes(req.body.type)) {
       return res.status(403).json({ error: "Customers cannot upload proof photos" });
@@ -7486,6 +7682,12 @@ export async function registerRoutes(
     }
     const order = await storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
+
+    // F6: ownership check — only an order participant can request an upload URL.
+    const __cu = (req as any).currentUser;
+    if (!(await canAccessOrder(order, __cu))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     const key = `orders/${orderId}/${type}/${Date.now()}-${randomBytes(8).toString("hex")}`;
     try {
@@ -7647,7 +7849,8 @@ export async function registerRoutes(
   //  HEALTH CHECK
   // ─────────────────────────────────────────────────────────
 
-  app.get("/api/health", async (_req, res) => {
+  // F23: aggregate counts moved to /api/health/deep (admin-gated). Public /api/health is the basic one above.
+  app.get("/api/health/deep", requireAuth(["admin", "manager"]), async (_req, res) => {
     const allOrders = await storage.getOrders();
     const allVendors = await storage.getVendors();
     const allDrivers = await storage.getDrivers();
@@ -7885,6 +8088,14 @@ export async function registerRoutes(
 
   // ── Get FSM info for an order ──
   app.get("/api/orders/:id/fsm", requireAuth(), async (req, res) => {
+    // F3: ownership check.
+    const __orderId = Number(String(req.params.id));
+    const __order = await storage.getOrder(__orderId);
+    if (!__order) return res.status(404).json({ error: "Order not found" });
+    const __cu = (req as any).currentUser;
+    if (!(await canAccessOrder(__order, __cu))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -7910,16 +8121,10 @@ export async function registerRoutes(
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    // BOLA: ownership check
+    // F12: full ownership (customer, driver, vendor, admin/manager/support).
     const cu = (req as any).currentUser;
-    if (cu.role === "customer" && order.customerId !== cu.id) {
-      return res.status(403).json({ error: "Access denied" });
-    }
-    if (cu.role === "driver") {
-      const drv = await storage.getDriverByUserId(cu.id);
-      if (!drv || order.driverId !== drv.id) {
-        return res.status(403).json({ error: "Access denied" });
-      }
+    if (!(await canAccessOrder(order, cu))) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     const history = await storage.getOrderStatusHistory(Number(String(req.params.id)));
@@ -7936,16 +8141,10 @@ export async function registerRoutes(
     const order = await storage.getOrder(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    // BOLA: only participants can read messages
+    // F13: full ownership.
     const cu = (req as any).currentUser;
-    if (cu.role === "customer" && order.customerId !== cu.id) {
-      return res.status(403).json({ error: "Access denied" });
-    }
-    if (cu.role === "driver") {
-      const drv = await storage.getDriverByUserId(cu.id);
-      if (!drv || order.driverId !== drv.id) {
-        return res.status(403).json({ error: "Access denied" });
-      }
+    if (!(await canAccessOrder(order, cu))) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     const messages = await storage.getMessagesByOrder(orderId);
@@ -8798,10 +8997,10 @@ export async function registerRoutes(
     const order = await storage.getOrder(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    // BOLA: ownership check
+    // F11: full ownership (customer/driver/vendor/admin/support).
     const cu = (req as any).currentUser;
-    if (cu.role === "customer" && order.customerId !== cu.id) {
-      return res.status(403).json({ error: "Access denied" });
+    if (!(await canAccessOrder(order, cu))) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     const events = await storage.getOrderEvents(orderId);
@@ -9095,7 +9294,8 @@ export async function registerRoutes(
       if (app.status === "approved") return res.status(409).json({ error: "Already approved" });
       if (app.status === "declined") return res.status(409).json({ error: "Already declined — cannot approve" });
 
-      const reviewerId = (req as any).user?.id;
+      // F17: use currentUser (the codebase-wide pattern), not req.user.
+      const reviewerId = (req as any).currentUser?.id;
 
       // Check if user already exists with this email
       let user = await storage.getUserByEmail(app.email);
@@ -9190,7 +9390,8 @@ export async function registerRoutes(
         isDriver ? "/driver" : "/",
       );
 
-      res.json({ ok: true, userId: user.id, driverId, vendorId, tempPassword });
+      // F17: do NOT echo tempPassword in JSON response. It is delivered via email only.
+      res.json({ ok: true, userId: user.id, driverId, vendorId, tempPasswordSent: !!tempPassword });
     } catch (err: any) {
       console.error("[PartnerApp] approve error:", err);
       res.status(500).json({ error: err.message || "Failed to approve application" });
@@ -9210,7 +9411,8 @@ export async function registerRoutes(
       if (app.status === "approved") return res.status(409).json({ error: "Already approved — cannot decline" });
       if (app.status === "declined") return res.status(409).json({ error: "Already declined" });
 
-      const reviewerId = (req as any).user?.id;
+      // F17: use currentUser pattern.
+      const reviewerId = (req as any).currentUser?.id;
       await storage.updatePartnerApplication(id, {
         status: "declined",
         reviewedByUserId: reviewerId,
