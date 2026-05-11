@@ -8973,15 +8973,7 @@ export async function registerRoutes(
 
   // ── Request ID middleware is already in place via rate limiter ──
   // ── Structured logging helper ──
-  app.get("/api/admin/audit-log", requireAuth(["admin"]), async (req, res) => {
-    const { limit, offset, action } = req.query;
-    const allLogs = await storage.getPricingAuditLog(Number(limit) || 100);
-    const filtered = action ? allLogs.filter((l: any) => l.action === action) : allLogs;
-    res.json({
-      total: filtered.length,
-      entries: filtered,
-    });
-  });
+  // (Removed stale Wave 3 /api/admin/audit-log alias — superseded by Wave 4 admin_audit_log endpoint below.)
 
   // ═══════════════════════════════════════════════════════════════
   //  STRIPE WEBHOOK ENDPOINT
