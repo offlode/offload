@@ -157,6 +157,7 @@ export default function DriverNavigation() {
         <Link href={order ? `/driver/order/${order.id}` : "/driver"}>
           <button
             data-testid="btn-back"
+            aria-label="Go back"
             className="w-9 h-9 rounded-full bg-card/90 backdrop-blur-sm flex items-center justify-center border border-white/10"
           >
             <ArrowLeft className="w-4 h-4 text-white" />

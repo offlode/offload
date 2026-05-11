@@ -84,7 +84,7 @@ function LandingView() {
           <Shirt className="w-10 h-10 text-primary" />
         </div>
         <h1 className="text-3xl font-bold mb-3" data-testid="text-landing-title">
-          Fresh laundry,<br />delivered.
+          Fresh clothes,<br />zero hassle.
         </h1>
         <p className="text-muted-foreground text-sm leading-relaxed max-w-xs mx-auto">
           We pick up, wash with care, and deliver back — fresh and folded. No trips to the laundromat.

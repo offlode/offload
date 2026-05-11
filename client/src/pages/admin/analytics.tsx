@@ -14,7 +14,7 @@ import { AdminLayout } from "./layout";
 // Chart colors matching CSS variable hex equivalents
 const CHART_COLORS = {
   primary: "#5B4BC4",
-  accent: "#7C3AED",
+  accent: "#5B4BC4",
   blue: "#3B82F6",
   amber: "#F59E0B",
   red: "#EF4444",

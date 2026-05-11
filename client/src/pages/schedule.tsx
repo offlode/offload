@@ -155,7 +155,7 @@ export default function SchedulePage() {
     return sum + (selectedAddOns[addon.id] ? addon.price : 0);
   }, 0);
 
-  const deliveryFee = deliverySpeed === "same_day" ? 9.99 : deliverySpeed === "24h" ? 5.99 : 0;
+  const deliveryFee = deliverySpeed === "same_day" ? 12.99 : deliverySpeed === "24h" ? 5.99 : 0;
   const subtotal = tierPrice + addOnsTotal;
   const tax = Math.round(subtotal * 0.07 * 100) / 100;
   const total = Math.round((subtotal + tax + deliveryFee) * 100) / 100;
@@ -268,7 +268,7 @@ export default function SchedulePage() {
     <div className="pb-24 max-w-lg mx-auto">
       {/* Header */}
       <div className="flex items-center gap-3 px-5 pt-5 pb-4">
-        <button onClick={() => navigate("/")} data-testid="button-back" className="hover:text-primary transition-colors active:scale-95">
+        <button onClick={() => navigate("/")} data-testid="button-back" aria-label="Go back" className="hover:text-primary transition-colors active:scale-95">
           <ArrowLeft className="w-5 h-5" />
         </button>
         <h1 className="text-lg font-bold">Schedule Pickup</h1>
@@ -666,6 +666,7 @@ export default function SchedulePage() {
       <button
         onClick={() => setVoiceOrderOpen(true)}
         data-testid="button-voice-order"
+        aria-label="Voice order"
         className="fixed bottom-24 right-4 w-14 h-14 rounded-full bg-primary text-white shadow-lg flex items-center justify-center hover:bg-primary/85 transition-all active:scale-95 z-40"
       >
         <Mic className="w-6 h-6" />

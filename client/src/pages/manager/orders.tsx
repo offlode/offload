@@ -139,12 +139,14 @@ export default function ManagerOrders() {
             <button
               data-testid="btn-search"
               onClick={() => setSearchOpen(!searchOpen)}
+              aria-label="Search orders"
               className="w-9 h-9 rounded-full bg-card flex items-center justify-center border border-white/5"
             >
               <Search className="w-4 h-4 text-gray-400" />
             </button>
             <button
               data-testid="btn-filter"
+              aria-label="Filter orders"
               className="w-9 h-9 rounded-full bg-card flex items-center justify-center border border-white/5"
             >
               <SlidersHorizontal className="w-4 h-4 text-gray-400" />

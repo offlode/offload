@@ -221,6 +221,7 @@ export default function OrderDetailPage() {
   const [messageText, setMessageText] = useState("");
   const [supportDialogOpen, setSupportDialogOpen] = useState(false);
   const [supportMessage, setSupportMessage] = useState("");
+  const [supportSending, setSupportSending] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [disputeSheetOpen, setDisputeSheetOpen] = useState(false);
   const [disputeReason, setDisputeReason] = useState("");
@@ -1096,15 +1097,27 @@ export default function OrderDetailPage() {
           </div>
           <DialogFooter>
             <Button
-              disabled={!supportMessage.trim()}
-              onClick={() => {
-                setSupportDialogOpen(false);
-                setSupportMessage("");
-                toast({ title: "Message sent", description: "Our support team will respond shortly." });
+              disabled={!supportMessage.trim() || supportSending}
+              onClick={async () => {
+                setSupportSending(true);
+                try {
+                  await apiRequest("/api/messages", {
+                    method: "POST",
+                    body: JSON.stringify({ orderId: Number(orderId), content: supportMessage, messageType: "support" }),
+                  });
+                  queryClient.invalidateQueries({ queryKey: [`/api/orders/${orderId}/messages`] });
+                  setSupportDialogOpen(false);
+                  setSupportMessage("");
+                  toast({ title: "Message sent", description: "Our support team will respond shortly." });
+                } catch (err: any) {
+                  toast({ title: "Error", description: err.message || "Failed to send message", variant: "destructive" });
+                } finally {
+                  setSupportSending(false);
+                }
               }}
               data-testid="button-submit-support"
             >
-              Send Message
+              {supportSending ? "Sending..." : "Send Message"}
             </Button>
           </DialogFooter>
         </DialogContent>

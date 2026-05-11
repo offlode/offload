@@ -353,6 +353,7 @@ export default function DriverOrderDetail() {
           <Link href="/driver">
             <button
               data-testid="btn-back"
+              aria-label="Go back"
               className="w-9 h-9 rounded-full bg-card flex items-center justify-center border border-white/5"
             >
               <ArrowLeft className="w-4 h-4 text-white" />
@@ -399,6 +400,7 @@ export default function DriverOrderDetail() {
               <a href={`tel:${customer.phone}`}>
                 <button
                   data-testid="btn-call-customer"
+                  aria-label="Call customer"
                   className="w-10 h-10 rounded-full bg-green-500/10 flex items-center justify-center"
                 >
                   <Phone className="w-4 h-4 text-green-400" />
@@ -408,9 +410,12 @@ export default function DriverOrderDetail() {
             {!customer?.phone && (
               <button
                 data-testid="btn-call-customer"
-                className="w-10 h-10 rounded-full bg-green-500/10 flex items-center justify-center"
+                disabled
+                title="No phone on file"
+                aria-label="Call customer"
+                className="w-10 h-10 rounded-full bg-gray-500/10 flex items-center justify-center opacity-40 cursor-not-allowed"
               >
-                <Phone className="w-4 h-4 text-green-400" />
+                <Phone className="w-4 h-4 text-gray-500" />
               </button>
             )}
           </div>

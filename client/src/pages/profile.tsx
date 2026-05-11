@@ -182,6 +182,27 @@ export default function ProfilePage() {
     },
   });
 
+  const saveWashPrefsMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest(`/api/users/${userId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          preferredDetergent: washPrefs.detergent,
+          preferences: JSON.stringify(washPrefs),
+        }),
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
+      setWashPrefsOpen(false);
+      toast({ title: "Preferences saved", description: "Your wash preferences have been updated." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
   const deleteAccountMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("/api/users/me", { method: "DELETE" });
@@ -223,6 +244,7 @@ export default function ProfilePage() {
             size="icon"
             onClick={toggleTheme}
             data-testid="button-theme-toggle"
+            aria-label="Toggle theme"
             className="transition-all active:scale-90"
           >
             {theme === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
@@ -444,6 +466,7 @@ export default function ProfilePage() {
             <button
               onClick={() => setEditProfileOpen(false)}
               data-testid="button-back-personal-info"
+              aria-label="Go back"
               className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-muted transition-colors active:scale-95 -ml-1"
             >
               <ArrowLeft className="w-5 h-5" />
@@ -598,13 +621,11 @@ export default function ProfilePage() {
             </div>
             <Button
               className="w-full"
-              onClick={() => {
-                setWashPrefsOpen(false);
-                toast({ title: "Preferences saved", description: "Your wash preferences have been updated." });
-              }}
+              disabled={saveWashPrefsMutation.isPending}
+              onClick={() => saveWashPrefsMutation.mutate()}
               data-testid="button-save-wash-prefs"
             >
-              Save Preferences
+              {saveWashPrefsMutation.isPending ? "Saving..." : "Save Preferences"}
             </Button>
           </div>
         </SheetContent>

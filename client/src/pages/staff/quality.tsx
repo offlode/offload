@@ -91,6 +91,7 @@ function StarRating({
           onMouseEnter={() => setHovered(star)}
           onMouseLeave={() => setHovered(0)}
           onClick={() => onChange(star)}
+          aria-label={`Rate ${star} star${star > 1 ? "s" : ""}`}
           className="transition-transform hover:scale-110"
         >
           <Star

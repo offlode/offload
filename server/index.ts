@@ -199,9 +199,19 @@ app.use((req, res, next) => {
   const ERROR_LOG: Array<{ts: string; status: number; method: string; path: string; message: string; stack?: string}> = [];
   const MAX_ERRORS = 500;
 
-  app.get("/api/admin/errors", (req: Request, res: Response) => {
+  app.get("/api/admin/errors", async (req: Request, res: Response) => {
+    // Validate session token and require admin role
     const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ error: "Authentication required" });
+    const token = authHeader?.replace(/^Bearer\s+/i, "");
+    if (!token) return res.status(401).json({ error: "Authentication required" });
+    try {
+      const session = await storage.getSession(token);
+      if (!session) return res.status(401).json({ error: "Invalid or expired session" });
+      const user = await storage.getUser(session.userId);
+      if (!user || user.role !== "admin") return res.status(403).json({ error: "Admin access required" });
+    } catch {
+      return res.status(401).json({ error: "Authentication failed" });
+    }
     res.json({ count: ERROR_LOG.length, errors: ERROR_LOG.slice(-100).reverse() });
   });
 

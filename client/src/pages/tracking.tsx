@@ -126,7 +126,7 @@ export default function TrackingPage() {
       <div className="sticky top-0 z-40 bg-background/95 backdrop-blur-xl border-b border-border px-4 py-3">
         <div className="flex items-center gap-3 max-w-lg mx-auto">
           <Link href={`/orders/${orderId}`}>
-            <button className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-card transition-colors" data-testid="btn-back">
+            <button className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-card transition-colors" data-testid="btn-back" aria-label="Go back">
               <ArrowLeft className="w-5 h-5" />
             </button>
           </Link>
@@ -200,7 +200,7 @@ export default function TrackingPage() {
               </div>
               {tracking.driverInfo.phone && (
                 <a href={`tel:${tracking.driverInfo.phone}`}>
-                  <button className="w-10 h-10 rounded-full bg-green-500/10 flex items-center justify-center" data-testid="btn-call-driver">
+                  <button className="w-10 h-10 rounded-full bg-green-500/10 flex items-center justify-center" data-testid="btn-call-driver" aria-label="Call driver">
                     <Phone className="w-4 h-4 text-green-400" />
                   </button>
                 </a>

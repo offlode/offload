@@ -2166,11 +2166,21 @@ export async function registerRoutes(
     if (targetId !== currentUserU.id && !["admin","manager"].includes(currentUserU.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const SELF_FIELDS = ["name","email","phone","profileImage","notificationPreferences"];
+    const SELF_FIELDS = ["name","email","phone","profileImage","notificationPreferences","preferredDetergent","preferences"];
     const updateData: any = {};
     for (const k of SELF_FIELDS) { if (req.body[k] !== undefined) updateData[k] = req.body[k]; }
     if (["admin","manager"].includes(currentUserU.role)) {
-      if (req.body.role) updateData.role = req.body.role;
+      if (req.body.role) {
+        // Managers cannot assign admin or manager roles
+        if (currentUserU.role === "manager" && (req.body.role === "admin" || req.body.role === "manager")) {
+          return res.status(403).json({ error: "Managers cannot assign admin or manager roles" });
+        }
+        const validRoles = ["customer", "driver", "laundromat", "vendor", "staff", "manager", "admin"];
+        if (!validRoles.includes(req.body.role)) {
+          return res.status(400).json({ error: "Invalid role" });
+        }
+        updateData.role = req.body.role;
+      }
     }
     const updated = await storage.updateUser(targetId, updateData);
     if (!updated) return res.status(404).json({ error: "User not found" });
@@ -3918,13 +3928,21 @@ export async function registerRoutes(
       }
     }
 
-    // Prevent customers from modifying sensitive fields
-    if (currentUser.role === "customer") {
-      const forbidden = ["vendorId", "driverId", "total", "paymentStatus", "paymentIntentId", "subtotal", "tax", "finalPrice", "discount", "deliveryFee", "tip", "overageCharge", "customerId", "loyaltyPointsUsed", "loyaltyPointsEarned"];
-      for (const key of forbidden) {
-        if (key in req.body) {
-          return res.status(403).json({ error: `Customers cannot modify '${key}'` });
-        }
+    // Role-based field whitelists to prevent unauthorized field modification
+    const ROLE_FIELD_WHITELIST: Record<string, string[] | "*"> = {
+      customer: ["customerNotes", "specialInstructions", "deliveryNotes", "status"],
+      driver: ["actualWeight", "overageWeight", "pickupPhotoUrl", "deliveryPhotoUrl", "driverNotes", "driverLocationLat", "driverLocationLng", "estimatedDeliveryTime", "status"],
+      vendor: ["processingNotes", "weightVerified", "vendorNotes", "washStartedAt", "washCompletedAt", "qualityScore", "finalWeight", "status"],
+      laundromat: ["processingNotes", "weightVerified", "vendorNotes", "washStartedAt", "washCompletedAt", "qualityScore", "finalWeight", "status"],
+      staff: ["processingNotes", "weightVerified", "vendorNotes", "washStartedAt", "washCompletedAt", "qualityScore", "finalWeight", "actualWeight", "overageWeight", "status"],
+      manager: "*",
+      admin: "*",
+    };
+    const allowedFields = ROLE_FIELD_WHITELIST[currentUser.role];
+    if (allowedFields && allowedFields !== "*" && Array.isArray(allowedFields)) {
+      const extraFields = Object.keys(req.body).filter(k => !allowedFields.includes(k));
+      if (extraFields.length > 0) {
+        return res.status(403).json({ error: `Role '${currentUser.role}' cannot update fields: ${extraFields.join(", ")}` });
       }
     }
 
@@ -4220,10 +4238,28 @@ export async function registerRoutes(
     }
 
     const ts_ = now();
+
+    // If payment was captured, issue Stripe refund first
+    if (order.paymentStatus === "captured" || order.paymentStatus === "paid") {
+      try {
+        const totalCents = Math.round((order.finalPrice ?? order.total ?? 0) * 100);
+        if (totalCents > 0) {
+          const refundResult = await issueStripeRefundForOrder(order, totalCents, "requested_by_customer", `cancel-${order.id}-${Date.now()}`);
+          if (refundResult?.errorStatus) {
+            console.error("[cancel] Stripe refund failed:", refundResult.error);
+            return res.status(500).json({ error: "Refund failed — please contact support" });
+          }
+        }
+      } catch (refundErr) {
+        console.error("[cancel] Stripe refund exception", refundErr);
+        return res.status(500).json({ error: "Refund failed — please contact support" });
+      }
+    }
+
     await storage.updateOrder(order.id, {
       status: "cancelled",
       cancelledAt: ts_,
-      paymentStatus: "refunded",
+      paymentStatus: (order.paymentStatus === "captured" || order.paymentStatus === "paid") ? "refunded" : order.paymentStatus,
     });
 
     // Restore redeemed loyalty points on cancellation
@@ -4992,7 +5028,24 @@ export async function registerRoutes(
         if (req.body.refundAmount && req.body.refundAmount > 0) {
           const order = await storage.getOrder(dispute.orderId);
           if (order) {
-            await storage.updateOrder(order.id, { paymentStatus: "refunded" });
+            // Issue Stripe refund if payment was captured
+            if (order.paymentStatus === "captured" || order.paymentStatus === "paid") {
+              try {
+                const refundCents = Math.round(Number(req.body.refundAmount) * 100);
+                if (refundCents > 0) {
+                  const refundResult = await issueStripeRefundForOrder(order, refundCents, "requested_by_customer", `dispute-${dispute.id}-${Date.now()}`);
+                  if (refundResult?.errorStatus) {
+                    console.error("[dispute] Stripe refund failed:", refundResult.error);
+                  } else {
+                    await storage.updateOrder(order.id, { paymentStatus: "refunded" });
+                  }
+                }
+              } catch (refundErr) {
+                console.error("[dispute] Stripe refund exception", refundErr);
+              }
+            } else {
+              await storage.updateOrder(order.id, { paymentStatus: "refunded" });
+            }
           }
         }
       }
@@ -7610,7 +7663,25 @@ export async function registerRoutes(
     // Handle cancelled
     if (newStatus === "cancelled") {
       updateData.cancelledAt = ts_;
-      updateData.paymentStatus = "refunded";
+      // Issue Stripe refund if payment was captured
+      if (order.paymentStatus === "captured" || order.paymentStatus === "paid") {
+        try {
+          const totalCents = Math.round((order.finalPrice ?? order.total ?? 0) * 100);
+          if (totalCents > 0) {
+            const refundResult = await issueStripeRefundForOrder(order, totalCents, "requested_by_customer", `fsm-cancel-${order.id}-${Date.now()}`);
+            if (refundResult?.errorStatus) {
+              console.error("[fsm-cancel] Stripe refund failed:", refundResult.error);
+              return res.status(500).json({ error: "Refund failed — please contact support" });
+            }
+          }
+          updateData.paymentStatus = "refunded";
+        } catch (refundErr) {
+          console.error("[fsm-cancel] Stripe refund exception", refundErr);
+          return res.status(500).json({ error: "Refund failed — please contact support" });
+        }
+      } else {
+        updateData.paymentStatus = order.paymentStatus || "refunded";
+      }
       if (order.vendorId) {
         const vendor = await storage.getVendor(order.vendorId);
         if (vendor && (vendor.currentLoad || 0) > 0) {

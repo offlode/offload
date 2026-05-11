@@ -376,22 +376,24 @@ export default function DriverDashboard() {
             <button
               data-testid="quick-action-navigation"
               className="bg-card rounded-2xl p-4 border border-white/5 text-left hover:bg-muted transition-colors"
+              onClick={() => navigate("/driver/route")}
             >
               <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center mb-3">
                 <Navigation className="w-5 h-5 text-blue-400" />
               </div>
               <p className="text-white text-sm font-medium">Navigation</p>
-              <p className="text-gray-500 text-xs mt-0.5">Open maps app</p>
+              <p className="text-gray-500 text-xs mt-0.5">Open route view</p>
             </button>
             <button
               data-testid="quick-action-messages"
               className="bg-card rounded-2xl p-4 border border-white/5 text-left hover:bg-muted transition-colors"
+              onClick={() => navigate("/driver/earnings")}
             >
               <div className="w-10 h-10 rounded-xl bg-green-500/10 flex items-center justify-center mb-3">
                 <MessageSquare className="w-5 h-5 text-green-400" />
               </div>
-              <p className="text-white text-sm font-medium">Messages</p>
-              <p className="text-gray-500 text-xs mt-0.5">Customer support</p>
+              <p className="text-white text-sm font-medium">Earnings</p>
+              <p className="text-gray-500 text-xs mt-0.5">View your earnings</p>
             </button>
           </div>
         </div>

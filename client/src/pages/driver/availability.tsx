@@ -151,9 +151,11 @@ export default function DriverAvailability() {
   };
 
   const toggleDay = (day: DayKey) => {
-    setSelectedDays((prev) =>
-      prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]
-    );
+    setSelectedDays((prev) => {
+      const updated = prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day];
+      updateMutation.mutate({ schedule: JSON.stringify({ days: updated, timeStart, timeEnd }) });
+      return updated;
+    });
   };
 
   const currentStatusConfig =
@@ -256,6 +258,7 @@ export default function DriverAvailability() {
                   <button
                     data-testid={`btn-remove-zone-${zip}`}
                     onClick={() => removeZone(zip)}
+                    aria-label={`Remove zone ${zip}`}
                     className="hover:text-white transition-colors"
                   >
                     <X className="w-3 h-3" />
@@ -281,6 +284,7 @@ export default function DriverAvailability() {
             <button
               data-testid="btn-add-zone"
               onClick={addZone}
+              aria-label="Add zone"
               className="w-10 h-10 rounded-xl bg-primary/20 text-primary flex items-center justify-center hover:bg-primary/30 transition-colors"
             >
               <Plus className="w-5 h-5" />
@@ -357,7 +361,10 @@ export default function DriverAvailability() {
                 data-testid="input-time-start"
                 type="time"
                 value={timeStart}
-                onChange={(e) => setTimeStart(e.target.value)}
+                onChange={(e) => {
+                  setTimeStart(e.target.value);
+                  updateMutation.mutate({ schedule: JSON.stringify({ days: selectedDays, timeStart: e.target.value, timeEnd }) });
+                }}
                 className="flex-1 bg-card border border-white/10 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-primary/50 transition-colors"
               />
             </div>
@@ -368,7 +375,10 @@ export default function DriverAvailability() {
                 data-testid="input-time-end"
                 type="time"
                 value={timeEnd}
-                onChange={(e) => setTimeEnd(e.target.value)}
+                onChange={(e) => {
+                  setTimeEnd(e.target.value);
+                  updateMutation.mutate({ schedule: JSON.stringify({ days: selectedDays, timeStart, timeEnd: e.target.value }) });
+                }}
                 className="flex-1 bg-card border border-white/10 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-primary/50 transition-colors"
               />
             </div>

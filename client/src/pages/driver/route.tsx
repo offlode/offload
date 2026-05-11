@@ -34,41 +34,6 @@ type RouteData = {
   stops: RouteStop[];
 };
 
-const FALLBACK_ROUTE: RouteData = {
-  driverId: 0,
-  totalStops: 3,
-  totalEstimatedMinutes: 47,
-  totalDistanceMiles: 12.4,
-  stops: [
-    {
-      id: 1,
-      orderNumber: "ORD-0001",
-      type: "pickup",
-      address: "123 Main St, Brooklyn, NY 11201",
-      estimatedMinutes: 8,
-      distanceMiles: 2.1,
-      contactName: "Sarah K.",
-    },
-    {
-      id: 2,
-      orderNumber: "ORD-0003",
-      type: "pickup",
-      address: "47 Atlantic Ave, Brooklyn, NY 11201",
-      estimatedMinutes: 22,
-      distanceMiles: 5.8,
-      contactName: "Marcus T.",
-    },
-    {
-      id: 3,
-      orderNumber: "ORD-0002",
-      type: "delivery",
-      address: "88 Fulton St, Brooklyn, NY 11201",
-      estimatedMinutes: 47,
-      distanceMiles: 12.4,
-      contactName: "Jordan M.",
-    },
-  ],
-};
 
 function StopCard({
   stop,
@@ -203,11 +168,30 @@ export default function DriverRoute() {
     return null;
   }
 
-  // Use real data if available, fallback to mock for display
-  const route = routeData ?? FALLBACK_ROUTE;
+  const route = routeData;
+
+  // Show empty state when no active route
+  if (!isLoading && !route) {
+    return (
+      <DriverLayout>
+        <div className="px-5 pt-14 flex flex-col items-center justify-center min-h-[60vh] text-center gap-4">
+          <Navigation className="w-12 h-12 text-muted-foreground" />
+          <h2 className="text-lg font-semibold text-white">No Active Route</h2>
+          <p className="text-sm text-gray-400">Accept a job to begin your route.</p>
+          <button
+            onClick={() => navigate("/driver/dashboard")}
+            className="mt-2 px-6 py-2.5 bg-primary text-white rounded-full text-sm font-medium"
+            data-testid="btn-go-dashboard"
+          >
+            Go to Dashboard
+          </button>
+        </div>
+      </DriverLayout>
+    );
+  }
 
   const completedCount = completedStops.size;
-  const totalStops = route.stops.length;
+  const totalStops = route?.stops.length ?? 0;
   const progressPct = totalStops > 0 ? (completedCount / totalStops) * 100 : 0;
 
   const markComplete = (stopId: number) => {
