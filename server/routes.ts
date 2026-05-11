@@ -6410,11 +6410,24 @@ export async function registerRoutes(
   });
 
   app.post("/api/promo-codes", requireAuth(["admin"]), async (req, res) => {
-    res.status(201).json(await storage.createPromoCode({ ...req.body, createdAt: now() }));
+    // Coerce isActive boolean → integer (DB column is integer, 1=active/0=inactive)
+    const body: any = { ...req.body };
+    if (typeof body.isActive === "boolean") body.isActive = body.isActive ? 1 : 0;
+    if (typeof body.status === "string" && body.isActive === undefined) {
+      body.isActive = body.status === "active" ? 1 : 0;
+      delete body.status;
+    }
+    res.status(201).json(await storage.createPromoCode({ ...body, createdAt: now() }));
   });
 
   app.patch("/api/promo-codes/:id", requireAuth(["admin"]), async (req, res) => {
-    const updated = await storage.updatePromoCode(Number(String(req.params.id)), req.body);
+    const body: any = { ...req.body };
+    if (typeof body.isActive === "boolean") body.isActive = body.isActive ? 1 : 0;
+    if (typeof body.status === "string" && body.isActive === undefined) {
+      body.isActive = body.status === "active" ? 1 : 0;
+      delete body.status;
+    }
+    const updated = await storage.updatePromoCode(Number(String(req.params.id)), body);
     if (!updated) return res.status(404).json({ error: "Promo code not found" });
     res.json(updated);
   });
