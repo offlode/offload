@@ -82,16 +82,21 @@ function getSessionTokenFromRequest(req: Request): string | null {
 }
 
 function setSessionCookie(res: Response, token: string): void {
-  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  // SameSite=None+Secure is REQUIRED for cross-site fetches (admin SPA on a different
+  // origin calling this API with credentials:"include"). Lax breaks cross-site.
+  // In dev (NODE_ENV !== production) we keep Lax to allow http://localhost.
+  const isProd = process.env.NODE_ENV === "production";
+  const attrs = isProd ? "; Secure; SameSite=None" : "; SameSite=Lax";
   res.setHeader(
     "Set-Cookie",
-    `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly${secure}; SameSite=Lax; Path=/; Max-Age=${Math.floor(SESSION_DURATION_MS / 1000)}`
+    `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly${attrs}; Path=/; Max-Age=${Math.floor(SESSION_DURATION_MS / 1000)}`
   );
 }
 
 function clearSessionCookie(res: Response): void {
-  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; HttpOnly${secure}; SameSite=Lax; Path=/; Max-Age=0`);
+  const isProd = process.env.NODE_ENV === "production";
+  const attrs = isProd ? "; Secure; SameSite=None" : "; SameSite=Lax";
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; HttpOnly${attrs}; Path=/; Max-Age=0`);
 }
 
 async function createSession(userId: number, role: string): Promise<string> {
