@@ -6,7 +6,9 @@ import { Resend } from "resend";
 import Stripe from "stripe";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { Server as SocketIOServer } from "socket.io";
-import { storage } from "./storage";
+import { eq } from "drizzle-orm";
+import * as schema from "@shared/schema";
+import { storage, db, logStripeReconciliation } from "./storage";
 import { isR2Enabled, uploadToR2, getPresignedDownloadUrl, getPresignedUploadUrl } from "./r2";
 import { sendPushToUser } from "./push";
 import { sendSMS } from "./sms";
@@ -816,32 +818,37 @@ async function recordPayoutsForCapturedOrder(order: Order): Promise<void> {
   if (order.paymentStatus !== "captured") return;
 
   const { vendorPayout, driverPayout } = await calculatePayouts(order);
-  await storage.updateOrder(order.id, {
-    vendorPayout,
-    driverPayout,
-    payoutRecorded: 1,
-  } as any);
 
-  if (order.vendorId) {
-    const vendor = await storage.getVendor(order.vendorId);
-    if (vendor) {
-      await storage.updateVendor(vendor.id, {
-        totalEarnings: (vendor.totalEarnings || 0) + vendorPayout,
-        pendingPayout: (vendor.pendingPayout || 0) + vendorPayout,
-      });
-    }
-  }
+  // Atomic: update order + vendor + driver payouts in a single transaction
+  // so payoutRecorded=1 is only set if ALL updates succeed.
+  await db.transaction(async (tx) => {
+    await tx.update(schema.orders).set({
+      vendorPayout,
+      driverPayout,
+      payoutRecorded: 1,
+    } as any).where(eq(schema.orders.id, order.id));
 
-  if (order.driverId) {
-    const driver = await storage.getDriver(order.driverId);
-    if (driver) {
-      await storage.updateDriver(driver.id, {
-        totalEarnings: (driver.totalEarnings || 0) + driverPayout,
-        pendingPayout: (driver.pendingPayout || 0) + driverPayout,
-        completedTrips: (driver.completedTrips || 0) + 1,
-      });
+    if (order.vendorId) {
+      const [vendor] = await tx.select().from(schema.vendors).where(eq(schema.vendors.id, order.vendorId));
+      if (vendor) {
+        await tx.update(schema.vendors).set({
+          totalEarnings: (vendor.totalEarnings || 0) + vendorPayout,
+          pendingPayout: (vendor.pendingPayout || 0) + vendorPayout,
+        }).where(eq(schema.vendors.id, vendor.id));
+      }
     }
-  }
+
+    if (order.driverId) {
+      const [driver] = await tx.select().from(schema.drivers).where(eq(schema.drivers.id, order.driverId));
+      if (driver) {
+        await tx.update(schema.drivers).set({
+          totalEarnings: (driver.totalEarnings || 0) + driverPayout,
+          pendingPayout: (driver.pendingPayout || 0) + driverPayout,
+          completedTrips: (driver.completedTrips || 0) + 1,
+        }).where(eq(schema.drivers.id, driver.id));
+      }
+    }
+  });
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -3206,40 +3213,40 @@ export async function registerRoutes(
         });
       }
 
-      // Record payment transaction
+      // Atomic: record payment txn + mark quote converted + order event + audit log
       const checkoutFeeRate = await pricingConfig.getPlatformFeeRate();
-      await storage.createPaymentTransaction({
-        orderId: order.id,
-        type: "charge",
-        amount: quote.total || 0,
-        amountCents,
-        currency: "usd",
-        status: "pending",
-        stripePaymentIntentId: paymentIntentId,
-        recipientType: "platform",
-        platformFee: Math.round((quote.total || 0) * checkoutFeeRate * 100) / 100,
-        metadata: JSON.stringify({ quoteId: quote.id, email, phone: digits }),
-        createdAt: ts,
-      });
-
-      // Step 5: Mark quote as converted
-      await storage.updateQuote(quote.id, { status: "converted", customerId: customer.id, updatedAt: ts });
-
-      // Create order event
-      await storage.createOrderEvent({
-        orderId: order.id,
-        eventType: "order_created",
-        description: `Order placed via website checkout. Email: ${email}`,
-        timestamp: ts,
-      });
-
-      // Audit log
-      await storage.createPricingAuditEntry({
-        action: "public_checkout",
-        details: JSON.stringify({ orderId: order.id, orderNumber, quoteId: quote.id, total: quote.total, email }),
-        actorId: customer.id,
-        actorRole: "customer",
-        timestamp: ts,
+      await db.transaction(async (tx) => {
+        await tx.insert(schema.paymentTransactions).values({
+          orderId: order.id,
+          type: "charge",
+          amount: quote.total || 0,
+          amountCents,
+          currency: "usd",
+          status: "pending",
+          stripePaymentIntentId: paymentIntentId,
+          recipientType: "platform",
+          platformFee: Math.round((quote.total || 0) * checkoutFeeRate * 100) / 100,
+          metadata: JSON.stringify({ quoteId: quote.id, email, phone: digits }),
+          createdAt: ts,
+        } as any);
+        await tx.update(schema.quotes).set({
+          status: "converted",
+          customerId: customer!.id,
+          updatedAt: ts,
+        } as any).where(eq(schema.quotes.id, quote.id));
+        await tx.insert(schema.orderEvents).values({
+          orderId: order.id,
+          eventType: "order_created",
+          description: `Order placed via website checkout. Email: ${email}`,
+          timestamp: ts,
+        } as any);
+        await tx.insert(schema.pricingAuditLog).values({
+          action: "public_checkout",
+          details: JSON.stringify({ orderId: order.id, orderNumber, quoteId: quote.id, total: quote.total, email }),
+          actorId: customer!.id,
+          actorRole: "customer",
+          timestamp: ts,
+        } as any);
       });
 
       res.status(201).json({
@@ -3828,44 +3835,54 @@ export async function registerRoutes(
         updatedAt: ts_,
       });
 
-      // Create order add-on records
-      for (const addon of parsedAddOns) {
-        await storage.createOrderAddOn({
+      // Atomic: add-ons + loyalty txn + promo usage + order event
+      await db.transaction(async (tx) => {
+        // Create order add-on records
+        for (const addon of parsedAddOns) {
+          await tx.insert(schema.orderAddOns).values({
+            orderId: order.id,
+            addOnId: addon.addOnId,
+            quantity: addon.quantity,
+            unitPrice: addon.unitPrice,
+            total: Math.round(addon.unitPrice * addon.quantity * 100) / 100,
+          } as any);
+        }
+
+        // Record loyalty redemption transaction
+        if (loyaltyPointsRedeemed > 0) {
+          await tx.insert(schema.loyaltyTransactions).values({
+            userId: customerId,
+            orderId: order.id,
+            type: "redeemed",
+            points: -loyaltyPointsRedeemed,
+            description: `Redeemed ${loyaltyPointsRedeemed} points for $${(loyaltyPointsRedeemed / 100).toFixed(2)} off order ${order.orderNumber}`,
+            createdAt: ts_,
+          } as any);
+          await tx.update(schema.orders).set({
+            loyaltyPointsRedeemed,
+          } as any).where(eq(schema.orders.id, order.id));
+        }
+
+        // Record per-user promo usage
+        if (appliedPromoId) {
+          await tx.insert(schema.promoUsage).values({
+            promoId: appliedPromoId,
+            userId: customerId,
+            orderId: order.id,
+            usedAt: ts_,
+          } as any);
+        }
+
+        // Event: order placed
+        await tx.insert(schema.orderEvents).values({
           orderId: order.id,
-          addOnId: addon.addOnId,
-          quantity: addon.quantity,
-          unitPrice: addon.unitPrice,
-          total: Math.round(addon.unitPrice * addon.quantity * 100) / 100,
-        });
-      }
-
-      // Record loyalty redemption transaction
-      if (loyaltyPointsRedeemed > 0) {
-        await storage.createLoyaltyTransaction({
-          userId: customerId,
-          orderId: order.id,
-          type: "redeemed",
-          points: -loyaltyPointsRedeemed,
-          description: `Redeemed ${loyaltyPointsRedeemed} points for $${(loyaltyPointsRedeemed / 100).toFixed(2)} off order ${order.orderNumber}`,
-          createdAt: ts_,
-        });
-        await storage.updateOrder(order.id, { loyaltyPointsRedeemed });
-      }
-
-      // Record per-user promo usage
-      if (appliedPromoId) {
-        await storage.recordPromoUsage(appliedPromoId, customerId, order.id);
-      }
-
-      // Event: order placed
-      await storage.createOrderEvent({
-        orderId: order.id,
-        eventType: "order_placed",
-        description: "Your pickup has been scheduled",
-        details: JSON.stringify({ address: pickupAddress, bags: parsedBags, total: finalTotal, pricingTier: surge.tier, surgeReason: surge.reason }),
-        actorId: customerId,
-        actorRole: "customer",
-        timestamp: ts_,
+          eventType: "order_placed",
+          description: "Your pickup has been scheduled",
+          details: JSON.stringify({ address: pickupAddress, bags: parsedBags, total: finalTotal, pricingTier: surge.tier, surgeReason: surge.reason }),
+          actorId: customerId,
+          actorRole: "customer",
+          timestamp: ts_,
+        } as any);
       });
 
       // ── STEP 1: Payment status ──
@@ -5691,7 +5708,7 @@ export async function registerRoutes(
                     console.error("[dispute] Stripe refund failed:", refundResult.error);
                     return res.status(500).json({ error: "Refund failed — please retry or contact Stripe support", stripeError: refundResult.error });
                   }
-                  await storage.updateOrder(order.id, { paymentStatus: "refunded" });
+                  // paymentStatus already set by issueStripeRefundForOrder (refunded or partially_refunded)
                 }
               } catch (refundErr: any) {
                 console.error("[dispute] Stripe refund exception", refundErr);
@@ -7741,25 +7758,57 @@ export async function registerRoutes(
     const amountDollars = centsToDollars(amountCents);
     const newTotalRefundedCents = alreadyRefundedCents + amountCents;
     const newPaymentStatus = newTotalRefundedCents >= capturedAmountCents ? "refunded" : "partially_refunded";
-    const txn = await storage.createPaymentTransaction({
-      orderId: order.id,
-      type: "refund",
-      amount: amountDollars,
-      amountCents,
-      currency: "usd",
-      status: "completed",
-      recipientType: "platform",
-      metadata: JSON.stringify({ reason, stripeRefundId, amountCents, idempotencyKey, demo: !hasStripe }),
-      createdAt: ts_,
-      completedAt: ts_,
-    });
-    await storage.updateOrder(order.id, { paymentStatus: newPaymentStatus });
-    await storage.createOrderEvent({
-      orderId: order.id,
-      eventType: "refund_issued",
-      description: `Refund of $${amountDollars.toFixed(2)} issued. Reason: ${reason || "not specified"}`,
-      timestamp: ts_,
-    });
+
+    // Stripe refund already succeeded above — DB writes must be atomic.
+    // If the transaction fails, log to reconciliation table so admins can fix.
+    let txn: any;
+    try {
+      await db.transaction(async (tx) => {
+        const [inserted] = await tx.insert(schema.paymentTransactions).values({
+          orderId: order.id,
+          type: "refund",
+          amount: amountDollars,
+          amountCents,
+          currency: "usd",
+          status: "completed",
+          recipientType: "platform",
+          metadata: JSON.stringify({ reason, stripeRefundId, amountCents, idempotencyKey, demo: !hasStripe }),
+          createdAt: ts_,
+          completedAt: ts_,
+        } as any).returning();
+        txn = inserted;
+        await tx.update(schema.orders).set({
+          paymentStatus: newPaymentStatus,
+          updatedAt: ts_,
+        } as any).where(eq(schema.orders.id, order.id));
+        await tx.insert(schema.orderEvents).values({
+          orderId: order.id,
+          eventType: "refund_issued",
+          description: `Refund of $${amountDollars.toFixed(2)} issued. Reason: ${reason || "not specified"}`,
+          timestamp: ts_,
+        } as any);
+      });
+    } catch (txErr: any) {
+      console.error("[refund] DB transaction failed after Stripe refund succeeded:", txErr.message);
+      await logStripeReconciliation({
+        stripeResourceId: stripeRefundId || undefined,
+        action: "refund_db_write",
+        dbState: JSON.stringify({ orderId: order.id, amountCents, stripeRefundId }),
+        errorMessage: txErr.message,
+        notes: "Stripe refund succeeded but DB write failed — refund exists on Stripe but not in DB",
+      });
+      // Return a partial success so the caller knows Stripe worked but DB didn't
+      return {
+        txn: null,
+        stripeRefundId,
+        amountCents,
+        amount: amountDollars,
+        remainingRefundable: remainingRefundableCents - amountCents,
+        totalRefunded: newTotalRefundedCents,
+        paymentStatus: newPaymentStatus,
+        warning: "Refund processed on Stripe but database update failed — logged for reconciliation",
+      };
+    }
 
     return {
       txn,
@@ -9384,22 +9433,47 @@ export async function registerRoutes(
 	      processedStripeEventId = event.id;
 
 	      switch (event.type) {
-	        case "payment_intent.succeeded": {
-	          const pi = event.data?.object;
-	          if (pi?.metadata?.orderId) {
-	            const orderId = Number(pi.metadata.orderId);
-	            const order = await storage.getOrder(orderId);
-	            if (order) {
-	              await storage.updateOrder(orderId, { paymentStatus: "captured" });
-	              const txns4stripe = await storage.getPaymentTransactionsByOrder(orderId);
-	              const chargeTxn = txns4stripe.find(t => t.type === "charge" && t.stripePaymentIntentId === pi.id);
-	              if (chargeTxn) await storage.updatePaymentTransaction(chargeTxn.id, { status: "completed", completedAt: now() });
-	              await storage.createOrderEvent({
-	                orderId, eventType: "payment_captured",
-	                description: `Payment of $${(pi.amount / 100).toFixed(2)} confirmed via Stripe`,
-                timestamp: now(),
-              });
-              // Wave 2: record vendor/driver payouts now that payment is captured.
+        case "payment_intent.succeeded": {
+          const pi = event.data?.object;
+          if (pi?.metadata?.orderId) {
+            const orderId = Number(pi.metadata.orderId);
+            const order = await storage.getOrder(orderId);
+            if (order) {
+              const ts_pi = now();
+              try {
+                await db.transaction(async (tx) => {
+                  await tx.update(schema.orders).set({
+                    paymentStatus: "captured",
+                    updatedAt: ts_pi,
+                  } as any).where(eq(schema.orders.id, orderId));
+                  // Mark charge txn completed
+                  const txns4stripe = await storage.getPaymentTransactionsByOrder(orderId);
+                  const chargeTxn = txns4stripe.find(t => t.type === "charge" && t.stripePaymentIntentId === pi.id);
+                  if (chargeTxn) {
+                    await tx.update(schema.paymentTransactions).set({
+                      status: "completed",
+                      completedAt: ts_pi,
+                    } as any).where(eq(schema.paymentTransactions.id, chargeTxn.id));
+                  }
+                  await tx.insert(schema.orderEvents).values({
+                    orderId, eventType: "payment_captured",
+                    description: `Payment of $${(pi.amount / 100).toFixed(2)} confirmed via Stripe`,
+                    timestamp: ts_pi,
+                  } as any);
+                });
+              } catch (txErr: any) {
+                console.error("[webhook] payment_intent.succeeded tx failed:", txErr.message);
+                await logStripeReconciliation({
+                  stripeEventId: event.id,
+                  stripeResourceId: pi.id,
+                  action: "payment_captured",
+                  dbState: JSON.stringify({ orderId, paymentStatus: order.paymentStatus }),
+                  errorMessage: txErr.message,
+                  notes: "DB transaction failed after Stripe confirmed payment — needs manual reconciliation",
+                });
+                break;
+              }
+              // Record vendor/driver payouts (already uses its own transaction)
               const freshOrder = await storage.getOrder(orderId);
               if (freshOrder) await recordPayoutsForCapturedOrder(freshOrder);
               // Trigger email notification

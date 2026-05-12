@@ -127,6 +127,20 @@ async function ensureExtraTables() {
     CREATE INDEX IF NOT EXISTS idx_admin_audit_log_entity ON admin_audit_log(entity_type, entity_id);
     CREATE INDEX IF NOT EXISTS idx_admin_audit_log_actor ON admin_audit_log(actor_id);
     CREATE INDEX IF NOT EXISTS idx_admin_audit_log_ts ON admin_audit_log(timestamp);
+
+    CREATE TABLE IF NOT EXISTS stripe_reconciliation_log (
+      id SERIAL PRIMARY KEY,
+      stripe_event_id TEXT,
+      stripe_resource_id TEXT,
+      action TEXT NOT NULL,
+      db_state TEXT NOT NULL,
+      error_message TEXT,
+      recorded_at TEXT NOT NULL,
+      resolved_at TEXT,
+      notes TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_stripe_recon_action ON stripe_reconciliation_log(action);
+    CREATE INDEX IF NOT EXISTS idx_stripe_recon_resolved ON stripe_reconciliation_log(resolved_at);
   `);
 
   // Add amount_cents column if missing (idempotent)
@@ -1208,3 +1222,23 @@ class DatabaseStorage implements IStorage {
 }
 
 export const storage = new DatabaseStorage();
+export { db, pool };
+
+export async function logStripeReconciliation(data: {
+  stripeEventId?: string;
+  stripeResourceId?: string;
+  action: string;
+  dbState: string;
+  errorMessage?: string;
+  notes?: string;
+}) {
+  try {
+    await pool.query(
+      `INSERT INTO stripe_reconciliation_log (stripe_event_id, stripe_resource_id, action, db_state, error_message, recorded_at, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [data.stripeEventId || null, data.stripeResourceId || null, data.action, data.dbState, data.errorMessage || null, new Date().toISOString(), data.notes || null]
+    );
+  } catch (err) {
+    console.error("[stripe-reconciliation] Failed to log:", err, data);
+  }
+}
