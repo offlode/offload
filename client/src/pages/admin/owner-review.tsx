@@ -171,7 +171,7 @@ export default function OwnerReviewPage() {
         </CardContent>
       </Card>
 
-      <Tabs defaultValue="design" className="w-full">
+      <Tabs defaultValue="flows" className="w-full">
         <TabsList className="grid grid-cols-3 md:grid-cols-6 w-full">
           <TabsTrigger value="design" data-testid="tab-design">Design</TabsTrigger>
           <TabsTrigger value="brand" data-testid="tab-brand">Brand</TabsTrigger>
@@ -467,9 +467,9 @@ export default function OwnerReviewPage() {
                       <TableCell className="font-mono text-xs">{acct.email}</TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">{acct.passwordHint}</TableCell>
                       <TableCell className="text-right">
-                        <Link href={acct.url}>
-                          <Button size="sm" variant="outline" data-testid={`acct-go-${acct.role}`}>Go {<ArrowRight className="w-3 h-3 ml-1" />}</Button>
-                        </Link>
+                        <a href={acct.url} target="_blank" rel="noopener noreferrer">
+                          <Button size="sm" variant="outline" data-testid={`acct-go-${acct.role}`}>Go {<ExternalLink className="w-3 h-3 ml-1" />}</Button>
+                        </a>
                       </TableCell>
                     </TableRow>
                   ))}

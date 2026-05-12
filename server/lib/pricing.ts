@@ -202,14 +202,18 @@ export async function calculateQuotePrice(input: {
   const surge = await getSurgePricingTierAsync(input.scheduledPickup || undefined);
   const logisticsAfterSurge = Math.round(logistics.logisticsTotal * surge.multiplier * 100) / 100;
 
-  // 7. Subtotal (laundry + delivery base + preferred surcharge + addons + dynamic logistics)
-  const subtotal = Math.round(
-    (laundryServicePrice + speedSurcharge + deliveryFee + preferredVendorSurcharge + addOnsTotal + logisticsAfterSurge) * 100
+  // 7. Subtotal (laundry + preferred surcharge + addons + dynamic logistics)
+  // Note: deliveryFee is intentionally EXCLUDED from the tax base — NY does not tax
+  // separately stated delivery charges, and the direct /api/orders path uses the same rule.
+  // This keeps the public-quote path and the direct-order path in sync.
+  const taxableSubtotal = Math.round(
+    (laundryServicePrice + speedSurcharge + preferredVendorSurcharge + addOnsTotal + logisticsAfterSurge) * 100
   ) / 100;
+  const subtotal = Math.round((taxableSubtotal + deliveryFee) * 100) / 100;
 
-  // 8. Tax
+  // 8. Tax (computed on taxableSubtotal — delivery excluded)
   const dbTaxRate = await pricingConfig.getTaxRate();
-  const taxAmount = Math.round(subtotal * dbTaxRate * 100) / 100;
+  const taxAmount = Math.round(taxableSubtotal * dbTaxRate * 100) / 100;
 
   // 9. Promo discount
   let discount = 0;

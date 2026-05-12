@@ -7506,16 +7506,26 @@ export async function registerRoutes(
   });
 
   app.post("/api/payments/refund", requireAuth(["admin", "manager"]), async (req, res) => {
-    const RefundBody = z.object({ orderId: z.number(), amount: z.number(), reason: z.string().optional() }).strip();
+    // Accepts amountCents (preferred, explicit unit) or legacy amount (also cents).
+    // Both are integer minor units; refusing to silently treat dollars as cents.
+    const RefundBody = z.object({
+      orderId: z.number(),
+      amountCents: z.number().int().nonnegative().optional(),
+      amount: z.number().int().nonnegative().optional(),
+      reason: z.string().optional(),
+    }).strip().refine(
+      (v) => v.amountCents !== undefined || v.amount !== undefined,
+      { message: "amountCents (or legacy amount) is required, expressed in cents (integer minor units)" }
+    );
     const parsedRefund = RefundBody.safeParse(req.body);
     if (!parsedRefund.success) {
       return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedRefund.error.issues });
     }
-    const { orderId, amount, reason } = parsedRefund.data;
+    const { orderId, reason } = parsedRefund.data;
+    const amountCents = parsedRefund.data.amountCents ?? parsedRefund.data.amount!;
     const order = await storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    const amountCents = Number(amount);
     const result = await issueStripeRefundForOrder(order, amountCents, reason, `refund-${order.id}-${Date.now()}`);
     if ("errorStatus" in result) {
       return res.status(result.errorStatus as number).json(result);

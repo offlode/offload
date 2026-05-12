@@ -1,9 +1,9 @@
 import { Link, useRoute, useLocation } from "wouter";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   LayoutDashboard, ClipboardList, Store, Truck, AlertTriangle,
   ArrowLeft, Package, Menu, X, ChevronRight, User, LogOut,
-  BarChart3, Activity, Tag, DollarSign, ShieldAlert
+  BarChart3, Activity, Tag, DollarSign, ShieldAlert, Eye
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,7 +12,7 @@ import {
 import { NotificationBell } from "@/components/notification-bell";
 import { useAuth } from "@/contexts/auth-context";
 
-const sidebarItems = [
+const baseSidebarItems = [
   { label: "Overview", path: "/admin", icon: LayoutDashboard },
   { label: "Orders", path: "/admin/orders", icon: ClipboardList },
   { label: "Vendors", path: "/admin/vendors", icon: Store },
@@ -25,7 +25,9 @@ const sidebarItems = [
   { label: "Fraud", path: "/admin/fraud", icon: ShieldAlert },
 ];
 
-function SidebarLink({ item, collapsed }: { item: typeof sidebarItems[0]; collapsed?: boolean }) {
+const ownerReviewItem = { label: "Owner Review", path: "/admin/review", icon: Eye };
+
+function SidebarLink({ item, collapsed }: { item: typeof baseSidebarItems[0]; collapsed?: boolean }) {
   const [isActive] = useRoute(item.path);
   const Icon = item.icon;
 
@@ -77,6 +79,7 @@ function Breadcrumb() {
     promos: "Promos",
     financial: "Financial",
     fraud: "Fraud",
+    review: "Owner Review",
   };
 
   return (
@@ -95,7 +98,19 @@ function Breadcrumb() {
 
 export function AdminLayout({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [sandbox, setSandbox] = useState(false);
   const { user, logout } = useAuth();
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/admin/owner-review/meta", { credentials: "include" })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (!cancelled && d && d.sandbox === true) setSandbox(true); })
+      .catch(() => { /* prod returns 404, treat as not sandbox */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  const sidebarItems = sandbox ? [...baseSidebarItems, ownerReviewItem] : baseSidebarItems;
 
   return (
     <div className="flex min-h-screen bg-background">
@@ -165,9 +180,20 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
               <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-3 pt-2 pb-0.5">Intelligence</p>
             )}
           </div>
-          {sidebarItems.slice(5).map(item => (
+          {sidebarItems.slice(5, 10).map(item => (
             <SidebarLink key={item.label} item={item} collapsed={collapsed} />
           ))}
+          {sandbox && (
+            <>
+              <div className="py-1.5">
+                <div className="h-px bg-border" />
+                {!collapsed && (
+                  <p className="text-[10px] font-semibold text-amber-500 uppercase tracking-wider px-3 pt-2 pb-0.5">Sandbox</p>
+                )}
+              </div>
+              <SidebarLink item={ownerReviewItem} collapsed={collapsed} />
+            </>
+          )}
         </nav>
 
         {/* Bottom section */}

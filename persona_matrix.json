@@ -1,0 +1,26 @@
+{
+  "personas": [
+    {"id": "P01", "role": "customer", "name": "Fresh Customer", "email": "appreview@offloadusa.com", "password": "AppReview2026!", "scenario": "First-time customer browsing landing, creating order with M bag + 48h tier in Brooklyn"},
+    {"id": "P02", "role": "customer", "name": "Returning Customer", "email": "appreview@offloadusa.com", "password": "AppReview2026!", "scenario": "Browses past orders, views invoice, leaves rating"},
+    {"id": "P03", "role": "customer", "name": "Express Customer", "email": "appreview@offloadusa.com", "password": "AppReview2026!", "scenario": "Same-Day 12h pickup with XL bag, tax + surge calculation"},
+    {"id": "P04", "role": "customer", "name": "Holiday Customer", "email": "appreview@offloadusa.com", "password": "AppReview2026!", "scenario": "Order on a surge holiday date (e.g. 2026-12-25) — verify surge applied"},
+    {"id": "P05", "role": "customer", "name": "Mobile Customer", "email": "appreview@offloadusa.com", "password": "AppReview2026!", "scenario": "375px viewport iOS user flows landing→signup→order"},
+    {"id": "P06", "role": "customer", "name": "Declined Card Customer", "email": "appreview@offloadusa.com", "password": "AppReview2026!", "scenario": "Attempts checkout with pm_card_chargeDeclined — graceful failure"},
+    {"id": "P07", "role": "customer", "name": "3DS Customer", "email": "appreview@offloadusa.com", "password": "AppReview2026!", "scenario": "Attempts checkout with pm_card_threeDSecure2Required — handle requires_action"},
+    {"id": "P08", "role": "customer", "name": "Refund Requester", "email": "appreview@offloadusa.com", "password": "AppReview2026!", "scenario": "Past completed order — request refund via support flow"},
+    {"id": "P09", "role": "vendor", "name": "Vendor Operator", "email": "vendor@offloadusa.com", "password": "OffloadVendor2026!", "scenario": "Login, view queue, accept order, mark in-progress, mark complete"},
+    {"id": "P10", "role": "vendor", "name": "Vendor Manager", "email": "vendor@offloadusa.com", "password": "OffloadVendor2026!", "scenario": "View earnings dashboard, payout history, performance stats"},
+    {"id": "P11", "role": "vendor", "name": "Busy Vendor", "email": "vendor@offloadusa.com", "password": "OffloadVendor2026!", "scenario": "Toggle availability off, verify new orders not assigned"},
+    {"id": "P12", "role": "driver", "name": "New Driver", "email": "driver@offloadusa.com", "password": "OffloadDriver2026!", "scenario": "Browse open trips, accept trip, mark picked-up, mark delivered"},
+    {"id": "P13", "role": "driver", "name": "Active Driver", "email": "driver@offloadusa.com", "password": "OffloadDriver2026!", "scenario": "View earnings (per-trip $8.50), payout balance, trip history"},
+    {"id": "P14", "role": "driver", "name": "GPS Driver", "email": "driver@offloadusa.com", "password": "OffloadDriver2026!", "scenario": "Update location during active trip — admin map reflects it"},
+    {"id": "P15", "role": "admin", "name": "Operations Admin", "email": "admin@offloadusa.com", "password": "OffloadAdmin2026!", "scenario": "Login, view dashboard, search orders, view order detail, reassign vendor"},
+    {"id": "P16", "role": "admin", "name": "Finance Admin", "email": "admin@offloadusa.com", "password": "OffloadAdmin2026!", "scenario": "View revenue, fees, vendor/driver payouts, run payout calc"},
+    {"id": "P17", "role": "admin", "name": "Support Admin", "email": "admin@offloadusa.com", "password": "OffloadAdmin2026!", "scenario": "Open ticket, respond, escalate, refund order via admin action"},
+    {"id": "P18", "role": "admin", "name": "Config Admin", "email": "admin@offloadusa.com", "password": "OffloadAdmin2026!", "scenario": "View pricing_config, adjust delivery_fee_same_day, save, verify it propagates"},
+    {"id": "P19", "role": "admin", "name": "Owner Reviewer", "email": "admin@offloadusa.com", "password": "OffloadAdmin2026!", "scenario": "Navigate /admin/review, browse all tabs, verify health green, test accounts visible"},
+    {"id": "P20", "role": "anonymous", "name": "Anonymous Browser", "email": null, "password": null, "scenario": "Browse landing, pricing, FAQ, terms, privacy, about — no console errors, no dead links"},
+    {"id": "P21", "role": "press", "name": "Press/Demo Viewer", "email": null, "password": null, "scenario": "Use demo-login endpoint, browse customer flows in demo mode"},
+    {"id": "P22", "role": "negative", "name": "Hostile Tester", "email": null, "password": null, "scenario": "Try invalid login, SQL injection in email, XSS in order notes, rate-limit probe, unauthorized API access"}
+  ]
+}
