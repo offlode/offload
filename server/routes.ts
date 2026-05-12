@@ -6716,6 +6716,127 @@ export async function registerRoutes(
     });
   });
 
+  // ═══════════════════════════════════════════════════════════════
+  //  OWNER REVIEW CENTER (sandbox-only)
+  // ═══════════════════════════════════════════════════════════════
+  // Returns metadata used by the Owner Review Center UI. Hard-gated on
+  // SANDBOX=true env var so production cannot expose this even if the
+  // route is accessed by an admin.
+  app.get("/api/admin/owner-review/meta", requireAuth(["admin"]), async (req, res) => {
+    const isSandbox = String(process.env.SANDBOX || "").toLowerCase() === "true";
+    if (!isSandbox) {
+      return res.status(404).json({ error: "Owner Review Center is sandbox-only." });
+    }
+    try {
+      const taxRate = await pricingConfig.getTaxRate();
+      const [fee48h, fee24h, feeSameDay] = await Promise.all([
+        pricingConfig.getDeliveryFee("48h"),
+        pricingConfig.getDeliveryFee("24h"),
+        pricingConfig.getDeliveryFee("same_day"),
+      ]);
+      const tierKeys = ["small_bag", "medium_bag", "large_bag", "xl_bag"] as const;
+      const tiers: Record<string, { displayName: string; flatPrice: number; maxWeight: number }> = {};
+      const displayNames: Record<string, string> = {
+        small_bag: "Small Bag", medium_bag: "Medium Bag", large_bag: "Large Bag", xl_bag: "XL Bag",
+      };
+      for (const k of tierKeys) {
+        const t = await pricingConfig.getBagPrice(k);
+        tiers[k] = { displayName: displayNames[k], flatPrice: t.flatPrice, maxWeight: t.maxWeight };
+      }
+
+      // Health probes
+      let dbOk = false;
+      try {
+        await storage.getPricingConfig("tax_rate_default");
+        dbOk = true;
+      } catch { dbOk = false; }
+      const hasStripe = !!process.env.STRIPE_SECRET_KEY && process.env.STRIPE_SECRET_KEY.length > 20;
+      const stripeMode = (process.env.STRIPE_SECRET_KEY || "").startsWith("sk_live_")
+        ? "live"
+        : (process.env.STRIPE_SECRET_KEY || "").startsWith("sk_test_")
+          ? "test"
+          : "unknown";
+      const hasWhsec = !!process.env.STRIPE_WEBHOOK_SECRET && process.env.STRIPE_WEBHOOK_SECRET.length > 10;
+
+      const meta = {
+        sandbox: true,
+        apiUrl: req.protocol + "://" + req.get("host"),
+        buildCommit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || undefined,
+        brand: {
+          primaryColor: "#5B4BC4",
+          bgColor: "#010101",
+          textColor: "#FFFFFF",
+          fontFamily: "Inter, system-ui, sans-serif",
+          tagline: "Fresh clothes, zero hassle.",
+          appName: "Offload",
+        },
+        pricing: { tiers, deliveryFees: { "48h": fee48h, "24h": fee24h, same_day: feeSameDay }, taxRate },
+        health: { api: true, db: dbOk, stripe: hasStripe, stripeMode, webhookSecretConfigured: hasWhsec },
+        testAccounts: [
+          { role: "customer", email: "appreview@offloadusa.com", passwordHint: "AppReview2026… (masked)", url: "/login" },
+          { role: "admin", email: "admin@offloadusa.com", passwordHint: "OffloadAdmin2026… (masked)", url: "/login" },
+          { role: "vendor", email: "vendor@offloadusa.com", passwordHint: "OffloadVendor2026… (masked)", url: "/login" },
+          { role: "driver", email: "driver@offloadusa.com", passwordHint: "OffloadDriver2026… (masked)", url: "/login" },
+        ],
+        screens: [
+          // Customer
+          { role: "customer", title: "Home", path: "/", description: "Dashboard with recent orders and CTA" },
+          { role: "customer", title: "Login", path: "/login" },
+          { role: "customer", title: "Register", path: "/register" },
+          { role: "customer", title: "Schedule", path: "/schedule", description: "Pickup scheduling & bag selection" },
+          { role: "customer", title: "Orders", path: "/orders" },
+          { role: "customer", title: "Order Detail", path: "/orders/1", description: "First sandbox order" },
+          { role: "customer", title: "Tracking", path: "/tracking/1" },
+          { role: "customer", title: "Profile", path: "/profile" },
+          { role: "customer", title: "Addresses", path: "/addresses" },
+          { role: "customer", title: "Payments", path: "/payments" },
+          { role: "customer", title: "Loyalty", path: "/loyalty" },
+          { role: "customer", title: "Referrals", path: "/referrals" },
+          { role: "customer", title: "Chat / Support", path: "/chat" },
+          // Driver
+          { role: "driver", title: "Dashboard", path: "/driver" },
+          { role: "driver", title: "Availability", path: "/driver/availability" },
+          { role: "driver", title: "Route", path: "/driver/route" },
+          { role: "driver", title: "Earnings", path: "/driver/earnings" },
+          { role: "driver", title: "Profile", path: "/driver/profile" },
+          // Vendor / laundromat
+          { role: "vendor", title: "Queue", path: "/staff/queue" },
+          { role: "vendor", title: "Active", path: "/staff/active" },
+          { role: "vendor", title: "Quality", path: "/staff/quality" },
+          { role: "vendor", title: "Profile", path: "/staff/profile" },
+          // Manager
+          { role: "manager", title: "Orders", path: "/manager/orders" },
+          { role: "manager", title: "Payouts", path: "/manager/payouts" },
+          { role: "manager", title: "Profile", path: "/manager/profile" },
+          // Admin
+          { role: "admin", title: "Overview", path: "/admin" },
+          { role: "admin", title: "Orders", path: "/admin/orders" },
+          { role: "admin", title: "Vendors", path: "/admin/vendors" },
+          { role: "admin", title: "Drivers", path: "/admin/drivers" },
+          { role: "admin", title: "Promos", path: "/admin/promos" },
+          { role: "admin", title: "Financial", path: "/admin/financial" },
+          { role: "admin", title: "Analytics", path: "/admin/analytics" },
+          { role: "admin", title: "Disputes", path: "/admin/disputes" },
+          { role: "admin", title: "Fraud", path: "/admin/fraud" },
+          { role: "admin", title: "Vendor Health", path: "/admin/vendor-scoring" },
+          { role: "admin", title: "Owner Review", path: "/admin/review", description: "This page (sandbox-only)" },
+        ],
+        flows: [
+          { name: "Customer places & pays for first order", persona: "New customer", startUrl: "/login", expected: "Order created, Stripe test charge succeeds, order shows as Paid", steps: ["Log in as appreview@", "Go to /schedule", "Pick medium bag, 48h", "Confirm quote", "Pay with 4242 4242 4242 4242, any future date, any CVC", "See /orders/<id> with Paid status"] },
+          { name: "Customer requests refund via support", persona: "Customer", startUrl: "/chat", expected: "Refund issued via Stripe test, order shows partial refund", steps: ["Open chat", "Ask 'I need a refund on order #X'", "Admin logs in, opens support inbox", "Issues refund from admin", "Customer sees refund event"] },
+          { name: "Admin reviews reconciliation", persona: "Admin", startUrl: "/admin/financial", expected: "All Stripe charges/refunds reconcile against orders", steps: ["Log in as admin@", "Open /admin/financial", "Verify totals match Stripe Dashboard test mode"] },
+          { name: "Driver toggles availability", persona: "Driver", startUrl: "/driver", expected: "Availability state persists across reload", steps: ["Log in as driver@", "Open /driver/availability", "Toggle on", "Reload", "Verify still on"] },
+          { name: "Vendor accepts order from queue", persona: "Vendor", startUrl: "/staff/queue", expected: "Order moves to Active state", steps: ["Log in as vendor@", "Open /staff/queue", "Click first pending order", "Mark 'Accepted'", "Verify it appears in /staff/active"] },
+          { name: "Bad-actor IDOR attempt", persona: "Unauthorized", startUrl: "/login", expected: "All cross-role access returns 401/403", steps: ["Log in as customer", "Open browser devtools, copy token", "curl /api/admin/users with token", "Expect 403"] },
+        ],
+      };
+      res.json(meta);
+    } catch (e: any) {
+      console.error("[OwnerReview] meta error:", e?.message);
+      res.status(500).json({ error: e?.message || "Failed to build owner review metadata" });
+    }
+  });
+
   // Admin: all users list
   app.get("/api/admin/users", requireAuth(["admin"]), async (req, res) => {
     const pg = getPagination(req);

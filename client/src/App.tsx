@@ -33,6 +33,7 @@ import AdminVendorScoring from "@/pages/admin/vendor-scoring";
 import AdminPromos from "@/pages/admin/promos";
 import AdminFinancial from "@/pages/admin/financial";
 import AdminFraud from "@/pages/admin/fraud";
+import AdminOwnerReview from "@/pages/admin/owner-review";
 import LoginPage from "@/pages/login";
 import RegisterPage from "@/pages/register";
 import RoleSelectPage from "@/pages/role-select";
@@ -217,6 +218,9 @@ function AppRouter() {
       </Route>
       <Route path="/admin/fraud">
         {() => <RequireAuth allowedRoles={["admin"]}><AdminFraud /></RequireAuth>}
+      </Route>
+      <Route path="/admin/review">
+        {() => <RequireAuth allowedRoles={["admin"]}><AdminOwnerReview /></RequireAuth>}
       </Route>
 
       <Route component={NotFound} />
