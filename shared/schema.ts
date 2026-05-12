@@ -229,6 +229,16 @@ export const orders = pgTable("orders", {
   vendorPayout: doublePrecision("vendor_payout").default(0),
   driverPayout: doublePrecision("driver_payout").default(0),
   platformFee: doublePrecision("platform_fee").default(0), // Offload's commission
+  // Shadow _cents columns (dual-write migration — Phase 5)
+  subtotalCents: integer("subtotal_cents"),
+  taxCents: integer("tax_cents"),
+  deliveryFeeCents: integer("delivery_fee_cents"),
+  discountCents: integer("discount_cents"),
+  totalCents: integer("total_cents"),
+  finalPriceCents: integer("final_price_cents"),
+  vendorPayoutCents: integer("vendor_payout_cents"),
+  driverPayoutCents: integer("driver_payout_cents"),
+  tierFlatPriceCents: integer("tier_flat_price_cents"),
   // Wave 2: idempotency flag for recordPayoutsForCapturedOrder() — prevents double-counting
   // vendor/driver earnings if the capture path is invoked more than once for the same order.
   payoutRecorded: integer("payout_recorded").default(0),
@@ -500,6 +510,7 @@ export const vendorPayouts = pgTable("vendor_payouts", {
   id: serial("id").primaryKey(),
   vendorId: integer("vendor_id").notNull(),
   amount: doublePrecision("amount").notNull(),
+  amountCents: integer("amount_cents"),
   status: text("status").notNull().default("pending"), // pending | processing | completed | failed
   periodStart: text("period_start").notNull(),
   periodEnd: text("period_end").notNull(),
@@ -702,6 +713,13 @@ export const quotes = pgTable("quotes", {
   trafficMultiplier: doublePrecision("traffic_multiplier").default(1.0),
   windowDiscount: doublePrecision("window_discount").default(0),
   vendorChoiceMode: text("vendor_choice_mode").default("auto"), // auto | nearest | preferred | rated
+  // Shadow _cents columns (dual-write migration — Phase 5)
+  subtotalCents: integer("subtotal_cents"),
+  taxAmountCents: integer("tax_amount_cents"),
+  deliveryFeeCents: integer("delivery_fee_cents"),
+  discountCents: integer("discount_cents"),
+  totalCents: integer("total_cents"),
+  tierFlatPriceCents: integer("tier_flat_price_cents"),
   // Itemized line items and add-ons as JSON
   lineItemsJson: text("line_items_json"),
   addOnsJson: text("add_ons_json"),
