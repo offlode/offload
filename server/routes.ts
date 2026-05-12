@@ -3752,6 +3752,7 @@ export async function registerRoutes(
 
     // Role-based field whitelists to prevent unauthorized field modification
     const ROLE_FIELD_WHITELIST: Record<string, string[] | "*"> = {
+      // customers/drivers/vendors cannot self-reassign — only admin/manager can set vendorId/driverId
       customer: ["customerNotes", "specialInstructions", "deliveryNotes", "status"],
       driver: ["actualWeight", "overageWeight", "pickupPhotoUrl", "deliveryPhotoUrl", "driverNotes", "driverLocationLat", "driverLocationLng", "estimatedDeliveryTime", "status"],
       vendor: ["processingNotes", "weightVerified", "vendorNotes", "washStartedAt", "washCompletedAt", "qualityScore", "finalWeight", "status"],
@@ -3780,6 +3781,9 @@ export async function registerRoutes(
       washCompletedAt: z.string().optional().nullable(),
       qualityScore: z.number().optional().nullable(),
       finalWeight: z.number().optional().nullable(),
+      // wave5b-part30: admin/manager assignment fields (was missing, blocked UI)
+      vendorId: z.number().optional().nullable(),
+      driverId: z.number().optional().nullable(),
     }).strip();
     const parsedPatch = OrderPatch.safeParse(req.body);
     if (!parsedPatch.success) {
@@ -3797,7 +3801,37 @@ export async function registerRoutes(
       }
     }
 
-    const updated = await storage.updateOrder(order.id, patchData);
+    // Guard: skip update if no fields remain after whitelist filtering
+    if (Object.keys(patchData).length === 0) {
+      return res.status(400).json({ error: "No updatable fields in body", code: "EMPTY_PATCH" });
+    }
+
+    // wave5b-part30: if vendorId or driverId is set and order is still "pending",
+    // also auto-advance the FSM so the driver/vendor flow can begin. Admin UI does
+    // not separately call /transition, so without this the order stays stuck pending.
+    let effectivePatch: any = { ...patchData };
+    if ((currentUser.role === "admin" || currentUser.role === "manager") &&
+        order.status === "pending" &&
+        (patchData.vendorId != null || patchData.driverId != null) &&
+        !patchData.status) {
+      effectivePatch.status = "confirmed";
+    }
+
+    const updated = await storage.updateOrder(order.id, effectivePatch);
+    if (effectivePatch.status && effectivePatch.status !== order.status) {
+      try {
+        await storage.createOrderEvent({
+          orderId: order.id,
+          eventType: "status_change",
+          fromStatus: order.status,
+          toStatus: effectivePatch.status,
+          description: `Order ${effectivePatch.status} (admin assignment)`,
+          actorId: currentUser.id,
+          actorRole: currentUser.role,
+          timestamp: now(),
+        } as any);
+      } catch (_) { /* best-effort */ }
+    }
     res.json(updated);
   });
 
