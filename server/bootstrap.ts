@@ -133,6 +133,17 @@ async function ensureAddOns() {
   try {
     const existing = await storage.getAddOns();
     if (existing && existing.length > 0) {
+      // One-time cleanup: deactivate legacy same_day add-on to prevent double-charging
+      // alongside DELIVERY_FEES.same_day ($12.99). Idempotent.
+      const legacy = existing.find((a: any) => a.name === "same_day" && a.isActive === 1);
+      if (legacy) {
+        try {
+          await storage.updateAddOn(legacy.id, { isActive: 0 } as any);
+          console.log(`[Bootstrap] Deactivated legacy same_day add-on (id=${legacy.id})`);
+        } catch (e: any) {
+          console.warn(`[Bootstrap] could not deactivate legacy same_day add-on:`, e?.message || e);
+        }
+      }
       console.log(`[Bootstrap] Add-ons already seeded (${existing.length})`);
       return;
     }
@@ -143,7 +154,9 @@ async function ensureAddOns() {
       { name: "stain_treatment",          displayName: "Stain Pre-Treatment",       price: 4.99, description: "Professional pre-treatment for tough stains.",     category: "treatment", isActive: 1 },
       { name: "folded_separately",        displayName: "Folded Separately",         price: 3.00, description: "Items folded by family member.",                   category: "service",   isActive: 1 },
       { name: "hangered_delivery",        displayName: "Hangered Delivery",          price: 5.99, description: "Delivered on hangers instead of folded.",          category: "service",   isActive: 1 },
-      { name: "same_day",                 displayName: "Same-Day Service",            price: 9.99,  description: "Pickup and delivery the same day.",                category: "service",   isActive: 1 },
+      // Legacy same_day add-on REMOVED 2026-05-12: would double-charge alongside DELIVERY_FEES.same_day ($12.99).
+      // Same-day is now a delivery-speed concept only, priced via pricing_config / DELIVERY_FEES.
+      // { name: "same_day", ... } // DO NOT RESTORE without removing the delivery-fee path.
     ];
     for (const ad of seeds) {
       await storage.createAddOn(ad as any);
