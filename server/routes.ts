@@ -8,7 +8,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { Server as SocketIOServer } from "socket.io";
 import { eq } from "drizzle-orm";
 import * as schema from "@shared/schema";
-import { storage, db, logStripeReconciliation } from "./storage";
+import { storage, db, pool, logStripeReconciliation } from "./storage";
 import { isR2Enabled, uploadToR2, getPresignedDownloadUrl, getPresignedUploadUrl } from "./r2";
 import { sendPushToUser } from "./push";
 import { sendSMS } from "./sms";
@@ -6508,6 +6508,59 @@ export async function registerRoutes(
 
     logAdminAction(req, { action: "support.reply", entityType: "chat_session", entityId: sessionId, newValue: { content: parsed.data.content } });
     res.json({ success: true, sessionId, messagesCount: existingMessages.length });
+  });
+
+  // ─────────────────────────────────────────────────────────
+  //  STRIPE RECONCILIATION ADMIN
+  // ─────────────────────────────────────────────────────────
+
+  app.get("/api/admin/stripe-reconciliation", requireAuth(["admin", "manager", "support"]), async (req, res) => {
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
+    const offset = (page - 1) * limit;
+    const showResolved = req.query.resolved === "true";
+
+    const whereClause = showResolved ? "" : "WHERE resolved_at IS NULL";
+    const [rows, countResult] = await Promise.all([
+      pool.query(
+        `SELECT * FROM stripe_reconciliation_log ${whereClause} ORDER BY recorded_at DESC LIMIT $1 OFFSET $2`,
+        [limit, offset]
+      ),
+      pool.query(`SELECT COUNT(*) AS total FROM stripe_reconciliation_log ${whereClause}`),
+    ]);
+
+    res.json({
+      entries: rows.rows,
+      page,
+      limit,
+      total: Number(countResult.rows[0].total),
+    });
+  });
+
+  app.post("/api/admin/stripe-reconciliation/:id/resolve", requireAuth(["admin", "manager"]), async (req, res) => {
+    const ResolveBody = z.object({ notes: z.string().optional() }).strip();
+    const parsed = ResolveBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
+    const id = Number(req.params.id);
+    const existing = await pool.query(`SELECT * FROM stripe_reconciliation_log WHERE id = $1`, [id]);
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ error: "Reconciliation entry not found" });
+    }
+    const entry = existing.rows[0];
+    const updatedNotes = parsed.data.notes
+      ? (entry.notes ? entry.notes + "\n---\n" + parsed.data.notes : parsed.data.notes)
+      : entry.notes;
+
+    await pool.query(
+      `UPDATE stripe_reconciliation_log SET resolved_at = $1, notes = $2 WHERE id = $3`,
+      [new Date().toISOString(), updatedNotes, id]
+    );
+
+    logAdminAction(req, { action: "stripe_reconciliation.resolve", entityType: "stripe_reconciliation_log", entityId: id, newValue: { notes: parsed.data.notes } });
+
+    res.json({ success: true, id, resolved_at: new Date().toISOString() });
   });
 
   // ─────────────────────────────────────────────────────────
