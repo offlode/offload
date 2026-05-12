@@ -8802,7 +8802,9 @@ export async function registerRoutes(
   //  STRIPE WEBHOOK ENDPOINT
   // ═══════════════════════════════════════════════════════════════
 
-  app.post("/api/webhooks/stripe", async (req, res) => {
+  // Handler defined once, registered on both paths for compatibility with Stripe Dashboard
+  // endpoints that may have been configured with either URL pattern.
+  const stripeWebhookHandler = async (req: any, res: any) => {
     const sig = req.headers["stripe-signature"];
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
@@ -8999,7 +9001,12 @@ export async function registerRoutes(
 	      if (processedStripeEventId) await storage.deleteStripeEvent(processedStripeEventId);
 	      res.status(400).json({ error: `Webhook Error: ${err.message}` });
 	    }
-  });
+  };
+
+  // Register stripe webhook on BOTH paths for Dashboard URL compatibility.
+  // Some endpoints were created with /api/stripe/webhook; the canonical path is /api/webhooks/stripe.
+  app.post("/api/webhooks/stripe", stripeWebhookHandler);
+  app.post("/api/stripe/webhook", stripeWebhookHandler);
 
   // ═══════════════════════════════════════════════════════════════
   //  EMAIL NOTIFICATION SYSTEM
