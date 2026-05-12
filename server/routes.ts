@@ -2082,10 +2082,17 @@ export async function registerRoutes(
   // verifies Apple's RS256 signature/JWKS, then finds or creates a user.
   app.post("/api/auth/apple", async (req, res) => {
     try {
-      const { identityToken, fullName, user: appleUserId, nonce } = req.body || {};
-      if (!identityToken) {
-        return res.status(400).json({ error: "Missing identityToken" });
+      const AppleBody = z.object({
+        identityToken: z.string().min(1),
+        fullName: z.any().optional(),
+        user: z.string().optional(),
+        nonce: z.string().optional(),
+      }).strip();
+      const parsedApple = AppleBody.safeParse(req.body);
+      if (!parsedApple.success) {
+        return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedApple.error.issues });
       }
+      const { identityToken, fullName, user: appleUserId, nonce } = parsedApple.data;
 
       let payload: any;
       try {
@@ -2300,20 +2307,30 @@ export async function registerRoutes(
     if (targetId !== currentUserU.id && !["admin","manager"].includes(currentUserU.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    const SELF_FIELDS = ["name","email","phone","profileImage","notificationPreferences","preferredDetergent","preferences"];
+    const UserPatch = z.object({
+      name: z.string().min(1).optional(),
+      email: z.string().email().optional(),
+      phone: z.string().optional().nullable(),
+      profileImage: z.string().optional().nullable(),
+      notificationPreferences: z.any().optional(),
+      preferredDetergent: z.string().optional().nullable(),
+      preferences: z.any().optional(),
+      role: z.enum(["customer","driver","laundromat","vendor","staff","manager","admin"]).optional(),
+    }).strip();
+    const parsed = UserPatch.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
+    const body = parsed.data;
+    const SELF_FIELDS = ["name","email","phone","profileImage","notificationPreferences","preferredDetergent","preferences"] as const;
     const updateData: any = {};
-    for (const k of SELF_FIELDS) { if (req.body[k] !== undefined) updateData[k] = req.body[k]; }
+    for (const k of SELF_FIELDS) { if ((body as any)[k] !== undefined) updateData[k] = (body as any)[k]; }
     if (["admin","manager"].includes(currentUserU.role)) {
-      if (req.body.role) {
-        // Managers cannot assign admin or manager roles
-        if (currentUserU.role === "manager" && (req.body.role === "admin" || req.body.role === "manager")) {
+      if (body.role) {
+        if (currentUserU.role === "manager" && (body.role === "admin" || body.role === "manager")) {
           return res.status(403).json({ error: "Managers cannot assign admin or manager roles" });
         }
-        const validRoles = ["customer", "driver", "laundromat", "vendor", "staff", "manager", "admin"];
-        if (!validRoles.includes(req.body.role)) {
-          return res.status(400).json({ error: "Invalid role" });
-        }
-        updateData.role = req.body.role;
+        updateData.role = body.role;
       }
     }
     const updated = await storage.updateUser(targetId, updateData);
@@ -2572,7 +2589,12 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Access denied — can only update your own location" });
       }
     }
-    const { lat, lng } = req.body;
+    const LocPatch = z.object({ lat: z.number(), lng: z.number() }).strip();
+    const parsedLoc = LocPatch.safeParse(req.body);
+    if (!parsedLoc.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedLoc.error.issues });
+    }
+    const { lat, lng } = parsedLoc.data;
     const updated = await storage.updateDriver(Number(String(req.params.id)), {
       currentLat: lat,
       currentLng: lng,
@@ -2589,7 +2611,12 @@ export async function registerRoutes(
     if (!(await ownsDriverProfile(__sid, __cuS))) {
       return res.status(403).json({ error: "Forbidden" });
     }
-    const { status } = req.body;
+    const DriverStatusBody = z.object({ status: z.string().min(1) }).strip();
+    const parsedDriverStatus = DriverStatusBody.safeParse(req.body);
+    if (!parsedDriverStatus.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedDriverStatus.error.issues });
+    }
+    const { status } = parsedDriverStatus.data;
     if (!["available", "busy", "offline"].includes(status)) {
       return res.status(400).json({ error: "Invalid status" });
     }
@@ -2685,6 +2712,29 @@ export async function registerRoutes(
   // tweaks floor / elevator / handoff / window / scheduled time / laundromat choice.
   app.post("/api/quote/dynamic", async (req, res) => {
     try {
+      const DynamicQuoteBody = z.object({
+        tierName: z.string().min(1),
+        deliverySpeed: z.string().optional(),
+        serviceType: z.string().optional(),
+        vendorId: z.union([z.number(), z.string()]).optional(),
+        pickupAddress: z.string().optional(),
+        pickupLat: z.number().optional().nullable(),
+        pickupLng: z.number().optional().nullable(),
+        addOns: z.array(z.any()).optional(),
+        promoCode: z.string().optional(),
+        pickupFloor: z.number().optional().nullable(),
+        pickupHasElevator: z.union([z.boolean(), z.number()]).optional().nullable(),
+        pickupHandoff: z.string().optional(),
+        pickupWindowMinutes: z.number().optional().nullable(),
+        scheduledPickup: z.string().optional(),
+        vendorChoiceMode: z.string().optional(),
+        recommendCheapestWindow: z.boolean().optional(),
+        view: z.enum(["customer", "admin"]).optional(),
+      }).strip();
+      const parsed = DynamicQuoteBody.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+      }
       const {
         tierName, deliverySpeed, serviceType, vendorId,
         pickupAddress, pickupLat, pickupLng,
@@ -2692,10 +2742,8 @@ export async function registerRoutes(
         pickupFloor, pickupHasElevator, pickupHandoff, pickupWindowMinutes,
         scheduledPickup, vendorChoiceMode,
         recommendCheapestWindow,
-        view,                    // "customer" (default) | "admin" — controls breakdown verbosity
-      } = req.body || {};
-
-      if (!tierName) return res.status(400).json({ error: "tierName is required" });
+        view,
+      } = parsed.data;
 
       // Customer-facing UI gets a simplified view; admin/laundromat/driver dashboards
       // get the full breakdown (vendor name, surge label, distance, traffic, etc.).
@@ -2828,16 +2876,38 @@ export async function registerRoutes(
   // ── Public: Create a quote (no auth required for website) ──
   app.post("/api/quotes", async (req, res) => {
     try {
+      const QuoteBody = z.object({
+        pickupAddress: z.string().min(1),
+        pickupCity: z.string().optional().nullable(),
+        pickupState: z.string().optional().nullable(),
+        pickupZip: z.string().optional().nullable(),
+        pickupLat: z.number().optional().nullable(),
+        pickupLng: z.number().optional().nullable(),
+        deliveryAddress: z.string().optional().nullable(),
+        serviceType: z.string().optional(),
+        tierName: z.string().min(1),
+        deliverySpeed: z.string().optional(),
+        vendorId: z.union([z.number(), z.string()]).optional(),
+        addOns: z.array(z.any()).optional(),
+        promoCode: z.string().optional(),
+        sessionId: z.string().optional().nullable(),
+        idempotencyKey: z.string().optional(),
+        pickupFloor: z.number().optional().nullable(),
+        pickupHasElevator: z.union([z.boolean(), z.number()]).optional().nullable(),
+        pickupHandoff: z.string().optional(),
+        pickupWindowMinutes: z.number().optional().nullable(),
+        scheduledPickup: z.string().optional(),
+        vendorChoiceMode: z.string().optional(),
+      }).strip();
+      const parsed = QuoteBody.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+      }
       const { pickupAddress, pickupCity, pickupState, pickupZip, pickupLat, pickupLng,
         deliveryAddress, serviceType, tierName, deliverySpeed, vendorId,
         addOns, promoCode, sessionId, idempotencyKey,
-        // Uber-style dynamic logistics inputs
         pickupFloor, pickupHasElevator, pickupHandoff, pickupWindowMinutes,
-        scheduledPickup, vendorChoiceMode } = req.body;
-
-      // Validate required fields
-      if (!pickupAddress) return res.status(400).json({ error: "Pickup address is required" });
-      if (!tierName) return res.status(400).json({ error: "Bag size (tierName) is required" });
+        scheduledPickup, vendorChoiceMode } = parsed.data;
 
       // Idempotency check
       if (idempotencyKey) {
@@ -2990,15 +3060,19 @@ export async function registerRoutes(
   // Website visitors: quote → checkout → Stripe PaymentIntent → order
   app.post("/api/public/checkout", async (req, res) => {
     try {
-      const { quoteId, email, phone, notes, pickupDate, pickupTime } = req.body;
-
-      // Validate required fields
-      if (!quoteId) return res.status(400).json({ error: "Quote ID is required" });
-      if (!email) return res.status(400).json({ error: "Email is required" });
-      if (!phone) return res.status(400).json({ error: "Phone number is required" });
-
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(email)) return res.status(400).json({ error: "Invalid email format" });
+      const CheckoutBody = z.object({
+        quoteId: z.union([z.number(), z.string()]),
+        email: z.string().email(),
+        phone: z.string().min(10),
+        notes: z.string().optional().nullable(),
+        pickupDate: z.string().optional().nullable(),
+        pickupTime: z.string().optional().nullable(),
+      }).strip();
+      const parsed = CheckoutBody.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+      }
+      const { quoteId, email, phone, notes, pickupDate, pickupTime } = parsed.data;
 
       const digits = phone.replace(/\D/g, "");
       if (digits.length < 10) return res.status(400).json({ error: "Invalid phone number" });
@@ -3418,8 +3492,12 @@ export async function registerRoutes(
   });
 
   app.put("/api/pricing/config/:key", requireAuth(["admin"]), async (req, res) => {
-    const { value, category, description } = req.body;
-    if (!value || !category) return res.status(400).json({ error: "value and category required" });
+    const PricingBody = z.object({ value: z.string().min(1), category: z.string().min(1), description: z.string().optional() }).strip();
+    const parsedPricing = PricingBody.safeParse(req.body);
+    if (!parsedPricing.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedPricing.error.issues });
+    }
+    const { value, category, description } = parsedPricing.data;
     const userId = (req as any).currentUser?.id;
     const config = await storage.upsertPricingConfig(String(req.params.key), value, category, description, userId);
     await storage.createPricingAuditEntry({
@@ -3560,16 +3638,36 @@ export async function registerRoutes(
     try {
       const currentUser = (req as any).currentUser;
       const customerId = currentUser.id;
+      const OrderBody = z.object({
+        pickupAddressId: z.number(),
+        pickupAddress: z.string().min(1),
+        deliveryType: z.string().optional(),
+        deliverySpeed: z.string().optional(),
+        scheduledPickup: z.string().optional(),
+        pickupTimeWindow: z.string().optional().nullable(),
+        bags: z.union([z.string(), z.array(z.any())]).optional(),
+        preferences: z.any().optional(),
+        certifiedOnly: z.number().optional(),
+        customerNotes: z.string().optional().nullable(),
+        addressNotes: z.string().optional().nullable(),
+        paymentMethodId: z.number().optional().nullable(),
+        serviceType: z.string().optional(),
+        promoCode: z.string().optional().nullable(),
+        loyaltyPointsToRedeem: z.number().optional(),
+        pricingTierId: z.number().optional().nullable(),
+        tierName: z.string().optional().nullable(),
+        selectedAddOns: z.array(z.any()).optional(),
+      }).strip();
+      const parsed = OrderBody.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+      }
       const {
         pickupAddressId, pickupAddress, deliveryType, deliverySpeed,
         scheduledPickup, pickupTimeWindow, bags, preferences, certifiedOnly,
         customerNotes, addressNotes, paymentMethodId, serviceType, promoCode,
         loyaltyPointsToRedeem, pricingTierId, tierName, selectedAddOns,
-      } = req.body;
-
-      if (!pickupAddressId || !pickupAddress) {
-        return res.status(400).json({ error: "Missing required fields: pickupAddressId, pickupAddress" });
-      }
+      } = parsed.data;
 
       let parsedBags: any[];
       try {
@@ -3910,7 +4008,22 @@ export async function registerRoutes(
       }
     }
 
-    const { status, description, actorId, actorRole, photoUrl, lat, lng, details, driverId: reqDriverId } = req.body;
+    const StatusBody = z.object({
+      status: z.string().min(1),
+      description: z.string().optional(),
+      actorId: z.number().optional(),
+      actorRole: z.string().optional(),
+      photoUrl: z.string().optional(),
+      lat: z.number().optional(),
+      lng: z.number().optional(),
+      details: z.string().optional(),
+      driverId: z.number().optional(),
+    }).strip();
+    const parsedBody = StatusBody.safeParse(req.body);
+    if (!parsedBody.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedBody.error.issues });
+    }
+    const { status, description, actorId, actorRole, photoUrl, lat, lng, details, driverId: reqDriverId } = parsedBody.data;
     const allowed = validTransitions[order.status];
     if (!allowed || !allowed.includes(status)) {
       return res.status(400).json({
@@ -4297,19 +4410,44 @@ export async function registerRoutes(
       manager: "*",
       admin: "*",
     };
+    const OrderPatch = z.object({
+      status: z.string().optional(),
+      customerNotes: z.string().optional().nullable(),
+      specialInstructions: z.string().optional().nullable(),
+      deliveryNotes: z.string().optional().nullable(),
+      actualWeight: z.number().optional().nullable(),
+      overageWeight: z.number().optional().nullable(),
+      pickupPhotoUrl: z.string().optional().nullable(),
+      deliveryPhotoUrl: z.string().optional().nullable(),
+      driverNotes: z.string().optional().nullable(),
+      driverLocationLat: z.number().optional().nullable(),
+      driverLocationLng: z.number().optional().nullable(),
+      estimatedDeliveryTime: z.string().optional().nullable(),
+      processingNotes: z.string().optional().nullable(),
+      weightVerified: z.union([z.number(), z.boolean()]).optional().nullable(),
+      vendorNotes: z.string().optional().nullable(),
+      washStartedAt: z.string().optional().nullable(),
+      washCompletedAt: z.string().optional().nullable(),
+      qualityScore: z.number().optional().nullable(),
+      finalWeight: z.number().optional().nullable(),
+    }).strip();
+    const parsedPatch = OrderPatch.safeParse(req.body);
+    if (!parsedPatch.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedPatch.error.issues });
+    }
+    const patchData = parsedPatch.data;
     const allowedFields = ROLE_FIELD_WHITELIST[currentUser.role];
-    // Default-deny: unknown role has no permission to update any field
     if (allowedFields === undefined) {
       return res.status(403).json({ error: `Role '${currentUser.role}' is not permitted to update orders` });
     }
     if (allowedFields !== "*" && Array.isArray(allowedFields)) {
-      const extraFields = Object.keys(req.body).filter(k => !allowedFields.includes(k));
+      const extraFields = Object.keys(patchData).filter(k => !allowedFields.includes(k));
       if (extraFields.length > 0) {
         return res.status(403).json({ error: `Role '${currentUser.role}' cannot update fields: ${extraFields.join(", ")}` });
       }
     }
 
-    const updated = await storage.updateOrder(order.id, req.body);
+    const updated = await storage.updateOrder(order.id, patchData);
     res.json(updated);
   });
 
@@ -4325,7 +4463,12 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Access denied" });
     }
 
-    const { issueType, description, photoUrl } = req.body;
+    const ReportIssueBody = z.object({ issueType: z.string().min(1), description: z.string().min(1), photoUrl: z.string().optional() }).strip();
+    const parsedReport = ReportIssueBody.safeParse(req.body);
+    if (!parsedReport.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedReport.error.issues });
+    }
+    const { issueType, description, photoUrl } = parsedReport.data;
     const validIssues = ["customer_unavailable", "wrong_address", "building_access", "safety_concern", "vehicle_issue", "other"];
     if (!issueType || !validIssues.includes(issueType)) {
       return res.status(400).json({ error: `Invalid issue type. Valid: ${validIssues.join(", ")}` });
@@ -4535,7 +4678,16 @@ export async function registerRoutes(
       }
     }
 
-    const { action, reason, estimatedCompletionTime } = req.body;
+    const VendorActionBody = z.object({
+      action: z.enum(["accept", "reject", "quality_check", "mark_complete"]),
+      reason: z.string().optional(),
+      estimatedCompletionTime: z.string().optional(),
+    }).strip();
+    const parsedVA = VendorActionBody.safeParse(req.body);
+    if (!parsedVA.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedVA.error.issues });
+    }
+    const { action, reason, estimatedCompletionTime } = parsedVA.data;
     const ts = now();
 
     switch (action) {
@@ -4586,10 +4738,14 @@ export async function registerRoutes(
 
   // ── CANCEL ORDER ──
   app.post("/api/orders/:id/cancel", requireAuth(), async (req, res) => {
+    const CancelBody = z.object({ reason: z.string().optional() }).strip();
+    const parsedCancel = CancelBody.safeParse(req.body);
+    if (!parsedCancel.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedCancel.error.issues });
+    }
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    // BOLA: only order participants or admin/manager can cancel
     const currentUser = (req as any).currentUser;
     if (!(await canAccessOrder(order, currentUser))) {
       return res.status(403).json({ error: "Access denied" });
@@ -4668,7 +4824,7 @@ export async function registerRoutes(
     await storage.createOrderEvent({
       orderId: order.id,
       eventType: "cancelled",
-      description: req.body.reason || "Order cancelled by customer — full refund issued",
+      description: parsedCancel.data.reason || "Order cancelled by customer — full refund issued",
       actorId: currentUser.id,
       actorRole: currentUser.role,
       timestamp: ts_,
@@ -4699,10 +4855,12 @@ export async function registerRoutes(
       return res.status(400).json({ error: "Order cannot be rescheduled at this stage. Only orders before pickup can be rescheduled." });
     }
 
-    const { pickupDate, pickupTimeSlot } = req.body;
-    if (!pickupDate || !pickupTimeSlot) {
-      return res.status(400).json({ error: "pickupDate and pickupTimeSlot are required" });
+    const RescheduleBody = z.object({ pickupDate: z.string().min(1), pickupTimeSlot: z.string().min(1) }).strip();
+    const parsedReschedule = RescheduleBody.safeParse(req.body);
+    if (!parsedReschedule.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedReschedule.error.issues });
     }
+    const { pickupDate, pickupTimeSlot } = parsedReschedule.data;
 
     const ts_ = now();
     const oldPickup = order.scheduledPickup;
@@ -4878,21 +5036,26 @@ export async function registerRoutes(
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    const { weight, photoUrl, actorId } = req.body;
-    if (!weight) return res.status(400).json({ error: "Weight is required" });
+    const IntakeBody = z.object({ weight: z.number(), photoUrl: z.string().optional() }).strip();
+    const parsedIntake = IntakeBody.safeParse(req.body);
+    if (!parsedIntake.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedIntake.error.issues });
+    }
+    const { weight, photoUrl } = parsedIntake.data;
 
     await storage.updateOrder(order.id, {
       intakeWeight: weight,
       intakePhotoUrl: photoUrl || undefined,
     });
 
+    const intakeCu = (req as any).currentUser;
     await storage.createOrderEvent({
       orderId: order.id,
       eventType: "intake_completed",
       description: `Intake: ${weight} lbs recorded${photoUrl ? ", photo taken" : ""}`,
       details: JSON.stringify({ weight, photoUrl }),
-      actorId,
-      actorRole: "vendor",
+      actorId: intakeCu.id,
+      actorRole: intakeCu.role,
       photoUrl,
       timestamp: now(),
     });
@@ -4912,8 +5075,12 @@ export async function registerRoutes(
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    const { weight, actorId } = req.body;
-    if (!weight) return res.status(400).json({ error: "Weight is required" });
+    const OutputBody = z.object({ weight: z.number() }).strip();
+    const parsedOut = OutputBody.safeParse(req.body);
+    if (!parsedOut.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedOut.error.issues });
+    }
+    const { weight } = parsedOut.data;
 
     const updateData: any = { outputWeight: weight };
 
@@ -4945,18 +5112,19 @@ export async function registerRoutes(
           status: "pending",
           requestedAt: now(),
           autoApproveAt: new Date(Date.now() + CONSENT_TIMEOUT_HOURS * 3600000).toISOString(),
-          requestedBy: actorId,
+          requestedBy: ((req as any).currentUser).id,
         });
       }
     }
 
+    const outputCu = (req as any).currentUser;
     await storage.updateOrder(order.id, updateData);
     await storage.createOrderEvent({
       orderId: order.id,
       eventType: "output_weight_recorded",
       description: `Output weight: ${weight} lbs`,
-      actorId,
-      actorRole: "vendor",
+      actorId: outputCu.id,
+      actorRole: outputCu.role,
       timestamp: now(),
     });
 
@@ -4975,7 +5143,13 @@ export async function registerRoutes(
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    const { weight, actorId } = req.body;
+    const DirtyWeightBody = z.object({ weight: z.number() }).strip();
+    const parsedDirtyWeight = DirtyWeightBody.safeParse(req.body);
+    if (!parsedDirtyWeight.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedDirtyWeight.error.issues });
+    }
+    const { weight } = parsedDirtyWeight.data;
+    const actorId = req.body.actorId;
     if (!weight || weight <= 0) return res.status(400).json({ error: "Valid weight is required" });
 
     await storage.updateOrder(order.id, { dirtyWeight: weight });
@@ -5005,7 +5179,13 @@ export async function registerRoutes(
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    const { weight, actorId } = req.body;
+    const CleanWeightBody = z.object({ weight: z.number() }).strip();
+    const parsedCleanWeight = CleanWeightBody.safeParse(req.body);
+    if (!parsedCleanWeight.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedCleanWeight.error.issues });
+    }
+    const { weight } = parsedCleanWeight.data;
+    const actorId = req.body.actorId;
     if (!weight || weight <= 0) return res.status(400).json({ error: "Valid weight is required" });
 
     const updateData: any = { cleanWeight: weight };
@@ -5112,8 +5292,22 @@ export async function registerRoutes(
   });
 
   app.post("/api/orders/:id/events", requireAuth(["admin", "manager"]), async (req, res) => {
+    const EventBody = z.object({
+      eventType: z.string().min(1),
+      description: z.string().min(1),
+      details: z.string().optional().nullable(),
+      actorId: z.number().optional(),
+      actorRole: z.string().optional(),
+      photoUrl: z.string().optional().nullable(),
+      lat: z.number().optional(),
+      lng: z.number().optional(),
+    }).strip();
+    const parsed = EventBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
     const event = await storage.createOrderEvent({
-      ...req.body,
+      ...parsed.data,
       orderId: Number(String(req.params.id)),
       timestamp: now(),
     });
@@ -5272,10 +5466,17 @@ export async function registerRoutes(
     const ts_ = now();
     const autoApproveAt = new Date(Date.now() + CONSENT_TIMEOUT_HOURS * 3600000).toISOString();
 
-    // Server controls who requested it — do not trust client `requestedBy`.
-    const { requestedBy: _ignoreClientRequestedBy, orderId: _ignoreClientOrderId, ...rest } = req.body || {};
+    const ConsentBody = z.object({
+      consentType: z.string().min(1),
+      description: z.string().min(1),
+      additionalCharge: z.number().optional().default(0),
+    }).strip();
+    const parsedConsent = ConsentBody.safeParse(req.body);
+    if (!parsedConsent.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedConsent.error.issues });
+    }
     const consent = await storage.createConsent({
-      ...rest,
+      ...parsedConsent.data,
       orderId,
       requestedBy: cu.id,
       requestedAt: ts_,
@@ -5286,7 +5487,7 @@ export async function registerRoutes(
     await storage.createOrderEvent({
       orderId,
       eventType: "consent_requested",
-      description: `Consent requested: ${rest.consentType} — ${rest.description}`,
+      description: `Consent requested: ${parsedConsent.data.consentType} — ${parsedConsent.data.description}`,
       actorId: cu.id,
       actorRole: cu.role,
       timestamp: ts_,
@@ -5296,7 +5497,7 @@ export async function registerRoutes(
     if (orderC) {
       await notifyUser(orderC.customerId, orderC.id, "consent_request",
         "Action Required",
-        `The laundromat needs your approval: ${rest.description}. Auto-approves in ${CONSENT_TIMEOUT_HOURS} hours.`,
+        `The laundromat needs your approval: ${parsedConsent.data.description}. Auto-approves in ${CONSENT_TIMEOUT_HOURS} hours.`,
         `/orders/${orderC.id}`
       );
     }
@@ -5371,8 +5572,13 @@ export async function registerRoutes(
     if (!(await canAccessOrder(order, currentUser))) {
       return res.status(403).json({ error: "Access denied" });
     }
+    const MsgBody = z.object({ content: z.string().min(1), type: z.string().optional() }).strip();
+    const parsedMsg = MsgBody.safeParse(req.body);
+    if (!parsedMsg.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedMsg.error.issues });
+    }
     const msg = await storage.createMessage({
-      ...req.body,
+      ...parsedMsg.data,
       orderId: Number(String(req.params.id)),
       senderId: currentUser.id,
       senderRole: currentUser.role,
@@ -5613,7 +5819,12 @@ export async function registerRoutes(
 
   app.post("/api/push/register-token", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
-    const { token, platform } = req.body || {};
+    const PushTokenBody = z.object({ token: z.string().min(1), platform: z.string().optional() }).strip();
+    const parsedPushToken = PushTokenBody.safeParse(req.body);
+    if (!parsedPushToken.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedPushToken.error.issues });
+    }
+    const { token, platform } = parsedPushToken.data;
     if (!token || typeof token !== "string") return res.status(400).json({ error: "token is required" });
     if (!platform || typeof platform !== "string") return res.status(400).json({ error: "platform is required" });
     if (!["ios", "android", "web"].includes(platform)) return res.status(400).json({ error: "Unsupported platform" });
@@ -5671,7 +5882,12 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.post("/api/pricing/calculate", requireAuth(), async (req, res) => {
-    const { bags, deliverySpeed } = req.body;
+    const PricingBody = z.object({ bags: z.union([z.string(), z.array(z.any())]), deliverySpeed: z.string().optional() }).strip();
+    const parsedPricing = PricingBody.safeParse(req.body);
+    if (!parsedPricing.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedPricing.error.issues });
+    }
+    const { bags, deliverySpeed } = parsedPricing.data;
     let parsedBags: any[];
     try {
       parsedBags = typeof bags === "string" ? JSON.parse(bags) : bags;
@@ -5684,7 +5900,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: `Invalid bag type '${bag.type}'. Must be one of: ${validBagTypes.join(", ")}` });
       }
     }
-    res.json(await calculatePricing(parsedBags, deliverySpeed));
+    res.json(await calculatePricing(parsedBags, deliverySpeed || "standard"));
   });
 
   // ─────────────────────────────────────────────────────────
@@ -5779,12 +5995,14 @@ export async function registerRoutes(
   });
 
   app.post("/api/loyalty/redeem", requireAuth(), async (req, res) => {
-    const { userId, points, orderId } = req.body;
-    if (!userId || !points) {
-      return res.status(400).json({ error: "userId and points are required" });
+    const RedeemBody = z.object({ userId: z.number(), points: z.number(), orderId: z.number().optional() }).strip();
+    const parsedRedeem = RedeemBody.safeParse(req.body);
+    if (!parsedRedeem.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedRedeem.error.issues });
     }
+    const { userId, points, orderId } = parsedRedeem.data;
     const currentUser = (req as any).currentUser;
-    if (Number(userId) !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
+    if (userId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
     if (points % 100 !== 0) {
@@ -5882,7 +6100,12 @@ export async function registerRoutes(
   app.post("/api/referrals/apply", requireAuth(), async (req, res) => {
     // F1: ALWAYS derive userId from session — never trust client body.
     const currentUser = (req as any).currentUser;
-    const { referralCode } = req.body;
+    const ReferralBody = z.object({ referralCode: z.string().min(1) }).strip();
+    const parsedReferral = ReferralBody.safeParse(req.body);
+    if (!parsedReferral.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedReferral.error.issues });
+    }
+    const { referralCode } = parsedReferral.data;
     if (!referralCode) {
       return res.status(400).json({ error: "referralCode is required" });
     }
@@ -5947,7 +6170,12 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.post("/api/promo/validate", requireAuth(), async (req, res) => {
-    const { code, orderTotal, userId } = req.body;
+    const PromoBody = z.object({ code: z.string().min(1), orderTotal: z.number().optional(), userId: z.number().optional() }).strip();
+    const parsedPromo = PromoBody.safeParse(req.body);
+    if (!parsedPromo.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedPromo.error.issues });
+    }
+    const { code, orderTotal, userId } = parsedPromo.data;
     if (!code) return res.status(400).json({ error: "Promo code is required" });
 
     const promo = await storage.getPromoCode(code.toUpperCase());
@@ -6003,13 +6231,19 @@ export async function registerRoutes(
   });
 
   app.post("/api/admin/promos", requireAuth(["admin"]), async (req, res) => {
-    const { code, type, value, minOrderAmount, maxUses, expiresAt } = req.body;
-    if (!code || !type || value === undefined) {
-      return res.status(400).json({ error: "code, type, and value are required" });
+    const PromoCreateBody = z.object({
+      code: z.string().min(1),
+      type: z.enum(["percentage", "fixed", "free_delivery"]),
+      value: z.number(),
+      minOrderAmount: z.number().optional(),
+      maxUses: z.number().optional(),
+      expiresAt: z.string().optional().nullable(),
+    }).strip();
+    const parsedPromo = PromoCreateBody.safeParse(req.body);
+    if (!parsedPromo.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedPromo.error.issues });
     }
-    if (!["percentage", "fixed", "free_delivery"].includes(type)) {
-      return res.status(400).json({ error: "type must be percentage, fixed, or free_delivery" });
-    }
+    const { code, type, value, minOrderAmount, maxUses, expiresAt } = parsedPromo.data;
 
     const existing = await storage.getPromoCode(code.toUpperCase());
     if (existing) {
@@ -6033,10 +6267,23 @@ export async function registerRoutes(
   });
 
   app.patch("/api/admin/promos/:id", requireAuth(["admin"]), async (req, res) => {
+    const PromoPatch = z.object({
+      code: z.string().optional(),
+      type: z.enum(["percentage", "fixed", "free_delivery"]).optional(),
+      value: z.number().optional(),
+      minOrderAmount: z.number().optional(),
+      maxUses: z.number().optional(),
+      isActive: z.number().optional(),
+      expiresAt: z.string().optional().nullable(),
+    }).strip();
+    const parsed = PromoPatch.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
     const promoId = Number(String(req.params.id));
-    const updated = await storage.updatePromoCode(promoId, req.body);
+    const updated = await storage.updatePromoCode(promoId, parsed.data);
     if (!updated) return res.status(404).json({ error: "Promo code not found" });
-    logAdminAction(req, { action: "promo.update", entityType: "promo", entityId: promoId, newValue: req.body });
+    logAdminAction(req, { action: "promo.update", entityType: "promo", entityId: promoId, newValue: parsed.data });
     res.json(updated);
   });
 
@@ -6053,7 +6300,12 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.post("/api/chat/message", requireAuth(), async (req, res) => {
-    const { message, sessionId } = req.body;
+    const ChatMessageBody = z.object({ message: z.string().min(1), sessionId: z.number().optional() }).strip();
+    const parsedChatMsg = ChatMessageBody.safeParse(req.body);
+    if (!parsedChatMsg.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedChatMsg.error.issues });
+    }
+    const { message, sessionId } = parsedChatMsg.data;
     const currentUser = (req as any).currentUser;
     const userId = currentUser.id;
     if (!message) {
@@ -6502,7 +6754,12 @@ export async function registerRoutes(
   app.post("/api/subscription/upgrade", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     const userId = currentUser.id;
-    const { tier } = req.body;
+    const SubscriptionBody = z.object({ tier: z.string().min(1) }).strip();
+    const parsedSubscription = SubscriptionBody.safeParse(req.body);
+    if (!parsedSubscription.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedSubscription.error.issues });
+    }
+    const { tier } = parsedSubscription.data;
     if (!tier) {
       return res.status(400).json({ error: "tier is required" });
     }
@@ -7196,10 +7453,18 @@ export async function registerRoutes(
   });
 
   app.post("/api/vendor-payouts", requireAuth(["admin", "manager"]), async (req, res) => {
-    const { vendorId, amount, periodStart, periodEnd, ordersCount } = req.body;
-    if (!vendorId || !amount) {
-      return res.status(400).json({ error: "vendorId and amount are required" });
+    const PayoutBody = z.object({
+      vendorId: z.number(),
+      amount: z.number(),
+      periodStart: z.string().optional(),
+      periodEnd: z.string().optional(),
+      ordersCount: z.number().optional(),
+    }).strip();
+    const parsedPayout = PayoutBody.safeParse(req.body);
+    if (!parsedPayout.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedPayout.error.issues });
     }
+    const { vendorId, amount, periodStart, periodEnd, ordersCount } = parsedPayout.data;
     const payout = await storage.createVendorPayout({
       vendorId,
       amount,
@@ -7244,7 +7509,12 @@ export async function registerRoutes(
   // ─────────────────────────────────────────────────────────
 
   app.post("/api/ai/chat", requireAuth(), async (req, res) => {
-    const { message, sessionId, orderId } = req.body;
+    const AiChatBody = z.object({ message: z.string().min(1), sessionId: z.number().optional(), orderId: z.number().optional() }).strip();
+    const parsedAiChat = AiChatBody.safeParse(req.body);
+    if (!parsedAiChat.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedAiChat.error.issues });
+    }
+    const { message, sessionId, orderId } = parsedAiChat.data;
     const currentUser = (req as any).currentUser;
     const userId = currentUser.id;
     if (!message) return res.status(400).json({ error: "message is required" });
@@ -7311,8 +7581,18 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    const { weight, deviceName, rawReading, taredReading, weightType, actorId } = req.body;
-    if (!weight || !weightType) return res.status(400).json({ error: "weight and weightType (dirty|clean) required" });
+    const BleBody = z.object({
+      weight: z.number(),
+      weightType: z.enum(["dirty", "clean"]),
+      deviceName: z.string().optional(),
+      rawReading: z.number().optional(),
+      taredReading: z.number().optional(),
+    }).strip();
+    const parsedBle = BleBody.safeParse(req.body);
+    if (!parsedBle.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedBle.error.issues });
+    }
+    const { weight, deviceName, rawReading, taredReading, weightType } = parsedBle.data;
 
     const updateData: any = {};
     const ts_ = now();
@@ -7343,7 +7623,7 @@ export async function registerRoutes(
       eventType: weightType === "dirty" ? "dirty_weight_recorded" : "clean_weight_recorded",
       description: `${weightType === "dirty" ? "Dirty" : "Clean"} weight: ${weight} lbs (BLE scale: ${deviceName || "unknown"})`,
       details: JSON.stringify({ weight, deviceName, rawReading, taredReading, source: "ble_scale" }),
-      actorId, actorRole: "vendor", timestamp: ts_,
+      actorId: currentUser.id, actorRole: currentUser.role, timestamp: ts_,
     });
 
     res.json(await storage.getOrder(order.id));
@@ -7493,7 +7773,12 @@ export async function registerRoutes(
   }
 
   app.post("/api/payments/create-intent", requireAuth(), async (req, res) => {
-    const { orderId } = req.body;
+    const CreateIntentBody = z.object({ orderId: z.number() }).strip();
+    const parsedCreateIntent = CreateIntentBody.safeParse(req.body);
+    if (!parsedCreateIntent.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedCreateIntent.error.issues });
+    }
+    const { orderId } = parsedCreateIntent.data;
     if (!orderId) return res.status(400).json({ error: "orderId required" });
 
     const order = await storage.getOrder(Number(orderId));
@@ -7552,7 +7837,12 @@ export async function registerRoutes(
     // Stripe PaymentIntent that has actually succeeded. We verify with Stripe
     // directly. Demo/zero-amount intents (pi_demo_*, pi_quote_*, pi_zero_*) are
     // not eligible — the webhook is the only path to "captured" for them too.
-    const { orderId } = req.body;
+    const ConfirmPaymentBody = z.object({ orderId: z.number() }).strip();
+    const parsedConfirmPayment = ConfirmPaymentBody.safeParse(req.body);
+    if (!parsedConfirmPayment.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedConfirmPayment.error.issues });
+    }
+    const { orderId } = parsedConfirmPayment.data;
     if (!orderId) return res.status(400).json({ error: "orderId required" });
     const order = await storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
@@ -7610,8 +7900,12 @@ export async function registerRoutes(
   });
 
   app.post("/api/payments/refund", requireAuth(["admin", "manager"]), async (req, res) => {
-    const { orderId, amount, reason } = req.body;
-    if (!orderId || amount === undefined) return res.status(400).json({ error: "orderId and amount required" });
+    const RefundBody = z.object({ orderId: z.number(), amount: z.number(), reason: z.string().optional() }).strip();
+    const parsedRefund = RefundBody.safeParse(req.body);
+    if (!parsedRefund.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedRefund.error.issues });
+    }
+    const { orderId, amount, reason } = parsedRefund.data;
     const order = await storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -7750,8 +8044,12 @@ export async function registerRoutes(
     const driver = await storage.getDriver(driverId);
     if (!driver) return res.status(404).json({ error: "Driver not found" });
 
-    const { lat, lng, speed, heading, accuracy } = req.body;
-    if (lat == null || lng == null) return res.status(400).json({ error: "lat and lng required" });
+    const LocPostBody = z.object({ lat: z.number(), lng: z.number(), speed: z.number().optional(), heading: z.number().optional(), accuracy: z.number().optional() }).strip();
+    const parsedLocPost = LocPostBody.safeParse(req.body);
+    if (!parsedLocPost.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedLocPost.error.issues });
+    }
+    const { lat, lng, speed, heading, accuracy } = parsedLocPost.data;
 
     await storage.updateDriver(driverId, { currentLat: lat, currentLng: lng });
 
@@ -7880,13 +8178,21 @@ export async function registerRoutes(
     if (!(await canAccessOrder(order, currentUser))) {
       return res.status(403).json({ error: "Forbidden" });
     }
-    if (currentUser.role === "customer" && ["pickup_proof", "delivery_proof"].includes(req.body.type)) {
+    const PhotoBody = z.object({
+      type: z.string().min(1),
+      photoData: z.string().min(1),
+      lat: z.number().optional(),
+      lng: z.number().optional(),
+      notes: z.string().optional(),
+    }).strip();
+    const parsedPhoto = PhotoBody.safeParse(req.body);
+    if (!parsedPhoto.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedPhoto.error.issues });
+    }
+    const { type, photoData, lat, lng, notes } = parsedPhoto.data;
+    if (currentUser.role === "customer" && ["pickup_proof", "delivery_proof"].includes(type)) {
       return res.status(403).json({ error: "Customers cannot upload proof photos" });
     }
-
-    const { type, photoData, lat, lng, notes } = req.body;
-
-    if (!type || !photoData) return res.status(400).json({ error: "type and photoData required" });
     if (!VALID_PHOTO_TYPES.includes(type)) {
       return res.status(400).json({ error: `Invalid photo type. Must be one of: ${VALID_PHOTO_TYPES.join(", ")}` });
     }
@@ -8016,7 +8322,12 @@ export async function registerRoutes(
     if (!isR2Enabled()) {
       return res.status(503).json({ error: "R2 storage is not configured" });
     }
-    const { orderId, type, contentType } = req.body;
+    const PresignedUploadBody = z.object({ orderId: z.number(), type: z.string().min(1), contentType: z.string().optional() }).strip();
+    const parsedPresigned = PresignedUploadBody.safeParse(req.body);
+    if (!parsedPresigned.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedPresigned.error.issues });
+    }
+    const { orderId, type, contentType } = parsedPresigned.data;
     if (!orderId || !type || !contentType) {
       return res.status(400).json({ error: "orderId, type, and contentType are required" });
     }
@@ -8243,8 +8554,12 @@ export async function registerRoutes(
     }
     // admins and system roles are not blocked by ownership.
 
-    const { newStatus, notes, lat, lng } = req.body;
-    if (!newStatus) return res.status(400).json({ error: "newStatus is required" });
+    const TransitionBody = z.object({ newStatus: z.string().min(1), notes: z.string().optional(), lat: z.number().optional(), lng: z.number().optional() }).strip();
+    const parsedTransition = TransitionBody.safeParse(req.body);
+    if (!parsedTransition.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedTransition.error.issues });
+    }
+    const { newStatus, notes, lat, lng } = parsedTransition.data;
 
     // Validate the transition using the FSM
     const validation = validateTransition(order.status, newStatus, role);
@@ -8697,7 +9012,12 @@ export async function registerRoutes(
   const communicationLog: any[] = [];
 
   app.post("/api/communications/send", requireAuth(["admin", "system"]), async (req, res) => {
-    const { recipientId, channel, templateName, templateData, orderId } = req.body;
+    const CommunicationBody = z.object({ recipientId: z.number(), channel: z.string().min(1), templateName: z.string().min(1), templateData: z.any().optional(), orderId: z.number().optional() }).strip();
+    const parsedComm = CommunicationBody.safeParse(req.body);
+    if (!parsedComm.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedComm.error.issues });
+    }
+    const { recipientId, channel, templateName, templateData, orderId } = parsedComm.data;
     if (!recipientId || !channel || !templateName) {
       return res.status(400).json({ error: "recipientId, channel, and templateName required" });
     }
@@ -8792,13 +9112,17 @@ export async function registerRoutes(
 
   // ── Enhanced refund with reason codes and partial refund support ──
   app.post("/api/payments/partial-refund", requireAuth(["admin", "manager"]), async (req, res) => {
-    const { orderId, amount, reasonCode, notes } = req.body;
-    if (!orderId || amount === undefined) return res.status(400).json({ error: "orderId and amount required" });
-
-    const validReasons = ["damaged_items", "late_delivery", "wrong_items", "quality_issue", "customer_request", "overcharge", "other"];
-    if (reasonCode && !validReasons.includes(reasonCode)) {
-      return res.status(400).json({ error: `Invalid reason code. Valid: ${validReasons.join(", ")}` });
+    const PartialRefundBody = z.object({
+      orderId: z.number(),
+      amount: z.number(),
+      reasonCode: z.enum(["damaged_items", "late_delivery", "wrong_items", "quality_issue", "customer_request", "overcharge", "other"]).optional(),
+      notes: z.string().optional(),
+    }).strip();
+    const parsedPR = PartialRefundBody.safeParse(req.body);
+    if (!parsedPR.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedPR.error.issues });
     }
+    const { orderId, amount, reasonCode, notes } = parsedPR.data;
 
     const order = await storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
@@ -9245,7 +9569,12 @@ export async function registerRoutes(
 
   // ── Send email endpoint for admin/system use ──
   app.post("/api/notifications/send-email", requireAuth(["admin", "manager"]), async (req, res) => {
-    const { orderId, template, customEmail } = req.body;
+    const SendEmailBody = z.object({ orderId: z.number().optional(), template: z.string().optional(), customEmail: z.string().email().optional() }).strip();
+    const parsedSendEmail = SendEmailBody.safeParse(req.body);
+    if (!parsedSendEmail.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedSendEmail.error.issues });
+    }
+    const { orderId, template, customEmail } = parsedSendEmail.data;
     if (!orderId && !customEmail) return res.status(400).json({ error: "orderId or customEmail required" });
 
     if (orderId) {
@@ -9287,10 +9616,23 @@ export async function registerRoutes(
 
   app.patch("/api/admin/notification-rules/:id", requireAuth(["admin"]), async (req, res) => {
     try {
+      const RulePatch = z.object({
+        name: z.string().optional(),
+        trigger: z.string().optional(),
+        audience: z.string().optional(),
+        channels: z.string().optional(),
+        titleTemplate: z.string().optional(),
+        bodyTemplate: z.string().optional(),
+        isActive: z.number().optional(),
+      }).strip();
+      const parsed = RulePatch.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+      }
       const id = Number(req.params.id);
-      const rule = await storage.updateNotificationRule(id, req.body);
+      const rule = await storage.updateNotificationRule(id, parsed.data);
       if (!rule) return res.status(404).json({ error: "Rule not found" });
-      logAdminAction(req, { action: "notification_rule.update", entityType: "notification_rule", entityId: id, newValue: req.body });
+      logAdminAction(req, { action: "notification_rule.update", entityType: "notification_rule", entityId: id, newValue: parsed.data });
       res.json(rule);
     } catch (err: any) {
       console.error("[notification-rules] update error:", err);
@@ -9359,10 +9701,22 @@ export async function registerRoutes(
 
   app.patch("/api/admin/add-ons/:id", requireAuth(["admin"]), async (req, res) => {
     try {
+      const AddOnPatch = z.object({
+        name: z.string().optional(),
+        displayName: z.string().optional(),
+        price: z.number().optional(),
+        description: z.string().optional().nullable(),
+        category: z.string().optional(),
+        isActive: z.number().optional(),
+      }).strip();
+      const parsed = AddOnPatch.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+      }
       const id = Number(req.params.id);
       const before = await storage.getAddOn(id);
       if (!before) return res.status(404).json({ error: "Add-on not found" });
-      const item = await storage.updateAddOn(id, req.body);
+      const item = await storage.updateAddOn(id, parsed.data);
       if (!item) return res.status(404).json({ error: "Add-on not found" });
       try {
         await storage.createPricingAuditEntry({
@@ -9440,8 +9794,12 @@ export async function registerRoutes(
 
   app.put("/api/admin/pricing-config/:key", requireAuth(["admin"]), async (req, res) => {
     try {
-      const { value, category, description } = req.body;
-      if (value === undefined || value === null) return res.status(400).json({ error: "value is required" });
+      const AdminPricingBody = z.object({ value: z.union([z.string(), z.number()]), category: z.string().optional(), description: z.string().optional() }).strip();
+      const parsedAP = AdminPricingBody.safeParse(req.body);
+      if (!parsedAP.success) {
+        return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedAP.error.issues });
+      }
+      const { value, category, description } = parsedAP.data;
       const key = String(req.params.key);
 
       // Validate based on key pattern
@@ -9464,7 +9822,7 @@ export async function registerRoutes(
         key,
         typeof value === "object" ? JSON.stringify(value) : String(value),
         category || existing?.category || "general",
-        description || existing?.description,
+        description || existing?.description || undefined,
         currentUser?.id,
       );
 
@@ -9725,16 +10083,59 @@ export async function registerRoutes(
   // POST /api/partner-applications — public endpoint, anyone can apply
   app.post("/api/partner-applications", async (req, res) => {
     try {
-      // Light validation - we accept partial submissions but auto-screen will flag
-      const body = req.body || {};
-      if (!body.applicantType || !["driver","laundromat"].includes(body.applicantType)) {
-        return res.status(400).json({ error: "applicantType must be 'driver' or 'laundromat'" });
+      const PartnerAppBody = z.object({
+        applicantType: z.enum(["driver", "laundromat"]),
+        fullName: z.string().min(1),
+        email: z.string().email(),
+        phone: z.string().min(1),
+        addressLine: z.string().optional().nullable(),
+        city: z.string().optional().nullable(),
+        state: z.string().optional().nullable(),
+        zip: z.string().optional().nullable(),
+        serviceZips: z.string().optional().nullable(),
+        vehicleType: z.string().optional().nullable(),
+        licensePlate: z.string().optional().nullable(),
+        driversLicenseNumber: z.string().optional().nullable(),
+        driversLicenseState: z.string().optional().nullable(),
+        driversLicenseExpiry: z.string().optional().nullable(),
+        insuranceCarrier: z.string().optional().nullable(),
+        insurancePolicyNumber: z.string().optional().nullable(),
+        insuranceExpiry: z.string().optional().nullable(),
+        hasCleanDrivingRecord: z.number().optional().nullable(),
+        yearsDriving: z.number().optional().nullable(),
+        availabilityJson: z.string().optional().nullable(),
+        hoursPerWeek: z.number().optional().nullable(),
+        ownsSmartphone: z.number().optional().nullable(),
+        consentBackgroundCheck: z.number().optional().nullable(),
+        businessName: z.string().optional().nullable(),
+        businessLegalEntity: z.string().optional().nullable(),
+        ein: z.string().optional().nullable(),
+        yearsInBusiness: z.number().optional().nullable(),
+        numberOfWashers: z.number().optional().nullable(),
+        numberOfDryers: z.number().optional().nullable(),
+        largestMachineLbs: z.number().optional().nullable(),
+        dailyCapacityLbs: z.number().optional().nullable(),
+        operatingHoursJson: z.string().optional().nullable(),
+        servicesOfferedJson: z.string().optional().nullable(),
+        acceptsCommercial: z.number().optional().nullable(),
+        acceptsRushSameDay: z.number().optional().nullable(),
+        hasDryCleaningOnSite: z.number().optional().nullable(),
+        acceptsHypoallergenic: z.number().optional().nullable(),
+        hasInsurance: z.number().optional().nullable(),
+        insuranceCarrierBiz: z.string().optional().nullable(),
+        agreesToQualityStandards: z.number().default(0),
+        agreesToPricing: z.number().default(0),
+        agreesToTermsOfService: z.number().default(0),
+        agreesToBackgroundCheck: z.number().default(0),
+        whyJoin: z.string().optional().nullable(),
+        references: z.string().optional().nullable(),
+      }).strip();
+      const parsed = PartnerAppBody.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
       }
-      if (!body.fullName || !body.email || !body.phone) {
-        return res.status(400).json({ error: "fullName, email, phone are required" });
-      }
+      const body = parsed.data;
 
-      // Run auto-screening
       const screen = computeApplicationScore(body);
 
       // Check for duplicate pending application (same email + type)
