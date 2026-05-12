@@ -152,7 +152,7 @@ export default function AdminFraud() {
         {/* Header */}
         <div>
           <h1 className="text-xl font-bold" data-testid="text-fraud-title">Fraud Detection</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">AI-powered risk scoring and order flagging</p>
+          <p className="text-sm text-muted-foreground mt-0.5">Rule-based risk scoring and order flagging</p>
         </div>
 
         {/* Summary Cards */}

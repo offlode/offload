@@ -180,7 +180,7 @@ function scoreVendor(vendor: Vendor, order: Order, pickupLat: number, pickupLng:
   // 4. Rating (max 10 pts)
   score += (vendor.rating || 4.0) * 2;
 
-  // 5. Capability match (max 5 pts)
+  // 5. Capability match (max 5 pts) — hard filter applied separately in findBestVendor.
   let prefs: any = {};
   try { prefs = order.preferences ? JSON.parse(order.preferences) : {}; } catch (e) { console.warn("[vendor-match] Failed to parse order preferences:", e); }
   let caps: any[] = [];
@@ -224,6 +224,13 @@ async function findBestVendor(order: Order, pickupLat: number, pickupLng: number
   const activeVendors = await storage.getActiveVendors();
   if (activeVendors.length === 0) return null;
 
+  // Parse order required washType once
+  let requiredWashType: string | null = null;
+  try {
+    const prefs = order.preferences ? JSON.parse(order.preferences) : {};
+    if (prefs.washType) requiredWashType = String(prefs.washType);
+  } catch (e) { /* ignore */ }
+
   const scored = activeVendors
     .filter(v => {
       // Filter out vendors at capacity
@@ -236,17 +243,43 @@ async function findBestVendor(order: Order, pickupLat: number, pickupLng: number
       if (order.certifiedOnly) return v.certified === 1;
       return true;
     })
+    .filter(v => {
+      // HARD CAPABILITY FILTER — vendor must support the required washType.
+      // Vendors with no declared capabilities are treated as wash_fold only.
+      if (!requiredWashType) return true;
+      let caps: string[] = [];
+      try { caps = v.capabilities ? JSON.parse(v.capabilities) : []; } catch { caps = []; }
+      if (caps.includes("custom") || caps.includes(requiredWashType)) return true;
+      // Backward-compat: derive from offers_* flags
+      if (requiredWashType === "dry_cleaning" && v.offersDryCleaning === 1) return true;
+      if (requiredWashType === "comforters" && v.offersComforters === 1) return true;
+      if (requiredWashType === "alterations" && v.offersAlterations === 1) return true;
+      if (requiredWashType === "commercial" && v.offersCommercial === 1) return true;
+      if (requiredWashType === "wash_fold" && caps.length === 0) return true; // default capability
+      return false;
+    })
     .map(v => ({ vendor: v, score: scoreVendor(v, order, pickupLat, pickupLng) }))
     .sort((a, b) => b.score - a.score);
 
   return scored.length > 0 ? scored[0].vendor : null;
 }
 
-async function findBestDriver(pickupLat: number, pickupLng: number): Promise<Driver | null> {
+async function findBestDriver(pickupLat: number, pickupLng: number, vendorId?: number | null): Promise<Driver | null> {
   const available = await storage.getAvailableDrivers();
   if (available.length === 0) return null;
 
-  const scored = available
+  // Prefer vendor-owned drivers when the assigned vendor has any available
+  let pool = available;
+  if (vendorId != null) {
+    const owned = available.filter(d => (d as any).vendorId === vendorId);
+    if (owned.length > 0) pool = owned;
+  } else {
+    // For platform-side dispatch, prefer platform drivers when present
+    const platform = available.filter(d => !(d as any).vendorId);
+    if (platform.length > 0) pool = platform;
+  }
+
+  const scored = pool
     .map(d => ({ driver: d, score: scoreDriver(d, pickupLat, pickupLng) }))
     .sort((a, b) => b.score - a.score);
 
@@ -1243,6 +1276,20 @@ export async function registerRoutes(
     res.json({
       mapsKey: k,
       configured: !!k,
+    });
+  });
+
+  // Public maps key endpoint for the marketing website (offloadusa.com).
+  // The key is referrer-restricted at the GCP level so exposing it from a public
+  // origin is acceptable. Returns an empty string when unset so the site cleanly
+  // falls back to manual address entry.
+  app.get("/api/public/maps-key", (_req, res) => {
+    const k = process.env.GOOGLE_MAPS_API_KEY || "";
+    res.set("Access-Control-Allow-Origin", "*");
+    res.json({
+      mapsKey: k,
+      configured: !!k,
+      libraries: ["places"],
     });
   });
 
@@ -2759,10 +2806,12 @@ export async function registerRoutes(
       const pickupLat = quote.pickupLat || 40.7128;
       const pickupLng = quote.pickupLng || -74.0060;
 
+      let assignedVendorId: number | null = null;
       if (quote.vendorId) {
         // Customer selected a preferred vendor
         const selectedVendor = await storage.getVendor(quote.vendorId);
         if (selectedVendor) {
+          assignedVendorId = selectedVendor.id;
           await storage.updateOrder(order.id, { vendorId: selectedVendor.id });
           await storage.updateVendor(selectedVendor.id, { currentLoad: (selectedVendor.currentLoad || 0) + 1 });
           await storage.createOrderEvent({
@@ -2778,6 +2827,7 @@ export async function registerRoutes(
         // Auto-assign best vendor
         const bestVendor = await findBestVendor(order, pickupLat, pickupLng);
         if (bestVendor) {
+          assignedVendorId = bestVendor.id;
           await storage.updateOrder(order.id, { vendorId: bestVendor.id, aiMatchScore: scoreVendor(bestVendor, order, pickupLat, pickupLng) });
           await storage.updateVendor(bestVendor.id, { currentLoad: (bestVendor.currentLoad || 0) + 1 });
           await storage.createOrderEvent({
@@ -2791,8 +2841,8 @@ export async function registerRoutes(
         }
       }
 
-      // Auto-assign driver
-      const bestDriver = await findBestDriver(pickupLat, pickupLng);
+      // Auto-assign driver (prefer vendor-owned drivers when present)
+      const bestDriver = await findBestDriver(pickupLat, pickupLng, assignedVendorId);
       if (bestDriver) {
         await storage.updateOrder(order.id, { status: "driver_assigned", driverId: bestDriver.id });
         await storage.updateDriver(bestDriver.id, {
@@ -3334,8 +3384,8 @@ export async function registerRoutes(
         });
       }
 
-      // ── STEP 4: Auto-assign driver ──
-      const bestDriver = await findBestDriver(pickupLat, pickupLng);
+      // ── STEP 4: Auto-assign driver (prefer vendor-owned drivers) ──
+      const bestDriver = await findBestDriver(pickupLat, pickupLng, bestVendor?.id ?? null);
       if (bestDriver) {
         await storage.updateOrder(order.id, { status: "driver_assigned", driverId: bestDriver.id });
         await storage.updateDriver(bestDriver.id, {

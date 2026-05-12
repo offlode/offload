@@ -224,7 +224,7 @@ export default function StaffQueue() {
               data-testid="text-queue-title"
               className="text-xl font-bold text-foreground"
             >
-              AI Queue
+              Smart Queue
             </h1>
           </div>
           {urgentCount > 0 && (

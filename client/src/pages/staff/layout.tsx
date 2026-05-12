@@ -5,7 +5,7 @@ import { NotificationBell } from "@/components/notification-bell";
 const staffNavItems = [
   { label: "Orders", path: "/staff", icon: ClipboardList, exact: true },
   { label: "Washing", path: "/staff/active", icon: Waves, exact: true },
-  { label: "AI Queue", path: "/staff/queue", icon: Zap, exact: true },
+  { label: "Smart Queue", path: "/staff/queue", icon: Zap, exact: true },
   { label: "Quality", path: "/staff/quality", icon: CheckCircle, exact: true },
   { label: "Profile", path: "/staff/profile", icon: User, exact: true },
 ];

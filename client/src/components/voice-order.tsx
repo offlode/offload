@@ -164,9 +164,12 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
         </button>
 
         <div className="text-center mb-6">
-          <h3 className="text-lg font-bold mb-1">Order by Voice</h3>
+          <div className="flex items-center justify-center gap-2 mb-1">
+            <h3 className="text-lg font-bold">Order by Voice</h3>
+            <Badge variant="secondary" className="text-[10px] px-2 py-0.5 bg-amber-500/15 text-amber-400 border border-amber-500/25">Beta — English only</Badge>
+          </div>
           <p className="text-xs text-muted-foreground">
-            {hasSupport ? "Tap the mic and tell us what you need" : "Voice not supported in this browser"}
+            {hasSupport ? "Tap the mic and tell us what you need (bag size + time)" : "Voice not supported in this browser"}
           </p>
         </div>
 
@@ -300,7 +303,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
             disabled={isProcessing}
           >
             {isProcessing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Volume2 className="w-4 h-4 mr-2" />}
-            Ask AI to Help
+            Get Help
           </Button>
         )}
 

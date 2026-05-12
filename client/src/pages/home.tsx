@@ -410,9 +410,20 @@ export default function HomePage() {
                     </div>
                     <div className="flex items-center justify-between">
                       <p className="text-xs text-muted-foreground">
-                        {bags.map((b: any) => `${b.quantity}x ${b.type}`).join(", ")}
+                        {(() => {
+                          const parts = bags
+                            .map((b: any) => {
+                              const qty = b?.quantity ?? b?.count ?? b?.qty ?? 1;
+                              const type = b?.type ?? b?.bagSize ?? b?.size ?? b?.name ?? "bag";
+                              if (!qty && !type) return null;
+                              const label = String(type).replace(/_/g, " ");
+                              return `${qty}x ${label}`;
+                            })
+                            .filter(Boolean);
+                          return parts.length > 0 ? parts.join(", ") : (order.deliverySpeed ? `${order.deliverySpeed.replace(/_/g, ' ')} pickup` : "Pickup");
+                        })()}
                       </p>
-                      <p className="text-sm font-semibold">${order.total?.toFixed(2)}</p>
+                      <p className="text-sm font-semibold">${(order.total ?? 0).toFixed(2)}</p>
                     </div>
                   </Card>
                 </Link>

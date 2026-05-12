@@ -183,7 +183,7 @@ export default function AdminVendorScoring() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-bold" data-testid="text-vendor-health-title">Vendor Health Scoring</h1>
-            <p className="text-sm text-muted-foreground mt-0.5">AI-powered vendor performance analysis</p>
+            <p className="text-sm text-muted-foreground mt-0.5">Rule-based vendor performance scoring</p>
           </div>
         </div>
 
@@ -325,9 +325,9 @@ export default function AdminVendorScoring() {
                   <ScoreBar label="Volume" value={displayHealth.scoreBreakdown.volume} color="#5B4BC4" />
                 </div>
 
-                {/* AI Recommendations */}
+                {/* Recommendations (rule-based scoring) */}
                 <div className="space-y-2">
-                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">AI Recommendations</p>
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Recommendations</p>
                   {displayHealth.recommendations.map((rec, i) => (
                     <div key={i} className="flex items-start gap-2 text-xs" data-testid={`recommendation-${i}`}>
                       <Zap className="w-3 h-3 text-primary shrink-0 mt-0.5" />

@@ -4,7 +4,7 @@
 
 /* OFFLOAD — Logistics + trust infrastructure platform
    Brand purple: #5B4BC4 (HSL 248 51% 53%)
-   Dark surfaces (#010101/#1A1A1A), Inter only
+   Dark surfaces (Figma #1C1C1C/#232323/#2E2E2E), Montserrat
    Matches Figma "Offload new version" source of truth */
 
 /* LIGHT MODE */
@@ -69,8 +69,8 @@
   --chart-4: 38 92% 50%;
   --chart-5: 0 84% 60%;
   
-  /* Typography — Inter only (per Figma) */
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  /* Typography — Montserrat per Figma "Offload new version" */
+  --font-sans: 'Montserrat', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
   
   --radius: 0.75rem;
@@ -135,11 +135,11 @@
   --elevate-1: rgba(255, 255, 255, 0.04);
   --elevate-2: rgba(255, 255, 255, 0.09);
   
-  /* Near-black surfaces — from Figma #010101/#1A1A1A/#2E2E2E */
-  --background: 0 0% 4%;
+  /* Surfaces — from Figma "Offload new version" #1C1C1C base, lifted cards */
+  --background: 0 0% 11%; /* #1C1C1C */
   --foreground: 0 0% 96%;
-  --border: 0 0% 18%;
-  --card: 0 0% 10%;
+  --border: 0 0% 22%;
+  --card: 0 0% 14%;
   --card-foreground: 0 0% 100%;
   --card-border: 0 0% 16%;
   

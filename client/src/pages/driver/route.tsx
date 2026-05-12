@@ -229,7 +229,7 @@ export default function DriverRoute() {
             Optimized Route
           </h1>
           <p className="text-gray-500 text-sm mt-0.5">
-            {totalStops} stops · AI-ordered for efficiency
+            {totalStops} stops · Optimized order
           </p>
         </div>
 

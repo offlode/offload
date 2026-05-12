@@ -115,6 +115,9 @@ export type Vendor = typeof vendors.$inferSelect;
 export const drivers = pgTable("drivers", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull(),
+  // Vendor-owned driver linking (nullable for platform drivers)
+  vendorId: integer("vendor_id"),
+  driverOwnership: text("driver_ownership").default("platform"), // platform | vendor
   name: text("name").notNull(),
   phone: text("phone").notNull(),
   vehicleType: text("vehicle_type"),
