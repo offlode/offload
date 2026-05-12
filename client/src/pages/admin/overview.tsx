@@ -193,7 +193,7 @@ export default function AdminOverview() {
                 value={`$${metrics.platformRevenue.toLocaleString()}`}
                 icon={<TrendingUp className="w-[18px] h-[18px] text-primary" />}
                 iconColor="bg-primary/10"
-                subtext={`After $${metrics.totalVendorPayouts.toLocaleString()} vendor + $${metrics.totalDriverPayouts.toLocaleString()} driver payouts`}
+                subtext={`After $${metrics.totalVendorPayouts.toLocaleString()} vendor + $${metrics.totalDriverPayouts.toLocaleString()} driver shares`}
                 index={1}
               />
               <MetricCard

@@ -228,7 +228,7 @@ export default function ManagerPayouts() {
                           disabled={processPayoutMutation.isPending || (v.pending <= 0 && v.payout <= 0)}
                           className="px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-medium hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                         >
-                          {processPayoutMutation.isPending ? "Queuing…" : "Process Payout"}
+                          {processPayoutMutation.isPending ? "Queuing…" : "Queue Payout"}
                         </button>
                       </div>
 
@@ -261,7 +261,7 @@ export default function ManagerPayouts() {
               disabled={processPayoutMutation.isPending}
               className="w-full py-3 rounded-full bg-green-500 text-white font-semibold text-sm hover:bg-green-600 transition-colors disabled:opacity-50"
             >
-              {processPayoutMutation.isPending ? "Queuing…" : "Process All Pending Payouts"}
+              {processPayoutMutation.isPending ? "Queuing…" : "Queue All Pending Payouts"}
             </button>
           </>
         ) : (

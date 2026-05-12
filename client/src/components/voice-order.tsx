@@ -138,7 +138,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
         body: JSON.stringify({ message: transcript }),
       });
       const data = await res.json();
-      toast({ title: "AI Response", description: data.reply?.substring(0, 100) || "Processed your request." });
+      toast({ title: "AI Response", description: data.reply?.substring(0, 100) || "Got it!" });
       if (data.actions?.some((a: any) => a.type === "navigate")) {
         navigate("/schedule");
         onClose();

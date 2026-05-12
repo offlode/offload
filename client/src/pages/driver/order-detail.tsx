@@ -625,7 +625,7 @@ export default function DriverOrderDetail() {
               </div>
               {order.driverPayout != null && order.driverPayout > 0 && (
                 <div className="flex justify-between text-sm mt-1">
-                  <span className="text-gray-400">Your payout:</span>
+                  <span className="text-gray-400">Your earnings:</span>
                   <span className="text-green-400 font-semibold">
                     ${order.driverPayout.toFixed(2)}
                   </span>

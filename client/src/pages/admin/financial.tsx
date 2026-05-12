@@ -38,17 +38,17 @@ interface FinancialData {
 
 const PAYOUT_STATUS_STYLES: Record<string, { label: string; className: string; icon: React.ReactNode }> = {
   pending: {
-    label: "Pending",
+    label: "Recorded",
     className: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
     icon: <Clock className="w-3 h-3" />,
   },
   processing: {
-    label: "Processing",
+    label: "Queued",
     className: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
     icon: <TrendingUp className="w-3 h-3" />,
   },
   completed: {
-    label: "Completed",
+    label: "Recorded",
     className: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
     icon: <CheckCircle2 className="w-3 h-3" />,
   },
@@ -269,10 +269,10 @@ export default function AdminFinancial() {
                     <th className="text-left pb-2 font-medium">Vendor</th>
                     <th className="text-right pb-2 font-medium">Orders</th>
                     <th className="text-right pb-2 font-medium">Gross Revenue</th>
-                    <th className="text-right pb-2 font-medium">Vendor Payout</th>
+                    <th className="text-right pb-2 font-medium">Vendor Share</th>
                     <th className="text-right pb-2 font-medium">Platform Fee</th>
                     <th className="text-right pb-2 font-medium">Margin</th>
-                    <th className="text-left pb-2 font-medium">Payout Status</th>
+                    <th className="text-left pb-2 font-medium">Record Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
