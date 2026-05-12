@@ -8,7 +8,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { Server as SocketIOServer } from "socket.io";
 import { eq } from "drizzle-orm";
 import * as schema from "@shared/schema";
-import { storage, db, pool, logStripeReconciliation } from "./storage";
+import { storage, db, pool, logStripeReconciliation, addOrderCents, addQuoteCents } from "./storage";
 import { isR2Enabled, uploadToR2, getPresignedDownloadUrl, getPresignedUploadUrl } from "./r2";
 import { sendPushToUser } from "./push";
 import { sendSMS } from "./sms";
@@ -3097,74 +3097,78 @@ export async function registerRoutes(
         return res.status(409).json({ error: "This quote has already been used for an order" });
       }
 
-      // Step 1: Find or create customer
-      let customer = await storage.getUserByEmail(email);
-      if (!customer) {
-        const username = email.split("@")[0] + "_" + randomBytes(3).toString("hex");
-        const randomPw = randomBytes(16).toString("hex");
-        customer = await storage.createUser({
-          username,
-          password: hashPassword(randomPw),
-          name: email.split("@")[0],
-          email,
-          phone: digits,
-          role: "customer",
-          memberSince: now(),
-        });
-      } else {
-        // Update phone if not set
-        if (!customer.phone && digits) {
-          // Update via storage — we don't have updateUser, so use direct approach
-        }
-      }
-
-      // Step 2: Create address record
-      const address = await storage.createAddress({
-        userId: customer.id,
-        label: "Pickup",
-        street: quote.pickupAddress,
-        city: quote.pickupCity || "",
-        state: quote.pickupState || "NY",
-        zip: quote.pickupZip || "",
-        lat: quote.pickupLat,
-        lng: quote.pickupLng,
-        isDefault: 1,
-      });
-
-      // Step 3: Create the order
+      // ── Txn 1: Customer upsert + address + order (atomic) ──
       const ts = now();
       const orderNumber = generateOrderNumber();
       const scheduledPickup = pickupDate ? `${pickupDate}T${pickupTime || '09:00'}:00.000Z` : null;
 
-      const order = await storage.createOrder({
-        orderNumber,
-        customerId: customer.id,
-        status: "pending",
-        pickupAddressId: address.id,
-        pickupAddress: quote.pickupAddress,
-        deliveryAddress: quote.pickupAddress, // same address
-        deliveryType: "contactless",
-        deliverySpeed: quote.deliverySpeed,
-        scheduledPickup,
-        pickupTimeWindow: pickupTime || null,
-        bags: JSON.stringify([{ tierName: quote.tierName, quantity: 1 }]),
-        serviceType: quote.serviceType,
-        subtotal: quote.subtotal,
-        tax: quote.taxAmount,
-        deliveryFee: quote.deliveryFee,
-        discount: quote.discount,
-        total: quote.total,
-        tierName: quote.tierName,
-        tierFlatPrice: quote.tierFlatPrice,
-        tierMaxWeight: quote.tierMaxWeight,
-        customerNotes: notes || null,
-        paymentStatus: "pending",
-        certifiedOnly: 1,
-        createdAt: ts,
-        updatedAt: ts,
+      const { customer, address, order } = await db.transaction(async (tx) => {
+        // Find or create customer
+        let cust: typeof schema.users.$inferSelect;
+        const [existing] = await tx.select().from(schema.users).where(eq(schema.users.email, email));
+        if (!existing) {
+          const username = email.split("@")[0] + "_" + randomBytes(3).toString("hex");
+          const randomPw = randomBytes(16).toString("hex");
+          const [created] = await tx.insert(schema.users).values({
+            username,
+            password: hashPassword(randomPw),
+            name: email.split("@")[0],
+            email,
+            phone: digits,
+            role: "customer",
+            memberSince: ts,
+          }).returning();
+          cust = created;
+        } else {
+          cust = existing;
+        }
+
+        // Create address
+        const [addr] = await tx.insert(schema.addresses).values({
+          userId: cust.id,
+          label: "Pickup",
+          street: quote.pickupAddress,
+          city: quote.pickupCity || "",
+          state: quote.pickupState || "NY",
+          zip: quote.pickupZip || "",
+          lat: quote.pickupLat,
+          lng: quote.pickupLng,
+          isDefault: 1,
+        } as any).returning();
+
+        // Create order
+        const orderData = addOrderCents({
+          orderNumber,
+          customerId: cust.id,
+          status: "pending",
+          pickupAddressId: addr.id,
+          pickupAddress: quote.pickupAddress,
+          deliveryAddress: quote.pickupAddress,
+          deliveryType: "contactless",
+          deliverySpeed: quote.deliverySpeed,
+          scheduledPickup,
+          pickupTimeWindow: pickupTime || null,
+          bags: JSON.stringify([{ tierName: quote.tierName, quantity: 1 }]),
+          serviceType: quote.serviceType,
+          subtotal: quote.subtotal,
+          tax: quote.taxAmount,
+          deliveryFee: quote.deliveryFee,
+          discount: quote.discount,
+          total: quote.total,
+          tierName: quote.tierName,
+          tierFlatPrice: quote.tierFlatPrice,
+          tierMaxWeight: quote.tierMaxWeight,
+          customerNotes: notes || null,
+          paymentStatus: "pending",
+          certifiedOnly: 1,
+          createdAt: ts,
+          updatedAt: ts,
+        });
+        const [ord] = await tx.insert(schema.orders).values(orderData as any).returning();
+        return { customer: cust, address: addr, order: ord };
       });
 
-      // Step 4: Create Stripe PaymentIntent
+      // ── Stripe PaymentIntent (OUTSIDE txn — network side-effect) ──
       const amountCents = Math.round((quote.total || 0) * 100);
       let clientSecret: string;
       let paymentIntentId: string;
@@ -3191,14 +3195,10 @@ export async function registerRoutes(
           return res.status(500).json({ error: "Payment processing failed. Please try again." });
         }
       } else if (amountCents === 0) {
-        // Genuine zero-dollar order (e.g. credit/loyalty fully covers) — mark authorized.
         paymentIntentId = `pi_zero_${Date.now()}_${randomBytes(4).toString("hex")}`;
-        clientSecret = ""; // No client confirmation needed
+        clientSecret = "";
         await storage.updateOrder(order.id, { paymentStatus: "authorized" });
       } else {
-        // Wave 2: Stripe not configured. Refuse to fake an authorization.
-        // The just-created order is marked "cancelled" so audit trail is preserved,
-        // but no payment path proceeds.
         console.error(`[Checkout] Stripe not configured, refusing demo authorization for order ${order.id}.`);
         try {
           await storage.updateOrder(order.id, {
@@ -3213,41 +3213,60 @@ export async function registerRoutes(
         });
       }
 
-      // Atomic: record payment txn + mark quote converted + order event + audit log
+      // ── Txn 2: Record PI + payment txn + quote converted + events (atomic) ──
       const checkoutFeeRate = await pricingConfig.getPlatformFeeRate();
-      await db.transaction(async (tx) => {
-        await tx.insert(schema.paymentTransactions).values({
-          orderId: order.id,
-          type: "charge",
-          amount: quote.total || 0,
-          amountCents,
-          currency: "usd",
-          status: "pending",
-          stripePaymentIntentId: paymentIntentId,
-          recipientType: "platform",
-          platformFee: Math.round((quote.total || 0) * checkoutFeeRate * 100) / 100,
-          metadata: JSON.stringify({ quoteId: quote.id, email, phone: digits }),
-          createdAt: ts,
-        } as any);
-        await tx.update(schema.quotes).set({
-          status: "converted",
-          customerId: customer!.id,
-          updatedAt: ts,
-        } as any).where(eq(schema.quotes.id, quote.id));
-        await tx.insert(schema.orderEvents).values({
-          orderId: order.id,
-          eventType: "order_created",
-          description: `Order placed via website checkout. Email: ${email}`,
-          timestamp: ts,
-        } as any);
-        await tx.insert(schema.pricingAuditLog).values({
-          action: "public_checkout",
-          details: JSON.stringify({ orderId: order.id, orderNumber, quoteId: quote.id, total: quote.total, email }),
-          actorId: customer!.id,
-          actorRole: "customer",
-          timestamp: ts,
-        } as any);
-      });
+      try {
+        await db.transaction(async (tx) => {
+          // Update order with Stripe PI id
+          await tx.update(schema.orders).set({
+            stripePaymentIntentId: paymentIntentId,
+            updatedAt: now(),
+          } as any).where(eq(schema.orders.id, order.id));
+          await tx.insert(schema.paymentTransactions).values({
+            orderId: order.id,
+            type: "charge",
+            amount: quote.total || 0,
+            amountCents,
+            currency: "usd",
+            status: "pending",
+            stripePaymentIntentId: paymentIntentId,
+            recipientType: "platform",
+            platformFee: Math.round((quote.total || 0) * checkoutFeeRate * 100) / 100,
+            metadata: JSON.stringify({ quoteId: quote.id, email, phone: digits }),
+            createdAt: ts,
+          } as any);
+          await tx.update(schema.quotes).set({
+            status: "converted",
+            customerId: customer.id,
+            updatedAt: ts,
+          } as any).where(eq(schema.quotes.id, quote.id));
+          await tx.insert(schema.orderEvents).values({
+            orderId: order.id,
+            eventType: "order_created",
+            description: `Order placed via website checkout. Email: ${email}`,
+            timestamp: ts,
+          } as any);
+          await tx.insert(schema.pricingAuditLog).values({
+            action: "public_checkout",
+            details: JSON.stringify({ orderId: order.id, orderNumber, quoteId: quote.id, total: quote.total, email }),
+            actorId: customer.id,
+            actorRole: "customer",
+            timestamp: ts,
+          } as any);
+        });
+      } catch (txErr: any) {
+        // Stripe PI was created but DB write failed — log for reconciliation
+        if (paymentIntentId && paymentIntentId !== clientSecret) {
+          await logStripeReconciliation({
+            stripeResourceId: paymentIntentId,
+            action: "checkout_order_write_failed",
+            dbState: JSON.stringify({ orderId: order.id, orderNumber, quoteId: quote.id, customerId: customer.id, total: quote.total }),
+            errorMessage: txErr?.message || String(txErr),
+            notes: "Stripe PaymentIntent created successfully but Txn 2 (payment record + quote conversion) failed",
+          });
+        }
+        throw txErr;
+      }
 
       res.status(201).json({
         clientSecret,
@@ -3749,12 +3768,12 @@ export async function registerRoutes(
       let discount = 0;
       let loyaltyPointsRedeemed = 0;
 
-      // Validate and apply promo code
+      // Validate promo code (reads only — writes deferred to txn)
       let appliedPromoId: number | null = null;
+      let promoUsedCountBefore: number | null = null;
       if (promoCode) {
         const promo = await storage.getPromoCode(promoCode);
         if (promo && promo.isActive && (!promo.expiresAt || new Date(promo.expiresAt) > new Date())) {
-          // Per-user promo usage check
           const userUsageCount = await storage.getPromoUsageByUser(promo.id, customerId);
           if (userUsageCount > 0) {
             return res.status(400).json({ error: "You've already used this promo code" });
@@ -3768,27 +3787,24 @@ export async function registerRoutes(
               } else if (promo.type === "free_delivery") {
                 discount = deliveryFee;
               }
-              // Increment usage count
-              await storage.updatePromoCode(promo.id, { usedCount: (promo.usedCount || 0) + 1 });
               appliedPromoId = promo.id;
+              promoUsedCountBefore = promo.usedCount || 0;
             }
           }
         }
       }
 
-      // Apply loyalty points redemption (100 points = $1)
+      // Validate loyalty points (reads only — deduction deferred to txn)
+      let loyaltyPointsBefore: number | null = null;
       if (loyaltyPointsToRedeem && loyaltyPointsToRedeem > 0) {
         const user = await storage.getUser(customerId);
         if (user && user.loyaltyPoints && user.loyaltyPoints >= loyaltyPointsToRedeem) {
-          const maxRedeemable = Math.floor(user.loyaltyPoints / 100) * 100; // must be multiple of 100
+          const maxRedeemable = Math.floor(user.loyaltyPoints / 100) * 100;
           const toRedeem = Math.min(loyaltyPointsToRedeem, maxRedeemable);
           const dollarValue = toRedeem / 100;
           discount += dollarValue;
           loyaltyPointsRedeemed = toRedeem;
-          // Deduct points from user
-          await storage.updateUser(customerId, {
-            loyaltyPoints: user.loyaltyPoints - toRedeem,
-          });
+          loyaltyPointsBefore = user.loyaltyPoints;
         }
       }
 
@@ -3796,51 +3812,67 @@ export async function registerRoutes(
 
       const ts_ = now();
       const slaDeadline = calculateSLADeadline(speed, ts_);
+      const generatedOrderNumber = generateOrderNumber();
 
-      const order = await storage.createOrder({
-        orderNumber: generateOrderNumber(),
-        customerId,
-        status: "pending",
-        pickupAddressId,
-        pickupAddress,
-        deliveryType: deliveryType || "contactless",
-        deliverySpeed: speed,
-        serviceType: serviceType || "wash_fold",
-        scheduledPickup,
-        pickupTimeWindow,
-        addressNotes,
-        bags: typeof bags === "string" ? bags : JSON.stringify(bags || []),
-        preferences: preferences ? (typeof preferences === "string" ? preferences : JSON.stringify(preferences)) : null,
-        subtotal: surgeSubtotal,
-        tax: surgeTax,
-        deliveryFee,
-        discount,
-        total: finalTotal,
-        // Tier-based pricing fields
-        pricingTierId: pricingTierId || null,
-        tierName: tierInfo?.name || null,
-        tierFlatPrice: tierInfo?.flatPrice || null,
-        tierMaxWeight: tierInfo?.maxWeight || null,
-        finalPrice: tierInfo ? finalTotal : null,
-        certifiedOnly: certifiedOnly ?? 1,
-        customerNotes,
-        paymentStatus: "pending",
-        paymentMethodId: paymentMethodId || null,
-        slaDeadline,
-        slaStatus: "on_track",
-        promoCode: promoCode || null,
-        loyaltyPointsRedeemed,
-        aiPricingTier: surge.tier,
-        createdAt: ts_,
-        updatedAt: ts_,
-      });
+      // ── Atomic txn: order create + promo increment + loyalty deduction + add-ons + event ──
+      const order = await db.transaction(async (tx) => {
+        // Create order
+        const orderData = addOrderCents({
+          orderNumber: generatedOrderNumber,
+          customerId,
+          status: "pending",
+          pickupAddressId,
+          pickupAddress,
+          deliveryType: deliveryType || "contactless",
+          deliverySpeed: speed,
+          serviceType: serviceType || "wash_fold",
+          scheduledPickup,
+          pickupTimeWindow,
+          addressNotes,
+          bags: typeof bags === "string" ? bags : JSON.stringify(bags || []),
+          preferences: preferences ? (typeof preferences === "string" ? preferences : JSON.stringify(preferences)) : null,
+          subtotal: surgeSubtotal,
+          tax: surgeTax,
+          deliveryFee,
+          discount,
+          total: finalTotal,
+          pricingTierId: pricingTierId || null,
+          tierName: tierInfo?.name || null,
+          tierFlatPrice: tierInfo?.flatPrice || null,
+          tierMaxWeight: tierInfo?.maxWeight || null,
+          finalPrice: tierInfo ? finalTotal : null,
+          certifiedOnly: certifiedOnly ?? 1,
+          customerNotes,
+          paymentStatus: "pending",
+          paymentMethodId: paymentMethodId || null,
+          slaDeadline,
+          slaStatus: "on_track",
+          promoCode: promoCode || null,
+          loyaltyPointsRedeemed,
+          aiPricingTier: surge.tier,
+          createdAt: ts_,
+          updatedAt: ts_,
+        });
+        const [ord] = await tx.insert(schema.orders).values(orderData as any).returning();
 
-      // Atomic: add-ons + loyalty txn + promo usage + order event
-      await db.transaction(async (tx) => {
+        // Increment promo usage count (was outside txn before)
+        if (appliedPromoId && promoUsedCountBefore != null) {
+          await tx.update(schema.promoCodes).set({
+            usedCount: promoUsedCountBefore + 1,
+          } as any).where(eq(schema.promoCodes.id, appliedPromoId));
+        }
+
+        // Deduct loyalty points (was outside txn before)
+        if (loyaltyPointsRedeemed > 0 && loyaltyPointsBefore != null) {
+          await tx.update(schema.users).set({
+            loyaltyPoints: loyaltyPointsBefore - loyaltyPointsRedeemed,
+          } as any).where(eq(schema.users.id, customerId));
+        }
+
         // Create order add-on records
         for (const addon of parsedAddOns) {
           await tx.insert(schema.orderAddOns).values({
-            orderId: order.id,
+            orderId: ord.id,
             addOnId: addon.addOnId,
             quantity: addon.quantity,
             unitPrice: addon.unitPrice,
@@ -3852,15 +3884,12 @@ export async function registerRoutes(
         if (loyaltyPointsRedeemed > 0) {
           await tx.insert(schema.loyaltyTransactions).values({
             userId: customerId,
-            orderId: order.id,
+            orderId: ord.id,
             type: "redeemed",
             points: -loyaltyPointsRedeemed,
-            description: `Redeemed ${loyaltyPointsRedeemed} points for $${(loyaltyPointsRedeemed / 100).toFixed(2)} off order ${order.orderNumber}`,
+            description: `Redeemed ${loyaltyPointsRedeemed} points for $${(loyaltyPointsRedeemed / 100).toFixed(2)} off order ${ord.orderNumber}`,
             createdAt: ts_,
           } as any);
-          await tx.update(schema.orders).set({
-            loyaltyPointsRedeemed,
-          } as any).where(eq(schema.orders.id, order.id));
         }
 
         // Record per-user promo usage
@@ -3868,14 +3897,14 @@ export async function registerRoutes(
           await tx.insert(schema.promoUsage).values({
             promoId: appliedPromoId,
             userId: customerId,
-            orderId: order.id,
+            orderId: ord.id,
             usedAt: ts_,
           } as any);
         }
 
         // Event: order placed
         await tx.insert(schema.orderEvents).values({
-          orderId: order.id,
+          orderId: ord.id,
           eventType: "order_placed",
           description: "Your pickup has been scheduled",
           details: JSON.stringify({ address: pickupAddress, bags: parsedBags, total: finalTotal, pricingTier: surge.tier, surgeReason: surge.reason }),
@@ -3883,6 +3912,8 @@ export async function registerRoutes(
           actorRole: "customer",
           timestamp: ts_,
         } as any);
+
+        return ord;
       });
 
       // ── STEP 1: Payment status ──

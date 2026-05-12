@@ -545,7 +545,7 @@ export interface IStorage {
 function dollarToCents(v: number | null | undefined): number | null {
   return v != null ? Math.round(v * 100) : null;
 }
-function addOrderCents<T extends Record<string, any>>(data: T): T {
+export function addOrderCents<T extends Record<string, any>>(data: T): T {
   const d = { ...data } as any;
   if (d.subtotal != null && d.subtotalCents == null) d.subtotalCents = dollarToCents(d.subtotal);
   if (d.tax != null && d.taxCents == null) d.taxCents = dollarToCents(d.tax);
@@ -558,7 +558,7 @@ function addOrderCents<T extends Record<string, any>>(data: T): T {
   if (d.tierFlatPrice != null && d.tierFlatPriceCents == null) d.tierFlatPriceCents = dollarToCents(d.tierFlatPrice);
   return d;
 }
-function addQuoteCents<T extends Record<string, any>>(data: T): T {
+export function addQuoteCents<T extends Record<string, any>>(data: T): T {
   const d = { ...data } as any;
   if (d.subtotal != null && d.subtotalCents == null) d.subtotalCents = dollarToCents(d.subtotal);
   if (d.taxAmount != null && d.taxAmountCents == null) d.taxAmountCents = dollarToCents(d.taxAmount);
