@@ -6,3 +6,6 @@ dist/
 node_modules/
 data.db-shm
 data.db-wal
+
+# Local utility scripts
+*.cjs

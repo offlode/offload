@@ -205,6 +205,15 @@ ensureExtraTables().catch((err) => {
 
 // ── Wave 5: FK constraints, indexes, and shadow cents columns ──
 async function ensureIntegrityConstraints() {
+  // wave5b-part8-fix1: drop fk_messages_sender if it was added in an earlier
+  // wave — it is wrong (sender_id=0 is the documented sentinel for AI/system
+  // messages and was never meant to reference users.id). This is idempotent.
+  try {
+    await pool.query("ALTER TABLE messages DROP CONSTRAINT IF EXISTS fk_messages_sender");
+  } catch (e: any) {
+    console.warn("[integrity] drop fk_messages_sender:", e.message);
+  }
+
   // FK indexes (all idempotent)
   const indexes = [
     "CREATE INDEX IF NOT EXISTS idx_orders_customer_id ON orders(customer_id)",
@@ -244,7 +253,8 @@ async function ensureIntegrityConstraints() {
     ["addresses", "ADD CONSTRAINT fk_addresses_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"],
     ["payment_methods", "ADD CONSTRAINT fk_payment_methods_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"],
     ["order_events", "ADD CONSTRAINT fk_order_events_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE"],
-    ["messages", "ADD CONSTRAINT fk_messages_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE RESTRICT"],
+    // NOTE: messages.sender_id intentionally has NO FK to users(id) — sender_id=0 is a sentinel for AI/system messages.
+    // sender_role discriminates real-user vs AI/system. See wave5b-part8-fix1 for context.
     ["disputes", "ADD CONSTRAINT fk_disputes_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE RESTRICT"],
     ["disputes", "ADD CONSTRAINT fk_disputes_customer FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE RESTRICT"],
     ["reviews", "ADD CONSTRAINT fk_reviews_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE"],
