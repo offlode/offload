@@ -16,6 +16,7 @@ import { distanceMatrix, isGoogleMapsConfigured } from "./maps";
 import { SLA_CONFIGS, WEIGHT_TOLERANCE, CONSENT_TIMEOUT_HOURS, LOYALTY_TIERS, SUBSCRIPTION_TIERS, PRICING_TIERS, DELIVERY_FEES, TAX_RATE as SCHEMA_TAX_RATE, QUOTE_VALIDITY_MINUTES, SERVICE_TYPE_MULTIPLIERS, insertNotificationRuleSchema, insertAddOnSchema, insertAddressSchema, insertPaymentMethodSchema, insertVendorSchema, insertDriverSchema, insertServiceTypeSchema, insertDisputeSchema, insertReviewSchema, insertMessageSchema, insertVendorPayoutSchema, insertPromoCodeSchema, insertUserSchema } from "@shared/schema";
 import { pricingConfig } from "./pricing-config-service";
 import { logAdminAction } from "./audit-helpers";
+import { applyVendorCertification, getCertifiedRules, evaluateVendorCertification } from "./certified";
 import { hashPassword, verifyPassword, checkLoginRateLimit, recordLoginAttempt } from "./lib/auth";
 import {
   distanceMiles, TAX_RATE, TIER_NAME_MAP, calculateQuotePrice, calculatePricing,
@@ -5299,6 +5300,16 @@ export async function registerRoutes(
       }
     }
 
+    // Offload Certified — re-evaluate vendor certification based on rolling-window reviews.
+    // Admin-configurable rules (certified_min_happy_reviews / max_unhappy_reviews / window_days).
+    if (order.vendorId) {
+      try {
+        await applyVendorCertification(order.vendorId);
+      } catch (e: any) {
+        console.error("[Certified] failed to apply for vendor", order.vendorId, e?.message || e);
+      }
+    }
+
     await storage.createOrderEvent({
       orderId: order.id,
       eventType: "review_submitted",
@@ -9640,6 +9651,81 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[pricing-config] update error:", err);
       res.status(500).json({ error: "Failed to update pricing config", code: "INTERNAL_ERROR" });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  //  OFFLOAD CERTIFIED — admin-configurable rules + manual recompute
+  // ═══════════════════════════════════════════════════════════════
+  app.get("/api/admin/certified-rules", requireAuth(["admin", "manager"]), async (_req, res) => {
+    try {
+      const rules = await getCertifiedRules();
+      res.json(rules);
+    } catch (err: any) {
+      console.error("[certified] get rules error:", err);
+      res.status(500).json({ error: "Failed to load certified rules", code: "INTERNAL_ERROR" });
+    }
+  });
+
+  app.put("/api/admin/certified-rules", requireAuth(["admin"]), async (req, res) => {
+    try {
+      const RulesBody = z.object({
+        minHappyReviews:   z.number().int().min(1).max(1000).optional(),
+        maxUnhappyReviews: z.number().int().min(1).max(1000).optional(),
+        windowDays:        z.number().int().min(1).max(3650).optional(),
+        minTotalReviews:   z.number().int().min(1).max(1000).optional(),
+        happyThreshold:    z.number().min(1).max(5).optional(),
+        unhappyThreshold:  z.number().min(1).max(5).optional(),
+      }).strip();
+      const parsed = RulesBody.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+      }
+      const currentUser = (req as any).currentUser;
+      const mapping: Record<string, number | undefined> = {
+        certified_min_happy_reviews:   parsed.data.minHappyReviews,
+        certified_max_unhappy_reviews: parsed.data.maxUnhappyReviews,
+        certified_window_days:         parsed.data.windowDays,
+        certified_min_total_reviews:   parsed.data.minTotalReviews,
+        certified_happy_threshold:     parsed.data.happyThreshold,
+        certified_unhappy_threshold:   parsed.data.unhappyThreshold,
+      };
+      for (const [key, value] of Object.entries(mapping)) {
+        if (value === undefined) continue;
+        await storage.upsertPricingConfig(key, String(value), "certified", "Offload Certified rule", currentUser?.id);
+        pricingConfig.invalidate(key);
+      }
+      const updated = await getCertifiedRules();
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[certified] update rules error:", err);
+      res.status(500).json({ error: "Failed to update certified rules", code: "INTERNAL_ERROR" });
+    }
+  });
+
+  // Manual re-evaluation for a single vendor (admin tool)
+  app.post("/api/admin/certified/recompute/:vendorId", requireAuth(["admin"]), async (req, res) => {
+    try {
+      const vendorId = Number(req.params.vendorId);
+      if (!Number.isFinite(vendorId)) return res.status(400).json({ error: "Invalid vendorId" });
+      const result = await applyVendorCertification(vendorId);
+      res.json(result);
+    } catch (err: any) {
+      console.error("[certified] recompute error:", err);
+      res.status(500).json({ error: "Failed to recompute certification", code: "INTERNAL_ERROR" });
+    }
+  });
+
+  // Preview (read-only) — does not write
+  app.get("/api/admin/certified/preview/:vendorId", requireAuth(["admin", "manager"]), async (req, res) => {
+    try {
+      const vendorId = Number(req.params.vendorId);
+      if (!Number.isFinite(vendorId)) return res.status(400).json({ error: "Invalid vendorId" });
+      const audit = await evaluateVendorCertification(vendorId);
+      res.json(audit);
+    } catch (err: any) {
+      console.error("[certified] preview error:", err);
+      res.status(500).json({ error: "Failed to preview certification", code: "INTERNAL_ERROR" });
     }
   });
 
