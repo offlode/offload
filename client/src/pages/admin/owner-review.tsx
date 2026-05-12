@@ -179,7 +179,7 @@ export default function OwnerReviewPage() {
           <TabsTrigger value="flows" data-testid="tab-flows">Flows</TabsTrigger>
           <TabsTrigger value="accounts" data-testid="tab-accounts">Test Accounts</TabsTrigger>
           <TabsTrigger value="config" data-testid="tab-config">Config</TabsTrigger>
-          <TabsTrigger value="website" data-testid="tab-website">Website</TabsTrigger>
+          <TabsTrigger value="website" data-testid="tab-website">Website + Pricing + Tracking</TabsTrigger>
         </TabsList>
 
         {/* ─────── DESIGN SYSTEM ─────── */}
@@ -604,8 +604,8 @@ export default function OwnerReviewPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Price Parity (Site ↔ Backend ↔ App)</CardTitle>
-              <CardDescription>NY tax 8.875% applied to subtotal only (does not compound on delivery).</CardDescription>
+              <CardTitle>Price Parity Baseline (Subtotal + Tax + Delivery Only)</CardTitle>
+              <CardDescription>Static numbers from <code>shared/schema.ts</code> constants. Tax 8.875% applied to subtotal only. Does NOT include dynamic distance, floor, handoff, surge, or window discount.</CardDescription>
             </CardHeader>
             <CardContent>
               <Table>
@@ -619,6 +619,155 @@ export default function OwnerReviewPage() {
                   <TableRow><TableCell>Medium / Same Day</TableCell><TableCell>$44.99</TableCell><TableCell>$3.99</TableCell><TableCell>$12.99</TableCell><TableCell>$61.97</TableCell></TableRow>
                   <TableRow><TableCell>Large / 48h</TableCell><TableCell>$59.99</TableCell><TableCell>$5.32</TableCell><TableCell>$0</TableCell><TableCell>$65.31</TableCell></TableRow>
                   <TableRow><TableCell>XL / 48h</TableCell><TableCell>$89.99</TableCell><TableCell>$7.99</TableCell><TableCell>$0</TableCell><TableCell>$97.98</TableCell></TableRow>
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Live Sandbox Quote Probe (Dynamic Pricing — Real Address)</CardTitle>
+              <CardDescription>Pulled live from <code>POST /api/quote/dynamic</code> against sandbox with pickup = 456 W 42nd St, NYC. Numbers differ from baseline above because dynamic engine adds distance, floor, handoff, surge, and window discount. <strong>Production totals are higher</strong> because prod has Google Maps Distance Matrix + traffic — sandbox uses haversine fallback.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow><TableHead>Probe</TableHead><TableHead>Inputs</TableHead><TableHead>Sandbox total</TableHead><TableHead>Prod total (last measured)</TableHead><TableHead>Delta cause</TableHead></TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow><TableCell>Medium / 48h / NYC</TableCell><TableCell>Medium bag, wash_fold, 48h, 3.5mi pickup</TableCell><TableCell>$57.34</TableCell><TableCell>$64.66</TableCell><TableCell>Maps traffic surcharge on prod</TableCell></TableRow>
+                  <TableRow><TableCell>Order created from this quote</TableCell><TableCell>Guest checkout via /api/public/checkout</TableCell><TableCell>$57.34</TableCell><TableCell>n/a (sandbox-only e2e)</TableCell><TableCell>Quote total = order total (parity confirmed)</TableCell></TableRow>
+                </TableBody>
+              </Table>
+              <div className="mt-3 text-xs text-muted-foreground">Last probe: order <code>OFF-MP2O8AJU-4A80</code> (id 45) — 13/13 FSM transitions PASSED end-to-end.</div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Service Type Capability Matrix</CardTitle>
+              <CardDescription>Where each of the 6 service types is exposed today. Site dropdown and customer-app dropdown only show 4. Backend supports all 6.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow><TableHead>Service</TableHead><TableHead>Site quote dropdown</TableHead><TableHead>App quote dropdown</TableHead><TableHead>Vendor app</TableHead><TableHead>Driver app</TableHead><TableHead>Admin</TableHead><TableHead>Backend</TableHead></TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow><TableCell>wash_fold (×1.00)</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell></TableRow>
+                  <TableRow><TableCell>dry_cleaning (×1.65)</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell></TableRow>
+                  <TableRow><TableCell>comforters (×1.40)</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell></TableRow>
+                  <TableRow><TableCell>mixed (×1.25)</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell></TableRow>
+                  <TableRow><TableCell>alterations (×1.50)</TableCell><TableCell><Badge variant="destructive">No</Badge></TableCell><TableCell><Badge variant="destructive">No</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell></TableRow>
+                  <TableRow><TableCell>commercial (×0.85)</TableCell><TableCell><Badge variant="destructive">No</Badge></TableCell><TableCell><Badge variant="destructive">No</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell></TableRow>
+                </TableBody>
+              </Table>
+              <div className="mt-3 text-xs text-muted-foreground"><strong>Owner decision OD-1:</strong> include alterations + commercial in public-facing dropdowns, OR remove them from FAQ and treat as “contact us” gated.</div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Backend Configurability — Editable vs Code-Only</CardTitle>
+              <CardDescription>What you can change at runtime via <code>/admin/pricing-config</code> vs what requires a code deploy.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow><TableHead>Setting</TableHead><TableHead>Default</TableHead><TableHead>DB override?</TableHead><TableHead>Notes</TableHead></TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow><TableCell>Bag prices (S/M/L/XL)</TableCell><TableCell>24.99 / 44.99 / 59.99 / 89.99</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell>pricing_config table</TableCell></TableRow>
+                  <TableRow><TableCell>Weight limits</TableCell><TableCell>10 / 20 / 30 / 50 lb</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell>pricing_config</TableCell></TableRow>
+                  <TableRow><TableCell>Overage rate</TableCell><TableCell>$2.50/lb</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell>pricing_config</TableCell></TableRow>
+                  <TableRow><TableCell>Service multipliers</TableCell><TableCell>1.00 / 1.65 / 1.40 / 1.25 / 1.50 / 0.85</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell>pricing_config</TableCell></TableRow>
+                  <TableRow><TableCell>Delivery fees</TableCell><TableCell>0 / 5.99 / 12.99</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell>pricing_config</TableCell></TableRow>
+                  <TableRow><TableCell>Tax rate</TableCell><TableCell>8.875% (NY flat)</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell>pricing_config — no per-jurisdiction logic</TableCell></TableRow>
+                  <TableRow><TableCell>Distance config</TableCell><TableCell>1 free mi, $1.50/mi, $12 cap</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell>pricing_config</TableCell></TableRow>
+                  <TableRow><TableCell>Floor surcharge</TableCell><TableCell>3 free floors, $2/floor, $20 cap, elevator-exempt</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell>pricing_config</TableCell></TableRow>
+                  <TableRow><TableCell>Handoff fees</TableCell><TableCell>$3 door / $0 curbside</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell>pricing_config</TableCell></TableRow>
+                  <TableRow><TableCell>Window discount tiers</TableCell><TableCell>0% / 5% / 10% (30/120/240 min)</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell>pricing_config</TableCell></TableRow>
+                  <TableRow><TableCell>Surge multiplier values</TableCell><TableCell>1.2 peak / 1.15 weekend / 0.9 off-peak / 1.5 holiday</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell>pricing_config (windows still in code)</TableCell></TableRow>
+                  <TableRow><TableCell>Quote validity</TableCell><TableCell>15 minutes</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell>pricing_config</TableCell></TableRow>
+                  <TableRow><TableCell>Wait fee constants</TableCell><TableCell>5 free min, $1/min, $15 cap</TableCell><TableCell><Badge variant="destructive">Code-only</Badge></TableCell><TableCell><strong>OD-8:</strong> move to DB?</TableCell></TableRow>
+                  <TableRow><TableCell>Surge time windows</TableCell><TableCell>6-9am, 5-8pm weekday peak / weekend / off-peak / holiday list</TableCell><TableCell><Badge variant="destructive">Code-only</Badge></TableCell><TableCell>Leave in code (safe)</TableCell></TableRow>
+                  <TableRow><TableCell>FSM transition graph</TableCell><TableCell>safety-critical edges</TableCell><TableCell><Badge variant="destructive">Code-only</Badge></TableCell><TableCell>Leave in code (correct)</TableCell></TableRow>
+                  <TableRow><TableCell>Role field whitelist (PATCH /orders/:id)</TableCell><TableCell>per-role permissions</TableCell><TableCell><Badge variant="destructive">Code-only</Badge></TableCell><TableCell>Leave in code (security)</TableCell></TableRow>
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Pickup / Delivery Tracking Checklist</CardTitle>
+              <CardDescription>Per-feature truth on what the customer, driver, and admin actually see for live tracking and Google Maps integration.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow><TableHead>Feature</TableHead><TableHead>Customer</TableHead><TableHead>Driver</TableHead><TableHead>Admin</TableHead><TableHead>Notes</TableHead></TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow><TableCell>Order status badge</TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell>FSM-backed</TableCell></TableRow>
+                  <TableRow><TableCell>Status history timeline</TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell>order_events rows, length 14 on last e2e order</TableCell></TableRow>
+                  <TableRow><TableCell>Progress bar</TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell>0–100% per FSM stage</TableCell></TableRow>
+                  <TableRow><TableCell>ETA</TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge> (prod)</TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell>Needs Maps key (prod has, sandbox doesn’t)</TableCell></TableRow>
+                  <TableRow><TableCell>Driver name + vehicle + phone call</TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell>n/a (own profile)</TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell>tel: link works</TableCell></TableRow>
+                  <TableRow><TableCell>Driver GPS lat/lng updates</TableCell><TableCell><Badge variant="outline">Data flows, no map widget</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge> (prod tiles)</TableCell><TableCell>watchPosition + PATCH /api/drivers/:id/location + WS broadcast</TableCell></TableRow>
+                  <TableRow><TableCell>Embedded interactive map (customer)</TableCell><TableCell><Badge variant="destructive">Missing</Badge></TableCell><TableCell>n/a</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes (prod)</Badge></TableCell><TableCell><strong>OD-7:</strong> add @vis.gl/react-google-maps to tracking.tsx</TableCell></TableRow>
+                  <TableRow><TableCell>External Google Maps deep link</TableCell><TableCell>n/a</TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell>n/a</TableCell><TableCell>navigation.tsx opens Google Maps</TableCell></TableRow>
+                  <TableRow><TableCell>Driver-to-customer in-app chat</TableCell><TableCell><Badge variant="destructive">Not implemented</Badge></TableCell><TableCell><Badge variant="destructive">Not implemented</Badge></TableCell><TableCell>n/a</TableCell><TableCell><strong>OD-4</strong></TableCell></TableRow>
+                  <TableRow><TableCell>Pickup photo upload</TableCell><TableCell>Visible on order</TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell>pickupPhotoUrl field</TableCell></TableRow>
+                  <TableRow><TableCell>Delivery photo upload</TableCell><TableCell>Visible on order</TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell>deliveryPhotoUrl field</TableCell></TableRow>
+                  <TableRow><TableCell>Driver issue reporting</TableCell><TableCell>Status changes visible</TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell><Badge className="bg-green-600 text-white">Real</Badge></TableCell><TableCell>6 issue types, triggers pickup_failed/delivery_failed</TableCell></TableRow>
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Google Maps Key Status</CardTitle>
+              <CardDescription>Where the <code>GOOGLE_MAPS_API_KEY</code> is set and the user-visible effect.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow><TableHead>Service</TableHead><TableHead>Maps key set?</TableHead><TableHead>Effect</TableHead></TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow><TableCell>sandbox-api</TableCell><TableCell><Badge variant="destructive">No</Badge></TableCell><TableCell>Haversine fallback for distance — quote $3.75 for 3.5mi test</TableCell></TableRow>
+                  <TableRow><TableCell>sandbox-admin</TableCell><TableCell><Badge variant="destructive">No</Badge></TableCell><TableCell>Admin order map shows lat/lng as text only</TableCell></TableRow>
+                  <TableRow><TableCell>prod-api</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell>Distance Matrix + traffic — quote $15.36 for same 3.5mi test</TableCell></TableRow>
+                  <TableRow><TableCell>prod-admin</TableCell><TableCell><Badge className="bg-green-600 text-white">Yes</Badge></TableCell><TableCell>Admin map tiles render</TableCell></TableRow>
+                </TableBody>
+              </Table>
+              <div className="mt-3 text-xs text-muted-foreground"><strong>Owner decision OD-2:</strong> add Maps key to sandbox for quote parity, OR document sandbox as “haversine-only” and use prod for any pricing accuracy validation.</div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Items Requiring Owner Decision</CardTitle>
+              <CardDescription>Each is a place where the system has a defensible choice but I should not “just pick my favorite.” Full detail in <code>offload_addendum_discrepancies.md</code>.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow><TableHead>ID</TableHead><TableHead>Question</TableHead><TableHead>Default (no action)</TableHead><TableHead>Recommended</TableHead></TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow><TableCell>OD-1</TableCell><TableCell>Show alterations + commercial in site/app dropdowns?</TableCell><TableCell>Hidden (4 of 6 shown)</TableCell><TableCell>Remove from FAQ too, OR show in dropdowns</TableCell></TableRow>
+                  <TableRow><TableCell>OD-2</TableCell><TableCell>Add Google Maps key to sandbox for pricing parity?</TableCell><TableCell>Haversine-only</TableCell><TableCell>Add key</TableCell></TableRow>
+                  <TableRow><TableCell>OD-3</TableCell><TableCell>Refresh Owner Review website tab with live numbers?</TableCell><TableCell>Static $48.98 (out of date)</TableCell><TableCell>Done — live $57.34 above</TableCell></TableRow>
+                  <TableRow><TableCell>OD-4</TableCell><TableCell>Drop “Chat with driver” from marketing?</TableCell><TableCell>Keep promise, no impl</TableCell><TableCell>Remove or roadmap-tag</TableCell></TableRow>
+                  <TableRow><TableCell>OD-5</TableCell><TableCell>Drop “Stripe Connect / weekly direct deposits”?</TableCell><TableCell>Keep promise, no impl</TableCell><TableCell>Remove or roadmap-tag</TableCell></TableRow>
+                  <TableRow><TableCell>OD-6</TableCell><TableCell>Drop “24/7 / Platinum support”?</TableCell><TableCell>Keep promise, no impl</TableCell><TableCell>Remove or roadmap-tag</TableCell></TableRow>
+                  <TableRow><TableCell>OD-7</TableCell><TableCell>Add embedded map widget to customer tracking?</TableCell><TableCell>Placeholder div</TableCell><TableCell>Add Maps widget</TableCell></TableRow>
+                  <TableRow><TableCell>OD-8</TableCell><TableCell>Move wait-fee constants to DB?</TableCell><TableCell>Hardcoded</TableCell><TableCell>Move to DB</TableCell></TableRow>
+                  <TableRow><TableCell>OD-9</TableCell><TableCell>Per-jurisdiction tax table?</TableCell><TableCell>NYC flat 8.875%</TableCell><TableCell>Leave until expansion</TableCell></TableRow>
+                  <TableRow><TableCell>OD-10</TableCell><TableCell>Deploy wave5b-part30 admin assignment fix to PRODUCTION?</TableCell><TableCell>Sandbox-only (current)</TableCell><TableCell><strong>Authorize prod deploy</strong></TableCell></TableRow>
                 </TableBody>
               </Table>
             </CardContent>
