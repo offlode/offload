@@ -19,7 +19,7 @@ import { logAdminAction } from "./audit-helpers";
 import { hashPassword, verifyPassword, checkLoginRateLimit, recordLoginAttempt } from "./lib/auth";
 import {
   distanceMiles, TAX_RATE, TIER_NAME_MAP, calculateQuotePrice, calculatePricing,
-  WAIT_FEE_CONFIG, calculateWaitFee, getSurgePricingTier, getSurgePricingTierAsync, DYNAMIC_PRICING_CONFIG,
+  WAIT_FEE_CONFIG, calculateWaitFee, calculateWaitFeeAsync, getSurgePricingTier, getSurgePricingTierAsync, DYNAMIC_PRICING_CONFIG,
   calculateDistanceFee, calculateFloorFee, calculateHandoffFee, calculateWindowDiscountRate,
   calculateTrafficMultiplier, computeLogisticsBreakdown, findCheapestPickupSlot, getDemandMultiplier,
   type QuotePriceBreakdown, type LogisticsContext, type LogisticsBreakdown,
@@ -1231,6 +1231,18 @@ export async function registerRoutes(
       publishableKey: pk,
       configured: pk.startsWith("pk_"),
       mode: pk.startsWith("pk_live_") ? "live" : (pk.startsWith("pk_test_") ? "test" : "none"),
+    });
+  });
+
+  // OD-7: Expose the Google Maps JavaScript API key to authenticated clients so the
+  // embedded tracking-page map can render. The key is referrer-restricted at the GCP
+  // level, but we still gate this behind auth + return an empty string if the env
+  // var is unset, so the client cleanly falls back to the no-map placeholder.
+  app.get("/api/config/maps-key", requireAuth(), (_req, res) => {
+    const k = process.env.GOOGLE_MAPS_API_KEY || "";
+    res.json({
+      mapsKey: k,
+      configured: !!k,
     });
   });
 
@@ -3938,15 +3950,17 @@ export async function registerRoutes(
         console.warn("[driver-arrived] notify failed:", e?.message);
       }
 
+      // OD-8: read live wait-fee config from pricing_config
+      const wfCfg = await pricingConfig.getWaitFeeConfig();
       // Live update via socket so customer app can show countdown
-      try { emitToOrder(order.id, "driver_arrived", { orderId: order.id, arrivedAt, freeMinutes: WAIT_FEE_CONFIG.freeMinutes }); } catch (e) { console.warn("[socket] Failed to emit driver_arrived:", e); }
+      try { emitToOrder(order.id, "driver_arrived", { orderId: order.id, arrivedAt, freeMinutes: wfCfg.freeMinutes }); } catch (e) { console.warn("[socket] Failed to emit driver_arrived:", e); }
 
       res.json({
         orderId: order.id,
         driverArrivedAt: arrivedAt,
-        freeMinutes: WAIT_FEE_CONFIG.freeMinutes,
-        perMinute: WAIT_FEE_CONFIG.perMinute,
-        cap: WAIT_FEE_CONFIG.cap,
+        freeMinutes: wfCfg.freeMinutes,
+        perMinute: wfCfg.perMinute,
+        cap: wfCfg.cap,
       });
     } catch (err: any) {
       console.error("[/api/orders/:id/driver-arrived] error:", err);
@@ -3973,7 +3987,8 @@ export async function registerRoutes(
       }
 
       const handoffAt = now();
-      const { waitMinutes, waitFee } = calculateWaitFee(order.driverArrivedAt, handoffAt);
+      // OD-8: read live wait-fee config from pricing_config and use async calculator.
+      const { waitMinutes, waitFee, config: wfCfg2 } = await calculateWaitFeeAsync(order.driverArrivedAt, handoffAt);
 
       // Update order: store timestamps, wait minutes, wait fee. Roll wait fee into total.
       const newTotal = Math.round(((order.total || 0) + waitFee) * 100) / 100;
@@ -3989,8 +4004,8 @@ export async function registerRoutes(
         eventType: "customer_handoff",
         description: waitFee > 0
           ? `Customer handed off bags — waited ${waitMinutes.toFixed(1)} min, wait fee $${waitFee.toFixed(2)} added`
-          : `Customer handed off bags — within ${WAIT_FEE_CONFIG.freeMinutes}-min grace, no wait fee`,
-        details: JSON.stringify({ waitMinutes, waitFee, freeMinutes: WAIT_FEE_CONFIG.freeMinutes }),
+          : `Customer handed off bags — within ${wfCfg2.freeMinutes}-min grace, no wait fee`,
+        details: JSON.stringify({ waitMinutes, waitFee, freeMinutes: wfCfg2.freeMinutes }),
         actorId: currentUser.id,
         actorRole: currentUser.role,
         timestamp: handoffAt,
@@ -4001,7 +4016,7 @@ export async function registerRoutes(
         try {
           await notifyUser(order.customerId, order.id, "order_update",
             "Wait fee added",
-            `A $${waitFee.toFixed(2)} wait fee was added to your order (${waitMinutes.toFixed(1)} min wait, free ${WAIT_FEE_CONFIG.freeMinutes} min).`,
+            `A $${waitFee.toFixed(2)} wait fee was added to your order (${waitMinutes.toFixed(1)} min wait, free ${wfCfg2.freeMinutes} min).`,
             `/orders/${order.id}`);
         } catch (e: any) {
           console.warn("[customer-handoff] notify failed:", e?.message);
@@ -4017,7 +4032,7 @@ export async function registerRoutes(
         waitMinutes,
         waitFee,
         newTotal,
-        graceMinutes: WAIT_FEE_CONFIG.freeMinutes,
+        graceMinutes: wfCfg2.freeMinutes,
       });
     } catch (err: any) {
       console.error("[/api/orders/:id/customer-handoff] error:", err);
@@ -4035,15 +4050,16 @@ export async function registerRoutes(
       return res.status(403).json({ error: "Access denied" });
     }
     const handoffAt = order.customerHandoffAt || (order.driverArrivedAt ? now() : null);
-    const { waitMinutes, waitFee } = calculateWaitFee(order.driverArrivedAt, handoffAt);
+    // OD-8: live wait-fee config + async calc.
+    const { waitMinutes, waitFee, config: wfReadCfg } = await calculateWaitFeeAsync(order.driverArrivedAt, handoffAt);
     res.json({
       orderId: order.id,
       driverArrivedAt: order.driverArrivedAt,
       customerHandoffAt: order.customerHandoffAt,
       live: !order.customerHandoffAt,
-      graceMinutes: WAIT_FEE_CONFIG.freeMinutes,
-      perMinute: WAIT_FEE_CONFIG.perMinute,
-      cap: WAIT_FEE_CONFIG.cap,
+      graceMinutes: wfReadCfg.freeMinutes,
+      perMinute: wfReadCfg.perMinute,
+      cap: wfReadCfg.cap,
       currentWaitMinutes: waitMinutes,
       currentWaitFee: waitFee,
     });

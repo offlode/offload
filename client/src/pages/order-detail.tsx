@@ -539,16 +539,17 @@ export default function OrderDetailPage() {
               <p className="text-sm font-semibold">{driver.name}</p>
               <p className="text-xs text-muted-foreground">{driver.vehicleType} — {driver.licensePlate}</p>
             </div>
-            {/* H1-A fix: the “Call” button used to fire a toast with no real call. We don’t
-                relay driver phone numbers yet (masked-number Twilio integration is a Stage 2
-                item) so the safest pre-launch behavior is in-app messaging only. */}
+            {/* OD-4 honesty fix: driver-side does not yet read in-order messages.
+                These threads route to admin/support, so the button is relabeled as
+                'Message support about this order' until driver inbox UI ships. */}
             <Button
               variant="secondary"
               size="icon"
               className="shrink-0 hover:text-emerald-400 transition-colors"
               onClick={() => setMessageSheetOpen(true)}
-              data-testid="button-message-driver"
-              aria-label={`Message ${driver.name}`}
+              data-testid="button-message-support"
+              aria-label={`Message support about this order`}
+              title="Message support about this order"
             >
               <MessageSquare className="w-4 h-4 text-emerald-400" />
             </Button>
@@ -979,7 +980,8 @@ export default function OrderDetailPage() {
       <Sheet open={messageSheetOpen} onOpenChange={setMessageSheetOpen}>
         <SheetContent side="bottom" className="max-h-[70vh] rounded-t-2xl">
           <SheetHeader>
-            <SheetTitle>Messages {driver ? `with ${driver.name}` : ""}</SheetTitle>
+            <SheetTitle>Message support about this order</SheetTitle>
+            <p className="text-xs text-muted-foreground">Our support team reads these messages and will reach the driver if needed.</p>
           </SheetHeader>
           <div className="mt-4 flex-1 overflow-y-auto max-h-[40vh] space-y-3 mb-4">
             {messagesData && messagesData.length > 0 ? (

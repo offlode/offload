@@ -127,6 +127,18 @@ class PricingConfigService {
   async getDynamicLogistics<T>(fallback: T): Promise<T> {
     return this.getJSON("dynamic_logistics", fallback);
   }
+
+  // OD-8: Wait-fee configuration sourced from DB so the owner can tune the
+  // grace period, per-minute rate, and cap without a code deploy. Falls back
+  // to the canonical constants if any row is missing.
+  async getWaitFeeConfig(): Promise<{ freeMinutes: number; perMinute: number; cap: number }> {
+    const [freeMinutes, perMinute, cap] = await Promise.all([
+      this.getNumber("wait_fee_free_minutes", 5),
+      this.getNumber("wait_fee_per_minute", 1.0),
+      this.getNumber("wait_fee_cap", 15.0),
+    ]);
+    return { freeMinutes, perMinute, cap };
+  }
 }
 
 export const pricingConfig = new PricingConfigService();

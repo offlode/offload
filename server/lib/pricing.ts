@@ -331,24 +331,46 @@ export async function calculatePricing(bags: any[], deliverySpeed: string) {
 }
 
 // ── Pickup waiting fee ──
+// OD-8: WAIT_FEE_CONFIG is now a FALLBACK only. The live values come from
+// pricing_config (keys: wait_fee_free_minutes / wait_fee_per_minute / wait_fee_cap)
+// via pricingConfig.getWaitFeeConfig(). Use calculateWaitFeeAsync() for fresh
+// values; calculateWaitFee() preserves the legacy sync signature for legacy callers.
 export const WAIT_FEE_CONFIG = {
   freeMinutes: 5,
   perMinute: 1.0,
   cap: 15.0,
 };
 
-export function calculateWaitFee(arrivedAt: string | null | undefined, handoffAt: string | null | undefined): { waitMinutes: number; waitFee: number } {
+function _calc(
+  arrivedAt: string | null | undefined,
+  handoffAt: string | null | undefined,
+  cfg: { freeMinutes: number; perMinute: number; cap: number },
+): { waitMinutes: number; waitFee: number } {
   if (!arrivedAt || !handoffAt) return { waitMinutes: 0, waitFee: 0 };
   const a = new Date(arrivedAt).getTime();
   const h = new Date(handoffAt).getTime();
   if (isNaN(a) || isNaN(h) || h <= a) return { waitMinutes: 0, waitFee: 0 };
   const minutes = (h - a) / 60000;
-  const billable = Math.max(0, minutes - WAIT_FEE_CONFIG.freeMinutes);
-  const fee = Math.min(WAIT_FEE_CONFIG.cap, billable * WAIT_FEE_CONFIG.perMinute);
+  const billable = Math.max(0, minutes - cfg.freeMinutes);
+  const fee = Math.min(cfg.cap, billable * cfg.perMinute);
   return {
     waitMinutes: Math.round(minutes * 100) / 100,
     waitFee: Math.round(fee * 100) / 100,
   };
+}
+
+export function calculateWaitFee(arrivedAt: string | null | undefined, handoffAt: string | null | undefined): { waitMinutes: number; waitFee: number } {
+  return _calc(arrivedAt, handoffAt, WAIT_FEE_CONFIG);
+}
+
+export async function calculateWaitFeeAsync(
+  arrivedAt: string | null | undefined,
+  handoffAt: string | null | undefined,
+): Promise<{ waitMinutes: number; waitFee: number; config: { freeMinutes: number; perMinute: number; cap: number } }> {
+  const { pricingConfig } = await import("../pricing-config-service");
+  const cfg = await pricingConfig.getWaitFeeConfig();
+  const { waitMinutes, waitFee } = _calc(arrivedAt, handoffAt, cfg);
+  return { waitMinutes, waitFee, config: cfg };
 }
 
 // ════════════════════════════════════════════════════════════════

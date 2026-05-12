@@ -2,12 +2,13 @@ import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRoute, Link } from "wouter";
 import {
-  ArrowLeft, MapPin, Navigation, Clock, Phone, Package,
+  ArrowLeft, MapPin, Clock, Phone, Package,
   CheckCircle2, Truck, Building, Droplets, Wind, Shirt,
 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/contexts/auth-context";
 import { getSocket, joinOrderRoom, leaveOrderRoom } from "@/lib/socket";
+import EmbeddedTrackingMap from "@/components/embedded-tracking-map";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "Pending",
@@ -135,26 +136,13 @@ export default function TrackingPage() {
       </div>
 
       <div className="max-w-lg mx-auto px-4 pt-4 space-y-4">
-        {/* Map Placeholder */}
-        <div
-          data-testid="map-container"
-          className="w-full aspect-video rounded-2xl bg-card border border-border relative overflow-hidden"
-        >
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-primary/10 to-primary/5">
-            <Navigation className="w-10 h-10 text-primary/50" />
-            <p className="text-sm text-muted-foreground font-medium">Map View</p>
-            {currentDriverPos && (
-              <p className="text-xs text-muted-foreground">
-                Driver: {currentDriverPos.lat.toFixed(4)}, {currentDriverPos.lng.toFixed(4)}
-              </p>
-            )}
-            {!tracking.isDriverPhase && (
-              <p className="text-xs text-muted-foreground/60">
-                Map available during driver phases
-              </p>
-            )}
-          </div>
-        </div>
+        {/* OD-7: Embedded interactive map (falls back cleanly when key/coords missing) */}
+        <EmbeddedTrackingMap
+          driverPos={currentDriverPos || null}
+          pickup={tracking.pickup}
+          delivery={tracking.delivery}
+          isDriverPhase={tracking.isDriverPhase}
+        />
 
         {/* Status Banner */}
         <div className="p-4 rounded-2xl bg-card border border-border" data-testid="status-banner">
