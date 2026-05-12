@@ -64,7 +64,24 @@ function VendorCard({ vendor, onStatusChange }: {
   const capacity = vendor.capacity || 1;
   const load = vendor.currentLoad || 0;
   const loadPercent = Math.min((load / capacity) * 100, 100);
-  const capabilities = vendor.capabilities ? JSON.parse(vendor.capabilities as string) : [];
+  // capabilities is stored either as a JSON array string ('["wash_fold","dry_cleaning"]')
+  // or a JSON object string ('{"wash_fold":true,"dry_cleaning":false}').
+  // Normalize to a string array of enabled capability keys.
+  const capabilities: string[] = (() => {
+    if (!vendor.capabilities) return [];
+    try {
+      const parsed = typeof vendor.capabilities === "string"
+        ? JSON.parse(vendor.capabilities)
+        : vendor.capabilities;
+      if (Array.isArray(parsed)) return parsed.map(String);
+      if (parsed && typeof parsed === "object") {
+        return Object.entries(parsed).filter(([, v]) => v).map(([k]) => k);
+      }
+      return [];
+    } catch {
+      return [];
+    }
+  })();
 
   const { data: stats } = useQuery<VendorStats>({
     queryKey: ["/api/vendors", vendor.id, "stats"],
