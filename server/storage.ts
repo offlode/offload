@@ -203,6 +203,134 @@ ensureExtraTables().catch((err) => {
   console.error("[storage] ensureExtraTables error:", err);
 });
 
+// ── Wave 5: FK constraints, indexes, and shadow cents columns ──
+async function ensureIntegrityConstraints() {
+  // FK indexes (all idempotent)
+  const indexes = [
+    "CREATE INDEX IF NOT EXISTS idx_orders_customer_id ON orders(customer_id)",
+    "CREATE INDEX IF NOT EXISTS idx_orders_vendor_id ON orders(vendor_id)",
+    "CREATE INDEX IF NOT EXISTS idx_orders_driver_id ON orders(driver_id)",
+    "CREATE INDEX IF NOT EXISTS idx_addresses_user_id ON addresses(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_payment_methods_user_id ON payment_methods(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_order_events_order_id ON order_events(order_id)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_order_id ON messages(order_id)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_sender_id ON messages(sender_id)",
+    "CREATE INDEX IF NOT EXISTS idx_disputes_order_id ON disputes(order_id)",
+    "CREATE INDEX IF NOT EXISTS idx_payment_transactions_order_id ON payment_transactions(order_id)",
+    "CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_order_add_ons_order_id ON order_add_ons(order_id)",
+    "CREATE INDEX IF NOT EXISTS idx_loyalty_transactions_user_id ON loyalty_transactions(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_referrals_referrer_id ON referrals(referrer_id)",
+    "CREATE INDEX IF NOT EXISTS idx_referrals_referee_id ON referrals(referee_id)",
+    "CREATE INDEX IF NOT EXISTS idx_reviews_order_id ON reviews(order_id)",
+    "CREATE INDEX IF NOT EXISTS idx_consent_records_order_id ON consent_records(order_id)",
+    "CREATE INDEX IF NOT EXISTS idx_push_tokens_user_id ON push_tokens(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_id ON chat_sessions(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_promo_usage_promo_id ON promo_usage(promo_id)",
+    "CREATE INDEX IF NOT EXISTS idx_promo_usage_user_id ON promo_usage(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_vendor_payouts_vendor_id ON vendor_payouts(vendor_id)",
+  ];
+  for (const ddl of indexes) {
+    try { await pool.query(ddl); } catch (e: any) {
+      console.warn("[integrity] index:", e.message);
+    }
+  }
+
+  // FK constraints (each wrapped individually — skip if already exists)
+  const fks: Array<[string, string]> = [
+    ["orders", "ADD CONSTRAINT fk_orders_customer FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE RESTRICT"],
+    ["orders", "ADD CONSTRAINT fk_orders_vendor FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE SET NULL"],
+    ["orders", "ADD CONSTRAINT fk_orders_driver FOREIGN KEY (driver_id) REFERENCES drivers(id) ON DELETE SET NULL"],
+    ["addresses", "ADD CONSTRAINT fk_addresses_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"],
+    ["payment_methods", "ADD CONSTRAINT fk_payment_methods_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"],
+    ["order_events", "ADD CONSTRAINT fk_order_events_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE"],
+    ["messages", "ADD CONSTRAINT fk_messages_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE RESTRICT"],
+    ["disputes", "ADD CONSTRAINT fk_disputes_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE RESTRICT"],
+    ["disputes", "ADD CONSTRAINT fk_disputes_customer FOREIGN KEY (customer_id) REFERENCES users(id) ON DELETE RESTRICT"],
+    ["reviews", "ADD CONSTRAINT fk_reviews_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE"],
+    ["notifications", "ADD CONSTRAINT fk_notifications_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"],
+    ["vendor_payouts", "ADD CONSTRAINT fk_vendor_payouts_vendor FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE RESTRICT"],
+    ["payment_transactions", "ADD CONSTRAINT fk_payment_txns_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE RESTRICT"],
+    ["loyalty_transactions", "ADD CONSTRAINT fk_loyalty_txns_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"],
+    ["order_add_ons", "ADD CONSTRAINT fk_order_add_ons_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE"],
+    ["order_add_ons", "ADD CONSTRAINT fk_order_add_ons_addon FOREIGN KEY (add_on_id) REFERENCES add_ons(id) ON DELETE RESTRICT"],
+    ["chat_sessions", "ADD CONSTRAINT fk_chat_sessions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"],
+    ["promo_usage", "ADD CONSTRAINT fk_promo_usage_promo FOREIGN KEY (promo_id) REFERENCES promo_codes(id) ON DELETE CASCADE"],
+    ["promo_usage", "ADD CONSTRAINT fk_promo_usage_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"],
+  ];
+  for (const [table, clause] of fks) {
+    try {
+      await pool.query(`ALTER TABLE ${table} ${clause}`);
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      if (!msg.includes("already exists") && !msg.includes("duplicate key")) {
+        console.warn(`[integrity] FK ${table}: ${msg}`);
+      }
+    }
+  }
+
+  // Shadow _cents columns for dual-write migration (Phase 1)
+  const centsCols: Array<[string, string]> = [
+    ["orders", "subtotal_cents INTEGER"],
+    ["orders", "tax_cents INTEGER"],
+    ["orders", "delivery_fee_cents INTEGER"],
+    ["orders", "discount_cents INTEGER"],
+    ["orders", "total_cents INTEGER"],
+    ["orders", "final_price_cents INTEGER"],
+    ["orders", "vendor_payout_cents INTEGER"],
+    ["orders", "driver_payout_cents INTEGER"],
+    ["orders", "tier_flat_price_cents INTEGER"],
+    ["quotes", "subtotal_cents INTEGER"],
+    ["quotes", "tax_amount_cents INTEGER"],
+    ["quotes", "delivery_fee_cents INTEGER"],
+    ["quotes", "discount_cents INTEGER"],
+    ["quotes", "total_cents INTEGER"],
+    ["quotes", "tier_flat_price_cents INTEGER"],
+    ["vendor_payouts", "amount_cents INTEGER"],
+  ];
+  for (const [table, colDef] of centsCols) {
+    try {
+      await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${colDef}`);
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      if (!msg.includes("already exists") && !msg.includes("duplicate column")) {
+        console.warn(`[integrity] shadow column ${table}.${colDef.split(" ")[0]}: ${msg}`);
+      }
+    }
+  }
+
+  // Backfill shadow columns from existing dollar values
+  const backfills = [
+    "UPDATE orders SET subtotal_cents = ROUND(subtotal * 100)::integer WHERE subtotal IS NOT NULL AND subtotal_cents IS NULL",
+    "UPDATE orders SET tax_cents = ROUND(tax * 100)::integer WHERE tax IS NOT NULL AND tax_cents IS NULL",
+    "UPDATE orders SET delivery_fee_cents = ROUND(delivery_fee * 100)::integer WHERE delivery_fee IS NOT NULL AND delivery_fee_cents IS NULL",
+    "UPDATE orders SET discount_cents = ROUND(discount * 100)::integer WHERE discount IS NOT NULL AND discount_cents IS NULL",
+    "UPDATE orders SET total_cents = ROUND(total * 100)::integer WHERE total IS NOT NULL AND total_cents IS NULL",
+    "UPDATE orders SET final_price_cents = ROUND(final_price * 100)::integer WHERE final_price IS NOT NULL AND final_price_cents IS NULL",
+    "UPDATE orders SET vendor_payout_cents = ROUND(vendor_payout * 100)::integer WHERE vendor_payout IS NOT NULL AND vendor_payout_cents IS NULL",
+    "UPDATE orders SET driver_payout_cents = ROUND(driver_payout * 100)::integer WHERE driver_payout IS NOT NULL AND driver_payout_cents IS NULL",
+    "UPDATE orders SET tier_flat_price_cents = ROUND(tier_flat_price * 100)::integer WHERE tier_flat_price IS NOT NULL AND tier_flat_price_cents IS NULL",
+    "UPDATE quotes SET subtotal_cents = ROUND(subtotal * 100)::integer WHERE subtotal IS NOT NULL AND subtotal_cents IS NULL",
+    "UPDATE quotes SET tax_amount_cents = ROUND(tax_amount * 100)::integer WHERE tax_amount IS NOT NULL AND tax_amount_cents IS NULL",
+    "UPDATE quotes SET delivery_fee_cents = ROUND(delivery_fee * 100)::integer WHERE delivery_fee IS NOT NULL AND delivery_fee_cents IS NULL",
+    "UPDATE quotes SET discount_cents = ROUND(discount * 100)::integer WHERE discount IS NOT NULL AND discount_cents IS NULL",
+    "UPDATE quotes SET total_cents = ROUND(total * 100)::integer WHERE total IS NOT NULL AND total_cents IS NULL",
+    "UPDATE quotes SET tier_flat_price_cents = ROUND(tier_flat_price * 100)::integer WHERE tier_flat_price IS NOT NULL AND tier_flat_price_cents IS NULL",
+    "UPDATE vendor_payouts SET amount_cents = ROUND(amount * 100)::integer WHERE amount IS NOT NULL AND amount_cents IS NULL",
+  ];
+  for (const sql of backfills) {
+    try { await pool.query(sql); } catch (e: any) {
+      console.warn("[integrity] backfill:", e.message);
+    }
+  }
+
+  console.log("[integrity] FK constraints, indexes, and shadow cents columns applied.");
+}
+
+ensureIntegrityConstraints().catch((err) => {
+  console.error("[storage] ensureIntegrityConstraints error:", err);
+});
+
 export interface IStorage {
   // Users
   getUser(id: number): Promise<schema.User | undefined>;
@@ -413,6 +541,34 @@ export interface IStorage {
   deleteNotificationRule(id: number): Promise<boolean>;
 }
 
+// ── Dual-write helpers: add shadow _cents columns from dollar values ──
+function dollarToCents(v: number | null | undefined): number | null {
+  return v != null ? Math.round(v * 100) : null;
+}
+function addOrderCents<T extends Record<string, any>>(data: T): T {
+  const d = { ...data } as any;
+  if (d.subtotal != null && d.subtotalCents == null) d.subtotalCents = dollarToCents(d.subtotal);
+  if (d.tax != null && d.taxCents == null) d.taxCents = dollarToCents(d.tax);
+  if (d.deliveryFee != null && d.deliveryFeeCents == null) d.deliveryFeeCents = dollarToCents(d.deliveryFee);
+  if (d.discount != null && d.discountCents == null) d.discountCents = dollarToCents(d.discount);
+  if (d.total != null && d.totalCents == null) d.totalCents = dollarToCents(d.total);
+  if (d.finalPrice != null && d.finalPriceCents == null) d.finalPriceCents = dollarToCents(d.finalPrice);
+  if (d.vendorPayout != null && d.vendorPayoutCents == null) d.vendorPayoutCents = dollarToCents(d.vendorPayout);
+  if (d.driverPayout != null && d.driverPayoutCents == null) d.driverPayoutCents = dollarToCents(d.driverPayout);
+  if (d.tierFlatPrice != null && d.tierFlatPriceCents == null) d.tierFlatPriceCents = dollarToCents(d.tierFlatPrice);
+  return d;
+}
+function addQuoteCents<T extends Record<string, any>>(data: T): T {
+  const d = { ...data } as any;
+  if (d.subtotal != null && d.subtotalCents == null) d.subtotalCents = dollarToCents(d.subtotal);
+  if (d.taxAmount != null && d.taxAmountCents == null) d.taxAmountCents = dollarToCents(d.taxAmount);
+  if (d.deliveryFee != null && d.deliveryFeeCents == null) d.deliveryFeeCents = dollarToCents(d.deliveryFee);
+  if (d.discount != null && d.discountCents == null) d.discountCents = dollarToCents(d.discount);
+  if (d.total != null && d.totalCents == null) d.totalCents = dollarToCents(d.total);
+  if (d.tierFlatPrice != null && d.tierFlatPriceCents == null) d.tierFlatPriceCents = dollarToCents(d.tierFlatPrice);
+  return d;
+}
+
 class DatabaseStorage implements IStorage {
   // ─── Users ───
   async getUser(id: number) {
@@ -584,11 +740,13 @@ class DatabaseStorage implements IStorage {
     return db.select().from(schema.orders).where(eq(schema.orders.status, status));
   }
   async createOrder(data: schema.InsertOrder) {
-    const [row] = await db.insert(schema.orders).values(data).returning();
+    const augmented = addOrderCents(data);
+    const [row] = await db.insert(schema.orders).values(augmented).returning();
     return row;
   }
   async updateOrder(id: number, data: Partial<schema.InsertOrder>) {
-    const [row] = await db.update(schema.orders).set(data).where(eq(schema.orders.id, id)).returning();
+    const augmented = addOrderCents(data);
+    const [row] = await db.update(schema.orders).set(augmented).where(eq(schema.orders.id, id)).returning();
     return row;
   }
 
@@ -811,7 +969,11 @@ class DatabaseStorage implements IStorage {
       .orderBy(desc(schema.vendorPayouts.createdAt));
   }
   async createVendorPayout(data: schema.InsertVendorPayout) {
-    const [row] = await db.insert(schema.vendorPayouts).values(data).returning();
+    const d = data as any;
+    if (d.amount != null && d.amountCents == null) {
+      (d as any).amountCents = Math.round(d.amount * 100);
+    }
+    const [row] = await db.insert(schema.vendorPayouts).values(d).returning();
     return row;
   }
   async updateVendorPayout(id: number, data: Partial<schema.InsertVendorPayout>) {
@@ -983,11 +1145,13 @@ class DatabaseStorage implements IStorage {
     return db.select().from(schema.quotes).where(eq(schema.quotes.sessionId, sessionId)).orderBy(desc(schema.quotes.createdAt));
   }
   async createQuote(data: schema.InsertQuote) {
-    const [row] = await db.insert(schema.quotes).values(data).returning();
+    const augmented = addQuoteCents(data);
+    const [row] = await db.insert(schema.quotes).values(augmented).returning();
     return row;
   }
   async updateQuote(id: number, data: Partial<schema.InsertQuote>) {
-    const [row] = await db.update(schema.quotes).set(data).where(eq(schema.quotes.id, id)).returning();
+    const augmented = addQuoteCents(data);
+    const [row] = await db.update(schema.quotes).set(augmented).where(eq(schema.quotes.id, id)).returning();
     return row;
   }
   async expireStaleQuotes(): Promise<number> {
