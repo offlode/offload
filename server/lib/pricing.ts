@@ -198,7 +198,8 @@ export async function calculateQuotePrice(input: {
   });
 
   // 6d. Surge pricing tier (time-of-day / day-of-week multiplier on logistics only)
-  const surge = getSurgePricingTier(input.scheduledPickup || undefined);
+  // Uses DB-driven holiday list (pricing_config.surge_holidays) with code fallback.
+  const surge = await getSurgePricingTierAsync(input.scheduledPickup || undefined);
   const logisticsAfterSurge = Math.round(logistics.logisticsTotal * surge.multiplier * 100) / 100;
 
   // 7. Subtotal (laundry + delivery base + preferred surcharge + addons + dynamic logistics)
@@ -350,19 +351,51 @@ export function calculateWaitFee(arrivedAt: string | null | undefined, handoffAt
 //  SURGE PRICING ENGINE
 // ════════════════════════════════════════════════════════════════
 
-const US_HOLIDAYS_2026 = [
+// Fallback US holidays — used only if DB key "surge_holidays" is missing.
+// Source of truth is pricing_config.surge_holidays (JSON array of YYYY-MM-DD strings).
+// Owner can update via the admin pricing config UI without a code deploy.
+const US_HOLIDAYS_FALLBACK = [
+  // 2026
   "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25",
   "2026-07-04", "2026-09-07", "2026-11-26", "2026-12-25",
+  // 2027 (added so the fallback does not silently expire)
+  "2027-01-01", "2027-01-18", "2027-02-15", "2027-05-31",
+  "2027-07-04", "2027-09-06", "2027-11-25", "2027-12-25",
 ];
 
+// Async DB-aware variant. Reads holiday list from pricing_config (60s TTL cache).
+export async function getSurgePricingTierAsync(pickupTime?: string): Promise<{ tier: string; multiplier: number; reason: string }> {
+  const dt = pickupTime ? new Date(pickupTime) : new Date();
+  const hour = dt.getHours();
+  const dayOfWeek = dt.getDay();
+  const dateStr = dt.toISOString().split("T")[0];
+
+  const holidays = await pricingConfig.getJSON<string[]>("surge_holidays", US_HOLIDAYS_FALLBACK);
+  if (Array.isArray(holidays) && holidays.includes(dateStr)) {
+    return { tier: "holiday", multiplier: 1.5, reason: "Holiday surge pricing" };
+  }
+  if (dayOfWeek === 0 || dayOfWeek === 6) {
+    return { tier: "weekend", multiplier: 1.15, reason: "Weekend demand pricing" };
+  }
+  if ((hour >= 6 && hour < 9) || (hour >= 17 && hour < 20)) {
+    return { tier: "peak", multiplier: 1.2, reason: "Peak hour pricing" };
+  }
+  if (hour < 6 || hour >= 22) {
+    return { tier: "off_peak", multiplier: 0.9, reason: "Off-peak discount" };
+  }
+  return { tier: "normal", multiplier: 1.0, reason: "Standard pricing" };
+}
+
+// Sync fallback — kept for callers that cannot easily go async.
+// Uses the in-code fallback list only.
 export function getSurgePricingTier(pickupTime?: string): { tier: string; multiplier: number; reason: string } {
   const dt = pickupTime ? new Date(pickupTime) : new Date();
   const hour = dt.getHours();
   const dayOfWeek = dt.getDay(); // 0=Sun, 6=Sat
   const dateStr = dt.toISOString().split("T")[0];
 
-  // Holiday check
-  if (US_HOLIDAYS_2026.includes(dateStr)) {
+  // Holiday check (fallback list)
+  if (US_HOLIDAYS_FALLBACK.includes(dateStr)) {
     return { tier: "holiday", multiplier: 1.5, reason: "Holiday surge pricing" };
   }
 

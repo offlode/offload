@@ -19,7 +19,7 @@ import { logAdminAction } from "./audit-helpers";
 import { hashPassword, verifyPassword, checkLoginRateLimit, recordLoginAttempt } from "./lib/auth";
 import {
   distanceMiles, TAX_RATE, TIER_NAME_MAP, calculateQuotePrice, calculatePricing,
-  WAIT_FEE_CONFIG, calculateWaitFee, getSurgePricingTier, DYNAMIC_PRICING_CONFIG,
+  WAIT_FEE_CONFIG, calculateWaitFee, getSurgePricingTier, getSurgePricingTierAsync, DYNAMIC_PRICING_CONFIG,
   calculateDistanceFee, calculateFloorFee, calculateHandoffFee, calculateWindowDiscountRate,
   calculateTrafficMultiplier, computeLogisticsBreakdown, findCheapestPickupSlot, getDemandMultiplier,
   type QuotePriceBreakdown, type LogisticsContext, type LogisticsBreakdown,
@@ -3033,9 +3033,9 @@ export async function registerRoutes(
         }
       }
 
-      // Dynamic pricing with surge
+      // Dynamic pricing with surge (DB-driven holiday list)
       const basePickupTime = scheduledPickup;
-      const surge = getSurgePricingTier(basePickupTime);
+      const surge = await getSurgePricingTierAsync(basePickupTime);
       const demandMultiplier = await getDemandMultiplier(serviceType || "wash_fold");
 
       let surgeSubtotal: number;
@@ -5261,7 +5261,7 @@ export async function registerRoutes(
       const speed = (deliverySpeed as string) || "48h";
 
       const basePrice = await calculatePricing(parsedBags, speed);
-      const surge = getSurgePricingTier(pickupTime as string | undefined);
+      const surge = await getSurgePricingTierAsync(pickupTime as string | undefined);
       const demandMultiplier = await getDemandMultiplier((serviceType as string) || "wash_fold");
 
       const surgedSubtotal = Math.round(basePrice.subtotal * surge.multiplier * demandMultiplier * 100) / 100;
