@@ -2395,6 +2395,13 @@ export async function registerRoutes(
   app.get("/api/vendors/:id", requireAuth(["admin", "manager", "laundromat", "vendor"]), async (req, res) => {
     const v = await storage.getVendor(Number(String(req.params.id)));
     if (!v) return res.status(404).json({ error: "Vendor not found" });
+    const currentUser = (req as any).currentUser;
+    if (currentUser.role === "laundromat" || currentUser.role === "vendor") {
+      const myVendor = await storage.getVendorByUserId(currentUser.id);
+      if (!myVendor || myVendor.id !== v.id) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+    }
     res.json(v);
   });
 
@@ -2450,6 +2457,10 @@ export async function registerRoutes(
   });
 
   app.get("/api/drivers/user/:userId", requireAuth(["driver", "admin", "manager"]), async (req, res) => {
+    const currentUser = (req as any).currentUser;
+    if (currentUser.role === "driver" && Number(String(req.params.userId)) !== currentUser.id) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     const d = await storage.getDriverByUserId(Number(String(req.params.userId)));
     if (!d) return res.status(404).json({ error: "Driver not found" });
     res.json(d);
@@ -2947,10 +2958,21 @@ export async function registerRoutes(
     }
   });
 
-  // ── Public: Get quote by ID ──
+  // ── Get quote by ID (requires session match or auth) ──
   app.get("/api/quotes/:id", async (req, res) => {
     const quote = await storage.getQuote(Number(String(req.params.id)));
     if (!quote) return res.status(404).json({ error: "Quote not found" });
+
+    // Prevent enumeration: unauthenticated callers must supply matching sessionId
+    const authUser = (req as any).currentUser;
+    if (!authUser) {
+      const sid = req.query.sessionId || req.headers["x-session-id"];
+      if (!sid || !quote.sessionId || sid !== quote.sessionId) {
+        return res.status(404).json({ error: "Quote not found" });
+      }
+    } else if (authUser.role === "customer" && quote.customerId && quote.customerId !== authUser.id) {
+      return res.status(403).json({ error: "Access denied" });
+    }
 
     // Check expiry
     if (["draft", "quoted"].includes(quote.status) && new Date(quote.expiresAt) < new Date()) {
@@ -4482,8 +4504,7 @@ export async function registerRoutes(
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
     const currentUser = (req as any).currentUser;
-    // Customers see their own; staff see any.
-    if (currentUser.role === "customer" && order.customerId !== currentUser.id) {
+    if (!(await canAccessOrder(order, currentUser))) {
       return res.status(403).json({ error: "Access denied" });
     }
     const handoffAt = order.customerHandoffAt || (order.driverArrivedAt ? now() : null);
@@ -4568,9 +4589,9 @@ export async function registerRoutes(
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    // BOLA: only order owner or admin/manager can cancel
+    // BOLA: only order participants or admin/manager can cancel
     const currentUser = (req as any).currentUser;
-    if (currentUser.role === "customer" && order.customerId !== currentUser.id) {
+    if (!(await canAccessOrder(order, currentUser))) {
       return res.status(403).json({ error: "Access denied" });
     }
 
@@ -4648,8 +4669,8 @@ export async function registerRoutes(
       orderId: order.id,
       eventType: "cancelled",
       description: req.body.reason || "Order cancelled by customer — full refund issued",
-      actorId: req.body.actorId || order.customerId,
-      actorRole: req.body.actorRole || "customer",
+      actorId: currentUser.id,
+      actorRole: currentUser.role,
       timestamp: ts_,
     });
 
@@ -5084,7 +5105,7 @@ export async function registerRoutes(
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
     const currentUser = (req as any).currentUser;
-    if (order.customerId !== currentUser.id && order.driverId !== currentUser.id && order.vendorId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
+    if (!(await canAccessOrder(order, currentUser))) {
       return res.status(403).json({ error: "Access denied" });
     }
     res.json(await storage.getOrderEvents(Number(String(req.params.id))));
@@ -5337,7 +5358,7 @@ export async function registerRoutes(
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
     const currentUser = (req as any).currentUser;
-    if (order.customerId !== currentUser.id && order.driverId !== currentUser.id && order.vendorId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
+    if (!(await canAccessOrder(order, currentUser))) {
       return res.status(403).json({ error: "Access denied" });
     }
     res.json(await storage.getMessagesByOrder(Number(String(req.params.id))));
@@ -5347,7 +5368,7 @@ export async function registerRoutes(
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
     const currentUser = (req as any).currentUser;
-    if (order.customerId !== currentUser.id && order.driverId !== currentUser.id && order.vendorId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
+    if (!(await canAccessOrder(order, currentUser))) {
       return res.status(403).json({ error: "Access denied" });
     }
     const msg = await storage.createMessage({
@@ -7761,10 +7782,9 @@ export async function registerRoutes(
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    // BOLA: customer can only track their own orders
+    // BOLA: only order participants or admin/manager can track
     const user = (req as any).currentUser;
-    const userRole = user?.role || "customer";
-    if (userRole === "customer" && order.customerId !== user.id) {
+    if (!(await canAccessOrder(order, user))) {
       return res.status(403).json({ error: "Access denied" });
     }
 
@@ -8537,7 +8557,7 @@ export async function registerRoutes(
     // Verify the current user is a participant in this order
     if (existing.orderId) {
       const order = await storage.getOrder(existing.orderId);
-      if (order && order.customerId !== currentUser.id && order.driverId !== currentUser.id && order.vendorId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
+      if (order && !(await canAccessOrder(order, currentUser))) {
         return res.status(403).json({ error: "Forbidden" });
       }
     }
