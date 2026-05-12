@@ -172,13 +172,14 @@ export default function OwnerReviewPage() {
       </Card>
 
       <Tabs defaultValue="flows" className="w-full">
-        <TabsList className="grid grid-cols-3 md:grid-cols-6 w-full">
+        <TabsList className="grid grid-cols-3 md:grid-cols-7 w-full">
           <TabsTrigger value="design" data-testid="tab-design">Design</TabsTrigger>
           <TabsTrigger value="brand" data-testid="tab-brand">Brand</TabsTrigger>
           <TabsTrigger value="screens" data-testid="tab-screens">Screens</TabsTrigger>
           <TabsTrigger value="flows" data-testid="tab-flows">Flows</TabsTrigger>
           <TabsTrigger value="accounts" data-testid="tab-accounts">Test Accounts</TabsTrigger>
           <TabsTrigger value="config" data-testid="tab-config">Config</TabsTrigger>
+          <TabsTrigger value="website" data-testid="tab-website">Website</TabsTrigger>
         </TabsList>
 
         {/* ─────── DESIGN SYSTEM ─────── */}
@@ -517,6 +518,159 @@ export default function OwnerReviewPage() {
                   <TableRow><TableCell>Order state machine</TableCell><TableCell><Badge className="bg-green-600 text-white">REAL</Badge></TableCell><TableCell>State transitions enforced server-side</TableCell></TableRow>
                 </TableBody>
               </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ─────── WEBSITE + CONNECTED ORDERING ─────── */}
+        <TabsContent value="website" className="space-y-6 mt-6" data-testid="tabcontent-website">
+          <Card>
+            <CardHeader>
+              <CardTitle>Public Marketing Website</CardTitle>
+              <CardDescription>
+                The marketing site at offloadusa.com is wired to the <strong>sandbox</strong> API and Stripe <strong>test</strong> mode per owner decision. Site is publicly reachable for SEO; a “not live yet” countdown is shown to visitors. Switching to production is held until live Stripe verification completes.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <div className="grid md:grid-cols-2 gap-3">
+                <div className="p-3 border rounded">
+                  <div className="font-semibold mb-1">Public site</div>
+                  <a href="https://offloadusa.com" target="_blank" rel="noopener noreferrer" className="text-purple-600 underline" data-testid="link-public-site">https://offloadusa.com</a>
+                </div>
+                <div className="p-3 border rounded">
+                  <div className="font-semibold mb-1">Sandbox API (site backend)</div>
+                  <a href="https://offload-api-sandbox.onrender.com" target="_blank" rel="noopener noreferrer" className="text-purple-600 underline" data-testid="link-sandbox-api">offload-api-sandbox.onrender.com</a>
+                </div>
+                <div className="p-3 border rounded">
+                  <div className="font-semibold mb-1">Sandbox Admin SPA</div>
+                  <a href="https://offload-admin-sandbox.onrender.com" target="_blank" rel="noopener noreferrer" className="text-purple-600 underline" data-testid="link-sandbox-admin">offload-admin-sandbox.onrender.com</a>
+                </div>
+                <div className="p-3 border rounded">
+                  <div className="font-semibold mb-1">Stripe mode on site</div>
+                  <Badge className="bg-blue-600 text-white">pk_test (sandbox)</Badge>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Website → System CTA Map</CardTitle>
+              <CardDescription>Every primary call-to-action on the public site, where it points, and what backs it.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Page</TableHead>
+                    <TableHead>CTA</TableHead>
+                    <TableHead>Destination</TableHead>
+                    <TableHead>Backed by</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow><TableCell>Home</TableCell><TableCell>Get a Quote</TableCell><TableCell>#quote (on-page form)</TableCell><TableCell>POST /api/quotes (sandbox)</TableCell></TableRow>
+                  <TableRow><TableCell>Home / Pricing</TableCell><TableCell>Book Now</TableCell><TableCell>#checkout</TableCell><TableCell>POST /api/public/checkout (sandbox)</TableCell></TableRow>
+                  <TableRow><TableCell>Home</TableCell><TableCell>Sign In</TableCell><TableCell>/sign-in.html</TableCell><TableCell>POST /api/auth/login (sandbox)</TableCell></TableRow>
+                  <TableRow><TableCell>Vendor</TableCell><TableCell>Become a Partner</TableCell><TableCell>/vendor-apply.html</TableCell><TableCell>POST /api/vendor/apply (sandbox)</TableCell></TableRow>
+                  <TableRow><TableCell>Driver</TableCell><TableCell>Drive with Us</TableCell><TableCell>/driver-apply.html</TableCell><TableCell>POST /api/driver/apply (sandbox)</TableCell></TableRow>
+                  <TableRow><TableCell>Support / FAQ</TableCell><TableCell>Contact Us</TableCell><TableCell>/contact.html</TableCell><TableCell>POST /api/support/contact (sandbox)</TableCell></TableRow>
+                  <TableRow><TableCell>Footer (all pages)</TableCell><TableCell>Privacy / Terms</TableCell><TableCell>/privacy.html / /terms.html</TableCell><TableCell>Static</TableCell></TableRow>
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>End-to-End Test Result (Verified)</CardTitle>
+              <CardDescription>Full guest checkout flow run against the live sandbox stack.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow><TableHead>Step</TableHead><TableHead>Result</TableHead><TableHead>Evidence</TableHead></TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow><TableCell>Quote request (Medium / 48h)</TableCell><TableCell><Badge className="bg-green-600 text-white">201</Badge></TableCell><TableCell>$44.99 + $3.99 tax + $0 delivery = $48.98</TableCell></TableRow>
+                  <TableRow><TableCell>Public checkout</TableCell><TableCell><Badge className="bg-green-600 text-white">201</Badge></TableCell><TableCell>Order OFF-MP2NH11H-942D created</TableCell></TableRow>
+                  <TableRow><TableCell>Stripe PaymentIntent (test)</TableCell><TableCell><Badge className="bg-green-600 text-white">200</Badge></TableCell><TableCell>pi_3TWG6U3mAtA14Z2d1AcFFObk confirmed</TableCell></TableRow>
+                  <TableRow><TableCell>Order shows in admin</TableCell><TableCell><Badge className="bg-green-600 text-white">PASS</Badge></TableCell><TableCell>paymentStatus = captured, $48.98</TableCell></TableRow>
+                  <TableRow><TableCell>Console errors</TableCell><TableCell><Badge className="bg-green-600 text-white">0</Badge></TableCell><TableCell>Clean across all 14 public pages</TableCell></TableRow>
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Price Parity (Site ↔ Backend ↔ App)</CardTitle>
+              <CardDescription>NY tax 8.875% applied to subtotal only (does not compound on delivery).</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow><TableHead>Bag / Speed</TableHead><TableHead>Subtotal</TableHead><TableHead>Tax</TableHead><TableHead>Delivery</TableHead><TableHead>Total</TableHead></TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow><TableCell>Small / 48h</TableCell><TableCell>$24.99</TableCell><TableCell>$2.22</TableCell><TableCell>$0</TableCell><TableCell>$27.21</TableCell></TableRow>
+                  <TableRow><TableCell>Medium / 48h</TableCell><TableCell>$44.99</TableCell><TableCell>$3.99</TableCell><TableCell>$0</TableCell><TableCell>$48.98</TableCell></TableRow>
+                  <TableRow><TableCell>Medium / 24h</TableCell><TableCell>$44.99</TableCell><TableCell>$3.99</TableCell><TableCell>$5.99</TableCell><TableCell>$54.97</TableCell></TableRow>
+                  <TableRow><TableCell>Medium / Same Day</TableCell><TableCell>$44.99</TableCell><TableCell>$3.99</TableCell><TableCell>$12.99</TableCell><TableCell>$61.97</TableCell></TableRow>
+                  <TableRow><TableCell>Large / 48h</TableCell><TableCell>$59.99</TableCell><TableCell>$5.32</TableCell><TableCell>$0</TableCell><TableCell>$65.31</TableCell></TableRow>
+                  <TableRow><TableCell>XL / 48h</TableCell><TableCell>$89.99</TableCell><TableCell>$7.99</TableCell><TableCell>$0</TableCell><TableCell>$97.98</TableCell></TableRow>
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Test Card for Sandbox Checkout</CardTitle>
+              <CardDescription>Use only on the sandbox-wired site. No real money moves.</CardDescription>
+            </CardHeader>
+            <CardContent className="text-sm space-y-1">
+              <div><strong>Card:</strong> 4242 4242 4242 4242</div>
+              <div><strong>Expiry:</strong> any future date (e.g. 12/34)</div>
+              <div><strong>CVC:</strong> any 3 digits (e.g. 123)</div>
+              <div><strong>ZIP:</strong> any 5 digits (e.g. 10001)</div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Copy Truthfulness — Items to Flag Before Going Live</CardTitle>
+              <CardDescription>Phrases that appear on the marketing site but are not fully implemented yet. Site is in pre-launch countdown, so these are not yet customer-facing, but they need to be either delivered or softened before production launch.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow><TableHead>Claim on site</TableHead><TableHead>Reality in system</TableHead><TableHead>Status</TableHead></TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow><TableCell>Chat with driver</TableCell><TableCell>Customer ↔ admin chat exists; no direct driver chat route</TableCell><TableCell><Badge variant="destructive">NOT IMPLEMENTED</Badge></TableCell></TableRow>
+                  <TableRow><TableCell>Real-time / Live tracking</TableCell><TableCell>Driver lat/lng is stored; no push stream to customer</TableCell><TableCell><Badge variant="outline">PARTIAL</Badge></TableCell></TableRow>
+                  <TableRow><TableCell>Photo proof of pickup/delivery</TableCell><TableCell>Photo URL fields exist in schema; not exercised end-to-end</TableCell><TableCell><Badge variant="outline">PARTIAL</Badge></TableCell></TableRow>
+                  <TableRow><TableCell>Regular payouts to your bank account</TableCell><TableCell>Only a stripeConnected boolean; Stripe Connect not enabled</TableCell><TableCell><Badge variant="destructive">NOT IMPLEMENTED</Badge></TableCell></TableRow>
+                  <TableRow><TableCell>Weekly direct deposits via Stripe Connect</TableCell><TableCell>Same as above</TableCell><TableCell><Badge variant="destructive">NOT IMPLEMENTED</Badge></TableCell></TableRow>
+                  <TableRow><TableCell>Available 24/7 support</TableCell><TableCell>Support chat works; no 24/7 staffing committed</TableCell><TableCell><Badge variant="outline">PARTIAL</Badge></TableCell></TableRow>
+                  <TableRow><TableCell>Dedicated support (Platinum loyalty)</TableCell><TableCell>Loyalty tiers shown; no separate support queue</TableCell><TableCell><Badge variant="destructive">NOT IMPLEMENTED</Badge></TableCell></TableRow>
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Production Boundary</CardTitle>
+              <CardDescription>What still blocks live (real-money) launch of the site.</CardDescription>
+            </CardHeader>
+            <CardContent className="text-sm space-y-2">
+              <div>• Stripe live SMS verification + sk_live + live webhook secret (cron scheduled 2026-05-07 for Namecheap retry).</div>
+              <div>• Apple D-U-N-S → Developer enrollment → App Store submission.</div>
+              <div>• Google Play submission.</div>
+              <div>• Owner manual sandbox walkthrough sign-off (this checklist).</div>
+              <div>• Copy adjustments above before flipping site from sandbox to production.</div>
             </CardContent>
           </Card>
         </TabsContent>
