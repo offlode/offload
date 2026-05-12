@@ -186,7 +186,7 @@ export function PayoutDashboard({ userType, entityId }: PayoutDashboardProps) {
             </div>
           )}
           <div className="pt-2 border-t border-border text-[10px] text-muted-foreground">
-            Payouts are processed weekly.
+            Payout transfers require Stripe Connect onboarding (coming soon).
           </div>
         </div>
       </Card>

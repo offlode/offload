@@ -6454,6 +6454,63 @@ export async function registerRoutes(
   });
 
   // ─────────────────────────────────────────────────────────
+  //  ADMIN SUPPORT INBOX
+  // ─────────────────────────────────────────────────────────
+
+  // List all escalated/active chat sessions for admin support inbox
+  app.get("/api/admin/support-sessions", requireAuth(["admin", "manager", "support"]), async (_req, res) => {
+    const sessions = await storage.getAllSupportSessions();
+    const enriched = await Promise.all(sessions.map(async (s) => {
+      const user = await storage.getUser(s.userId);
+      return {
+        ...s,
+        messages: (() => { try { return s.messagesJson ? JSON.parse(s.messagesJson) : []; } catch (_) { return []; } })(),
+        customerName: user?.name || user?.email || `User #${s.userId}`,
+        customerEmail: user?.email || null,
+      };
+    }));
+    res.json(enriched);
+  });
+
+  // Admin reply to a chat session
+  app.post("/api/chat/sessions/:id/reply", requireAuth(["admin", "manager", "support"]), async (req, res) => {
+    const ReplyBody = z.object({ content: z.string().min(1) }).strip();
+    const parsed = ReplyBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
+    const sessionId = Number(String(req.params.id));
+    const session = await storage.getChatSession(sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+
+    const currentUser = (req as any).currentUser;
+    const ts = now();
+    const existingMessages = (() => { try { return session.messagesJson ? JSON.parse(session.messagesJson) : []; } catch (_) { return []; } })();
+    existingMessages.push({
+      role: "admin",
+      content: parsed.data.content,
+      timestamp: ts,
+      adminId: currentUser.id,
+      adminName: currentUser.name || currentUser.email,
+    });
+
+    await storage.updateChatSession(sessionId, {
+      messagesJson: JSON.stringify(existingMessages),
+      escalatedTo: currentUser.id,
+    });
+
+    // Notify the customer
+    await notifyUser(session.userId, session.orderId, "system",
+      "Support Reply",
+      parsed.data.content,
+      session.orderId ? `/orders/${session.orderId}` : "/chat"
+    );
+
+    logAdminAction(req, { action: "support.reply", entityType: "chat_session", entityId: sessionId, newValue: { content: parsed.data.content } });
+    res.json({ success: true, sessionId, messagesCount: existingMessages.length });
+  });
+
+  // ─────────────────────────────────────────────────────────
   //  VENDOR SCORING (AI Health)
   // ─────────────────────────────────────────────────────────
 

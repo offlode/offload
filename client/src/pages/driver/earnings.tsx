@@ -198,7 +198,7 @@ export default function DriverEarnings() {
             </p>
             <p className="text-gray-500 text-xs mt-1 flex items-center gap-1">
               <Calendar className="w-3 h-3" />
-              Next payout: <span className="text-gray-300">{nextPayoutDate}</span>
+              Stripe Connect onboarding required for transfers
             </p>
           </div>
           <div className="w-12 h-12 rounded-2xl bg-primary/15 flex items-center justify-center">

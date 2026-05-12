@@ -308,6 +308,7 @@ export interface IStorage {
   // Chat Sessions
   getChatSessions(userId: number): Promise<schema.ChatSession[]>;
   getChatSession(id: number): Promise<schema.ChatSession | undefined>;
+  getAllSupportSessions(): Promise<schema.ChatSession[]>;
   createChatSession(data: schema.InsertChatSession): Promise<schema.ChatSession>;
   updateChatSession(id: number, data: Partial<schema.InsertChatSession>): Promise<schema.ChatSession | undefined>;
   // Vendor Payouts
@@ -782,6 +783,14 @@ class DatabaseStorage implements IStorage {
   async getChatSession(id: number) {
     const [row] = await db.select().from(schema.chatSessions).where(eq(schema.chatSessions.id, id));
     return row;
+  }
+  async getAllSupportSessions() {
+    return db.select().from(schema.chatSessions)
+      .where(or(
+        eq(schema.chatSessions.status, "escalated"),
+        eq(schema.chatSessions.status, "active"),
+      ))
+      .orderBy(desc(schema.chatSessions.createdAt));
   }
   async createChatSession(data: schema.InsertChatSession) {
     const [row] = await db.insert(schema.chatSessions).values(data).returning();

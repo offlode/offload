@@ -77,7 +77,7 @@ export default function ManagerPayouts() {
     },
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ["/api/manager/earnings"] });
-      toast({ title: "Payout queued", description: `$${vars.amount.toFixed(2)} queued for the next disbursement run.` });
+      toast({ title: "Payout recorded", description: `$${vars.amount.toFixed(2)} recorded. Stripe Connect transfer pending onboarding.` });
     },
     onError: (err: any) => {
       toast({ title: "Couldn’t queue payout", description: err?.message || "Please try again.", variant: "destructive" });
