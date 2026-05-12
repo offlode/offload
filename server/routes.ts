@@ -16,6 +16,19 @@ import { distanceMatrix, isGoogleMapsConfigured } from "./maps";
 import { SLA_CONFIGS, WEIGHT_TOLERANCE, CONSENT_TIMEOUT_HOURS, LOYALTY_TIERS, SUBSCRIPTION_TIERS, PRICING_TIERS, DELIVERY_FEES, TAX_RATE as SCHEMA_TAX_RATE, QUOTE_VALIDITY_MINUTES, SERVICE_TYPE_MULTIPLIERS, insertNotificationRuleSchema, insertAddOnSchema, insertAddressSchema, insertPaymentMethodSchema, insertVendorSchema, insertDriverSchema, insertServiceTypeSchema, insertDisputeSchema, insertReviewSchema, insertMessageSchema, insertVendorPayoutSchema, insertPromoCodeSchema, insertUserSchema } from "@shared/schema";
 import { pricingConfig } from "./pricing-config-service";
 import { logAdminAction } from "./audit-helpers";
+import { hashPassword, verifyPassword, checkLoginRateLimit, recordLoginAttempt } from "./lib/auth";
+import {
+  distanceMiles, TAX_RATE, TIER_NAME_MAP, calculateQuotePrice, calculatePricing,
+  WAIT_FEE_CONFIG, calculateWaitFee, getSurgePricingTier, DYNAMIC_PRICING_CONFIG,
+  calculateDistanceFee, calculateFloorFee, calculateHandoffFee, calculateWindowDiscountRate,
+  calculateTrafficMultiplier, computeLogisticsBreakdown, findCheapestPickupSlot, getDemandMultiplier,
+  type QuotePriceBreakdown, type LogisticsContext, type LogisticsBreakdown,
+} from "./lib/pricing";
+import {
+  getStripe, hasStripe as hasStripeKey, dollarsToCents, centsToDollars,
+  getIdempotentResponse, setIdempotentResponse,
+} from "./lib/stripe";
+import { sanitizeInput, checkRateLimit } from "./lib/errors";
 import type { Order, Vendor, Driver, Quote } from "@shared/schema";
 import {
   VALID_TRANSITIONS as FSM_TRANSITIONS,
@@ -30,26 +43,7 @@ import {
   LEGACY_STATUS_MAP,
 } from "./order-fsm";
 
-// ════════════════════════════════════════════════════════════════
-//  PASSWORD HASHING
-// ════════════════════════════════════════════════════════════════
-
-// Password hashing using crypto.scrypt (secure, no external dependency needed)
-function hashPassword(pw: string): string {
-  const salt = require("crypto").randomBytes(16).toString("hex");
-  const hash = require("crypto").scryptSync(pw, salt, 64).toString("hex");
-  return `scrypt:${salt}:${hash}`;
-}
-
-function verifyPassword(pw: string, stored: string): boolean {
-  // Support legacy SHA-256 hashes during migration
-  if (!stored.startsWith("scrypt:")) {
-    return createHash("sha256").update(pw).digest("hex") === stored;
-  }
-  const [, salt, hash] = stored.split(":");
-  const computed = require("crypto").scryptSync(pw, salt, 64).toString("hex");
-  return computed === hash;
-}
+// Password hashing + login rate limiting → server/lib/auth.ts
 
 // ════════════════════════════════════════════════════════════════
 //  SERVER-SIDE SESSION MANAGEMENT (DB-backed)
@@ -124,40 +118,7 @@ setInterval(() => {
   storage.cleanExpiredResetTokens().catch(console.error);
 }, 60 * 60 * 1000);
 
-// ════════════════════════════════════════════════════════════════
-//  LOGIN RATE LIMITING
-// ════════════════════════════════════════════════════════════════
-
-const loginAttempts = new Map<string, { count: number; firstAttempt: number }>();
-const MAX_LOGIN_ATTEMPTS = 10;
-const LOGIN_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
-
-function checkLoginRateLimit(ip: string): boolean {
-  const record = loginAttempts.get(ip);
-  if (!record) return true;
-  if (Date.now() - record.firstAttempt > LOGIN_WINDOW_MS) {
-    loginAttempts.delete(ip);
-    return true;
-  }
-  return record.count < MAX_LOGIN_ATTEMPTS;
-}
-
-function recordLoginAttempt(ip: string): void {
-  const record = loginAttempts.get(ip);
-  if (!record || Date.now() - record.firstAttempt > LOGIN_WINDOW_MS) {
-    loginAttempts.set(ip, { count: 1, firstAttempt: Date.now() });
-  } else {
-    record.count++;
-  }
-}
-
-// Clean up rate limit records every 30 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, record] of Array.from(loginAttempts.entries())) {
-    if (now - record.firstAttempt > LOGIN_WINDOW_MS) loginAttempts.delete(ip);
-  }
-}, 30 * 60 * 1000);
+// Login rate limiting → server/lib/auth.ts
 
 // ════════════════════════════════════════════════════════════════
 //  UTILITY FUNCTIONS
@@ -174,324 +135,11 @@ function now(): string {
   return new Date().toISOString();
 }
 
-// ── Pickup waiting fee ──
-// When the driver arrives but the customer keeps them waiting, charge a wait fee.
-// Free first 5 min, then $1/min, capped at $15. Mirrors Uber/Lyft pickup wait policy.
-export const WAIT_FEE_CONFIG = {
-  freeMinutes: 5,
-  perMinute: 1.0,
-  cap: 15.0,
-};
+// Wait fee, distance, pricing helpers → server/lib/pricing.ts
 
-export function calculateWaitFee(arrivedAt: string | null | undefined, handoffAt: string | null | undefined): { waitMinutes: number; waitFee: number } {
-  if (!arrivedAt || !handoffAt) return { waitMinutes: 0, waitFee: 0 };
-  const a = new Date(arrivedAt).getTime();
-  const h = new Date(handoffAt).getTime();
-  if (isNaN(a) || isNaN(h) || h <= a) return { waitMinutes: 0, waitFee: 0 };
-  const minutes = (h - a) / 60000;
-  const billable = Math.max(0, minutes - WAIT_FEE_CONFIG.freeMinutes);
-  const fee = Math.min(WAIT_FEE_CONFIG.cap, billable * WAIT_FEE_CONFIG.perMinute);
-  return {
-    waitMinutes: Math.round(minutes * 100) / 100,
-    waitFee: Math.round(fee * 100) / 100,
-  };
-}
+// Pricing engine → server/lib/pricing.ts
 
-// Haversine distance in miles
-function distanceMiles(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 3959;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
 
-// ════════════════════════════════════════════════════════════════
-//  PRICING ENGINE v2 — Real Quote-Based Pricing
-// ════════════════════════════════════════════════════════════════
-
-const TAX_RATE = SCHEMA_TAX_RATE; // 0.08875 NY combined sales tax
-
-// Map website tier names to schema tier names
-const TIER_NAME_MAP: Record<string, string> = {
-  small: "small_bag", small_bag: "small_bag",
-  medium: "medium_bag", medium_bag: "medium_bag",
-  large: "large_bag", large_bag: "large_bag",
-  xl: "xl_bag", xl_bag: "xl_bag", extra_large: "xl_bag",
-};
-
-interface QuotePriceBreakdown {
-  laundryServicePrice: number;
-  speedSurcharge: number;
-  deliveryFee: number;
-  preferredVendorSurcharge: number;
-  addOnsTotal: number;
-  // Dynamic logistics (Uber-style)
-  pickupDistanceMiles: number;
-  pickupDistanceFee: number;
-  floorFee: number;
-  handoffFee: number;
-  trafficMultiplier: number;
-  trafficRatio: number;
-  trafficLevel: string;
-  windowDiscount: number;
-  windowDiscountRate: number;
-  surgeMultiplier: number;
-  surgeTier: string;
-  surgeReason: string;
-  logisticsBase: number;
-  logisticsTotal: number;
-  // ── totals ──
-  subtotal: number;
-  taxRate: number;
-  taxAmount: number;
-  discount: number;
-  total: number;
-  lineItems: Array<{ label: string; amount: number; type: string }>;
-  tierName: string;
-  tierFlatPrice: number;
-  tierMaxWeight: number;
-  overageRate: number;
-  deliverySpeed: string;
-  vendorChoiceMode?: string;
-  recommendedVendorId?: number | null;
-  recommendedVendorName?: string | null;
-}
-
-async function calculateQuotePrice(input: {
-  tierName: string;
-  deliverySpeed: string;
-  serviceType?: string;
-  vendorId?: number;
-  pickupLat?: number;
-  pickupLng?: number;
-  addOns?: Array<{ id: number; qty: number }>;
-  promoCode?: string;
-  // Uber-style dynamic logistics inputs
-  pickupFloor?: number | null;
-  pickupHasElevator?: boolean | number | null;
-  pickupHandoff?: string | null;          // "curbside" | "door"
-  pickupWindowMinutes?: number | null;    // 30 | 120 | 240
-  scheduledPickup?: string | null;        // ISO timestamp
-  vendorLat?: number;
-  vendorLng?: number;
-  vendorAddress?: string;
-  pickupAddress?: string;
-  vendorChoiceMode?: string;              // auto | nearest | preferred | rated
-}): Promise<QuotePriceBreakdown> {
-  // 1. Resolve tier
-  const normalizedTier = TIER_NAME_MAP[input.tierName] || input.tierName;
-  const tierConst = PRICING_TIERS[normalizedTier as keyof typeof PRICING_TIERS];
-  if (!tierConst) throw new Error(`Unknown pricing tier: ${input.tierName}`);
-  const tier = await pricingConfig.getBagPrice(normalizedTier);
-
-  // 2. Laundry service price (flat rate from tier, adjusted by service type)
-  const serviceMultiplier = await pricingConfig.getServiceMultiplier(input.serviceType || 'wash_fold');
-  const laundryServicePrice = Math.round(tier.flatPrice * serviceMultiplier * 100) / 100;
-
-  // 3. Delivery fee (flat rate based on speed)
-  const speed = (input.deliverySpeed === "express" ? "48h" : input.deliverySpeed === "express_24h" ? "24h" : input.deliverySpeed === "standard" ? "48h" : input.deliverySpeed) || "48h";
-  if (speed && !DELIVERY_FEES[speed as keyof typeof DELIVERY_FEES]) {
-    throw new Error(`Invalid delivery speed: ${speed}. Valid options: ${Object.keys(DELIVERY_FEES).join(", ")}`);
-  }
-  const deliveryFee = await pricingConfig.getDeliveryFee(speed as "48h" | "24h" | "same_day");
-
-  // 4. Speed surcharge: $0 — speed cost is fully captured in the delivery fee
-  const speedSurcharge = 0;
-
-  // 5. Preferred vendor surcharge
-  let preferredVendorSurcharge = 0;
-  if (input.vendorId && input.pickupLat && input.pickupLng) {
-    const selectedVendor = await storage.getVendor(input.vendorId);
-    if (selectedVendor && selectedVendor.lat && selectedVendor.lng) {
-      // Find nearest eligible vendor for comparison
-      const activeVendors = (await storage.getActiveVendors()).filter(v => v.lat && v.lng);
-      if (activeVendors.length > 0) {
-        const nearestDist = Math.min(...activeVendors.map(v => distanceMiles(input.pickupLat!, input.pickupLng!, v.lat!, v.lng!)));
-        const selectedDist = distanceMiles(input.pickupLat, input.pickupLng, selectedVendor.lat, selectedVendor.lng);
-        const deltaMiles = Math.max(0, selectedDist - Math.max(nearestDist, 1)); // Free within 1-mile radius
-        preferredVendorSurcharge = Math.min(15, Math.round(deltaMiles * 2 * 100) / 100); // $2/mile, cap $15
-      }
-    }
-  }
-
-  // 6. Add-ons
-  let addOnsTotal = 0;
-  const addOnItems: Array<{ id: number; name: string; price: number; qty: number }> = [];
-  if (input.addOns && input.addOns.length > 0) {
-    for (const ao of input.addOns) {
-      const addon = await storage.getAddOn(ao.id);
-      if (addon) {
-        const lineTotal = Math.round(addon.price * ao.qty * 100) / 100;
-        addOnsTotal += lineTotal;
-        addOnItems.push({ id: addon.id, name: addon.displayName, price: addon.price, qty: ao.qty });
-      }
-    }
-  }
-
-  // 6b. Resolve recommended vendor (for logistics distance + traffic)
-  // Used when caller didn't pass vendorLat/Lng directly.
-  let resolvedVendorLat: number | undefined = input.vendorLat;
-  let resolvedVendorLng: number | undefined = input.vendorLng;
-  let resolvedVendorAddress: string | undefined = input.vendorAddress;
-  let recommendedVendorId: number | null = null;
-  let recommendedVendorName: string | null = null;
-  const vendorChoiceMode = input.vendorChoiceMode || "auto";
-
-  if ((!resolvedVendorLat || !resolvedVendorLng) && input.pickupLat != null && input.pickupLng != null) {
-    try {
-      const activeVendors = (await storage.getActiveVendors()).filter(v => v.lat && v.lng);
-      if (activeVendors.length > 0) {
-        let pickVendor = null as Vendor | null;
-        if (input.vendorId) {
-          pickVendor = await storage.getVendor(input.vendorId) || null;
-        } else if (vendorChoiceMode === "rated") {
-          // Highest-rated within reason
-          pickVendor = [...activeVendors].sort((a, b) => (b.rating || 0) - (a.rating || 0))[0] || null;
-        } else {
-          // Default "auto" or "nearest" — pick closest by haversine
-          let best = activeVendors[0];
-          let bestDist = distanceMiles(input.pickupLat, input.pickupLng, best.lat!, best.lng!);
-          for (const v of activeVendors) {
-            const d = distanceMiles(input.pickupLat, input.pickupLng, v.lat!, v.lng!);
-            if (d < bestDist) { best = v; bestDist = d; }
-          }
-          pickVendor = best;
-        }
-        if (pickVendor) {
-          resolvedVendorLat = pickVendor.lat || undefined;
-          resolvedVendorLng = pickVendor.lng || undefined;
-          resolvedVendorAddress = pickVendor.address || undefined;
-          recommendedVendorId = pickVendor.id;
-          recommendedVendorName = pickVendor.name;
-        }
-      }
-    } catch (e: any) {
-      console.warn("[calculateQuotePrice] vendor resolution failed:", e?.message);
-    }
-  }
-
-  // 6c. Dynamic logistics breakdown (distance fee, floor fee, handoff fee, traffic, window discount)
-  const logistics = await computeLogisticsBreakdown({
-    pickupLat: input.pickupLat,
-    pickupLng: input.pickupLng,
-    vendorLat: resolvedVendorLat,
-    vendorLng: resolvedVendorLng,
-    pickupAddress: input.pickupAddress,
-    vendorAddress: resolvedVendorAddress,
-    pickupFloor: input.pickupFloor ?? 1,
-    pickupHasElevator: input.pickupHasElevator ?? 1,
-    pickupHandoff: input.pickupHandoff ?? "curbside",
-    pickupWindowMinutes: input.pickupWindowMinutes ?? 30,
-    scheduledPickup: input.scheduledPickup ?? null,
-  });
-
-  // 6d. Surge pricing tier (time-of-day / day-of-week multiplier on logistics only)
-  const surge = getSurgePricingTier(input.scheduledPickup || undefined);
-  const logisticsAfterSurge = Math.round(logistics.logisticsTotal * surge.multiplier * 100) / 100;
-
-  // 7. Subtotal (laundry + delivery base + preferred surcharge + addons + dynamic logistics)
-  const subtotal = Math.round(
-    (laundryServicePrice + speedSurcharge + deliveryFee + preferredVendorSurcharge + addOnsTotal + logisticsAfterSurge) * 100
-  ) / 100;
-
-  // 8. Tax
-  const dbTaxRate = await pricingConfig.getTaxRate();
-  const taxAmount = Math.round(subtotal * dbTaxRate * 100) / 100;
-
-  // 9. Promo discount
-  let discount = 0;
-  if (input.promoCode) {
-    const promo = await storage.getPromoCode(input.promoCode);
-    if (promo && promo.isActive && (!promo.expiresAt || new Date(promo.expiresAt) > new Date())) {
-      if (!promo.minOrderAmount || (subtotal + taxAmount) >= promo.minOrderAmount) {
-        if (!promo.maxUses || (promo.usedCount ?? 0) < promo.maxUses) {
-          if (promo.type === "percentage") {
-            discount = Math.round((subtotal + taxAmount) * (promo.value / 100) * 100) / 100;
-          } else if (promo.type === "fixed") {
-            discount = Math.min(promo.value, subtotal + taxAmount);
-          } else if (promo.type === "free_delivery") {
-            discount = deliveryFee;
-          }
-        }
-      }
-    }
-  }
-
-  // 10. Total
-  const total = Math.max(0, Math.round((subtotal + taxAmount - discount) * 100) / 100);
-
-  // Build line items for display
-  const deliveryFeeLabel = DELIVERY_FEES[speed as keyof typeof DELIVERY_FEES]?.label || `Delivery (${speed})`;
-  const lineItems: Array<{ label: string; amount: number; type: string }> = [
-    { label: `${tierConst.displayName} — ${tierConst.description}`, amount: laundryServicePrice, type: "service" },
-  ];
-  if (deliveryFee > 0) {
-    lineItems.push({ label: deliveryFeeLabel, amount: deliveryFee, type: "delivery" });
-  } else {
-    lineItems.push({ label: "Free Pickup & Delivery", amount: 0, type: "delivery" });
-  }
-  if (preferredVendorSurcharge > 0) {
-    lineItems.push({ label: "Preferred laundromat surcharge", amount: preferredVendorSurcharge, type: "logistics" });
-  }
-  // Logistics line items (Uber-style)
-  if (logistics.distanceFee > 0) {
-    lineItems.push({ label: `Pickup distance (${logistics.distanceMiles.toFixed(2)} mi)`, amount: logistics.distanceFee, type: "logistics" });
-  }
-  if (logistics.floorFee > 0) {
-    lineItems.push({ label: `Walk-up floor fee`, amount: logistics.floorFee, type: "logistics" });
-  }
-  if (logistics.handoffFee > 0) {
-    lineItems.push({ label: `Door handoff`, amount: logistics.handoffFee, type: "logistics" });
-  }
-  if (logistics.trafficMultiplier > 1.0 && logistics.logisticsBase > 0) {
-    const trafficSurcharge = Math.round((logistics.logisticsBase * (logistics.trafficMultiplier - 1)) * 100) / 100;
-    if (trafficSurcharge > 0) {
-      lineItems.push({ label: `Traffic surcharge (${logistics.trafficLevel})`, amount: trafficSurcharge, type: "logistics" });
-    }
-  }
-  if (logistics.windowDiscount > 0) {
-    lineItems.push({ label: `Flexible-window discount (${Math.round(logistics.windowDiscountRate * 100)}%)`, amount: -logistics.windowDiscount, type: "discount" });
-  }
-  if (surge.multiplier !== 1.0 && logistics.logisticsTotal > 0) {
-    const surgeDelta = Math.round((logistics.logisticsTotal * (surge.multiplier - 1)) * 100) / 100;
-    if (surgeDelta !== 0) {
-      lineItems.push({ label: `${surge.reason} (${surge.tier})`, amount: surgeDelta, type: surgeDelta > 0 ? "logistics" : "discount" });
-    }
-  }
-  for (const ao of addOnItems) {
-    lineItems.push({ label: `${ao.name} x${ao.qty}`, amount: ao.price * ao.qty, type: "addon" });
-  }
-  lineItems.push({ label: `Tax (${(dbTaxRate * 100).toFixed(3)}%)`, amount: taxAmount, type: "tax" });
-  if (discount > 0) {
-    lineItems.push({ label: `Promo discount (${input.promoCode})`, amount: -discount, type: "discount" });
-  }
-
-  return {
-    laundryServicePrice, speedSurcharge, deliveryFee, preferredVendorSurcharge,
-    addOnsTotal,
-    pickupDistanceMiles: logistics.distanceMiles,
-    pickupDistanceFee: logistics.distanceFee,
-    floorFee: logistics.floorFee,
-    handoffFee: logistics.handoffFee,
-    trafficMultiplier: logistics.trafficMultiplier,
-    trafficRatio: logistics.trafficRatio,
-    trafficLevel: logistics.trafficLevel,
-    windowDiscount: logistics.windowDiscount,
-    windowDiscountRate: logistics.windowDiscountRate,
-    surgeMultiplier: surge.multiplier,
-    surgeTier: surge.tier,
-    surgeReason: surge.reason,
-    logisticsBase: logistics.logisticsBase,
-    logisticsTotal: logisticsAfterSurge,
-    subtotal, taxRate: dbTaxRate, taxAmount, discount, total,
-    lineItems, tierName: normalizedTier, tierFlatPrice: tier.flatPrice,
-    tierMaxWeight: tier.maxWeight, overageRate: tier.overageRate, deliverySpeed: speed,
-    vendorChoiceMode,
-    recommendedVendorId,
-    recommendedVendorName,
-  };
-}
 
 function generateQuoteNumber(): string {
   const prefix = "QT";
@@ -500,26 +148,6 @@ function generateQuoteNumber(): string {
   return `${prefix}-${ts}-${rand}`;
 }
 
-// Legacy pricing function — used by existing POST /api/orders for backward compat
-async function calculatePricing(bags: any[], deliverySpeed: string) {
-  let subtotal = 0;
-  for (const bag of bags) {
-    const tierKey = TIER_NAME_MAP[bag.type];
-    if (tierKey) {
-      const bagPrice = await pricingConfig.getBagPrice(tierKey);
-      subtotal += bagPrice.flatPrice * (bag.quantity || 1);
-    } else {
-      const fallbackBag = await pricingConfig.getBagPrice("small_bag");
-      subtotal += fallbackBag.flatPrice * (bag.quantity || 1);
-    }
-  }
-  const normalizedSpeed = (deliverySpeed === "express" ? "48h" : deliverySpeed === "express_24h" ? "24h" : deliverySpeed === "standard" ? "48h" : deliverySpeed) as "48h" | "24h" | "same_day";
-  const deliveryFee = await pricingConfig.getDeliveryFee(normalizedSpeed || "48h");
-  const taxRate = await pricingConfig.getTaxRate();
-  const tax = Math.round(subtotal * taxRate * 100) / 100;
-  const total = Math.round((subtotal + tax + deliveryFee) * 100) / 100;
-  return { subtotal, tax, deliveryFee, total };
-}
 
 // ════════════════════════════════════════════════════════════════
 //  AUTO-DISPATCH ENGINE
@@ -913,283 +541,10 @@ async function awardLoyaltyPoints(userId: number, orderId: number, orderTotal: n
   }
 }
 
-// ════════════════════════════════════════════════════════════════
-//  SURGE PRICING ENGINE
-// ════════════════════════════════════════════════════════════════
+// Surge pricing engine → server/lib/pricing.ts
 
-const US_HOLIDAYS_2026 = [
-  "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25",
-  "2026-07-04", "2026-09-07", "2026-11-26", "2026-12-25",
-];
+// Dynamic logistics pricing → server/lib/pricing.ts
 
-function getSurgePricingTier(pickupTime?: string): { tier: string; multiplier: number; reason: string } {
-  const dt = pickupTime ? new Date(pickupTime) : new Date();
-  const hour = dt.getHours();
-  const dayOfWeek = dt.getDay(); // 0=Sun, 6=Sat
-  const dateStr = dt.toISOString().split("T")[0];
-
-  // Holiday check
-  if (US_HOLIDAYS_2026.includes(dateStr)) {
-    return { tier: "holiday", multiplier: 1.5, reason: "Holiday surge pricing" };
-  }
-
-  // Weekend
-  if (dayOfWeek === 0 || dayOfWeek === 6) {
-    return { tier: "weekend", multiplier: 1.15, reason: "Weekend demand pricing" };
-  }
-
-  // Peak hours: 6-9am or 5-8pm on weekdays
-  if ((hour >= 6 && hour < 9) || (hour >= 17 && hour < 20)) {
-    return { tier: "peak", multiplier: 1.2, reason: "Peak hour pricing" };
-  }
-
-  // Off-peak hours: late night
-  if (hour < 6 || hour >= 22) {
-    return { tier: "off_peak", multiplier: 0.9, reason: "Off-peak discount" };
-  }
-
-  return { tier: "normal", multiplier: 1.0, reason: "Standard pricing" };
-}
-
-// ══════════════════════════════════════════════════════════════
-//  DYNAMIC LOGISTICS PRICING (Uber-style)
-// ══════════════════════════════════════════════════════════════
-// Configurable knobs (kept here so admin can later move to pricing_config table)
-export const DYNAMIC_PRICING_CONFIG = {
-  distance: {
-    freeMiles: 1,            // free up to 1 mi customer→laundromat
-    perMileAfter: 1.50,      // $1.50/mi past the free zone
-    capUsd: 12,              // hard cap on distance fee
-  },
-  floor: {
-    freeFloor: 3,            // floors 1–3 are free regardless of elevator
-    perFloorAfter: 2.00,     // $2/floor for floors 4+ if NO elevator
-    capUsd: 20,
-  },
-  handoff: {
-    door: 3.00,              // $3 to send driver to door
-    curbside: 0,             // default — customer brings down
-  },
-  window: {
-    // multiplicative discount applied to (distance + floor + handoff) only —
-    // never to the laundry service price itself
-    "30":  0.00,             // 30-min slot — no discount
-    "120": 0.05,             // 2-hr window — 5% off logistics
-    "240": 0.10,             // 4-hr / flexible — 10% off logistics
-  } as Record<string, number>,
-  traffic: {
-    // expected free-flow speed in NYC ≈ 18 mph. Use ratio of in-traffic vs free-flow
-    // duration to derive a multiplier on the logistics subtotal.
-    freeFlowMultiplier: 1.0,
-    // ratio thresholds → multiplier
-    breakpoints: [
-      { ratio: 1.10, multiplier: 1.0  },  // up to 10% slower than free-flow = no surcharge
-      { ratio: 1.30, multiplier: 1.10 },  // mild traffic
-      { ratio: 1.60, multiplier: 1.20 },  // heavy traffic
-      { ratio: Infinity, multiplier: 1.30 }, // gridlock
-    ],
-    capMultiplier: 1.30,
-  },
-};
-
-export function calculateDistanceFee(miles: number): number {
-  if (!Number.isFinite(miles) || miles <= 0) return 0;
-  const cfg = DYNAMIC_PRICING_CONFIG.distance;
-  const billable = Math.max(0, miles - cfg.freeMiles);
-  const raw = billable * cfg.perMileAfter;
-  return Math.round(Math.min(cfg.capUsd, raw) * 100) / 100;
-}
-
-export function calculateFloorFee(floor: number | null | undefined, hasElevator: boolean | number | null): number {
-  const f = Number(floor || 1);
-  if (!Number.isFinite(f) || f <= 0) return 0;
-  // If there's an elevator, floor is free regardless of how high.
-  if (hasElevator === true || hasElevator === 1) return 0;
-  const cfg = DYNAMIC_PRICING_CONFIG.floor;
-  if (f <= cfg.freeFloor) return 0;
-  const billableFloors = f - cfg.freeFloor;
-  const raw = billableFloors * cfg.perFloorAfter;
-  return Math.round(Math.min(cfg.capUsd, raw) * 100) / 100;
-}
-
-export function calculateHandoffFee(handoff: string | null | undefined): number {
-  const cfg = DYNAMIC_PRICING_CONFIG.handoff;
-  return handoff === "door" ? cfg.door : cfg.curbside;
-}
-
-export function calculateWindowDiscountRate(windowMinutes: number | null | undefined): number {
-  const key = String(Number(windowMinutes || 30));
-  const map = DYNAMIC_PRICING_CONFIG.window;
-  return map[key] ?? 0;
-}
-
-export function calculateTrafficMultiplier(freeFlowSeconds: number, inTrafficSeconds: number | undefined): { multiplier: number; ratio: number; level: string } {
-  if (!freeFlowSeconds || !inTrafficSeconds || inTrafficSeconds <= 0) {
-    return { multiplier: 1.0, ratio: 1.0, level: "unknown" };
-  }
-  const ratio = inTrafficSeconds / freeFlowSeconds;
-  const cfg = DYNAMIC_PRICING_CONFIG.traffic;
-  for (const bp of cfg.breakpoints) {
-    if (ratio <= bp.ratio) {
-      const level = bp.multiplier === 1.0 ? "light"
-        : bp.multiplier <= 1.10 ? "moderate"
-        : bp.multiplier <= 1.20 ? "heavy"
-        : "gridlock";
-      return { multiplier: bp.multiplier, ratio: Math.round(ratio * 100) / 100, level };
-    }
-  }
-  return { multiplier: cfg.capMultiplier, ratio: Math.round(ratio * 100) / 100, level: "gridlock" };
-}
-
-export interface LogisticsContext {
-  pickupLat?: number;
-  pickupLng?: number;
-  vendorLat?: number;
-  vendorLng?: number;
-  pickupAddress?: string;     // used when lat/lng not available
-  vendorAddress?: string;
-  pickupFloor?: number | null;
-  pickupHasElevator?: boolean | number | null;
-  pickupHandoff?: string | null;     // "curbside" | "door"
-  pickupWindowMinutes?: number | null;  // 30 | 120 | 240
-  scheduledPickup?: string | null;   // ISO
-}
-
-export interface LogisticsBreakdown {
-  distanceMiles: number;
-  distanceFee: number;
-  floorFee: number;
-  handoffFee: number;
-  trafficMultiplier: number;
-  trafficRatio: number;
-  trafficLevel: string;
-  windowDiscount: number;     // dollars taken off
-  windowDiscountRate: number; // 0–1
-  logisticsBase: number;      // distance + floor + handoff (pre-traffic, pre-window)
-  logisticsTotal: number;     // after traffic + window
-  durationFreeFlowSec: number;
-  durationInTrafficSec: number;
-  source: "google" | "haversine" | "unknown";
-}
-
-/**
- * Computes the dynamic logistics breakdown using Google traffic data when available,
- * falling back to haversine for distance and a neutral 1.0x traffic multiplier otherwise.
- */
-export async function computeLogisticsBreakdown(ctx: LogisticsContext): Promise<LogisticsBreakdown> {
-  let distanceMi = 0;
-  let durationFreeFlow = 0;
-  let durationTraffic = 0;
-  let source: LogisticsBreakdown["source"] = "unknown";
-
-  // Prefer Google when we have addresses or lat/lng pairs
-  const haveCoords = ctx.pickupLat != null && ctx.pickupLng != null && ctx.vendorLat != null && ctx.vendorLng != null;
-  const haveAddrs = !!(ctx.pickupAddress && ctx.vendorAddress);
-
-  if (isGoogleMapsConfigured() && (haveCoords || haveAddrs)) {
-    try {
-      const origin = haveCoords ? `${ctx.pickupLat},${ctx.pickupLng}` : ctx.pickupAddress!;
-      const dest = haveCoords ? `${ctx.vendorLat},${ctx.vendorLng}` : ctx.vendorAddress!;
-      // Always pass a departureTime so Google returns traffic-aware duration.
-      // When no scheduledPickup is given, default to "now" (60s in the future to satisfy API).
-      const departure = ctx.scheduledPickup ? new Date(ctx.scheduledPickup) : new Date(Date.now() + 60_000);
-      const dm = await distanceMatrix(origin, dest, departure);
-      if (dm) {
-        distanceMi = dm.distanceMeters / 1609.344;
-        durationFreeFlow = dm.durationSeconds;
-        durationTraffic = dm.durationInTrafficSeconds || dm.durationSeconds;
-        source = "google";
-      }
-    } catch (e: any) {
-      console.warn("[logistics] distanceMatrix failed, falling back:", e?.message);
-    }
-  }
-
-  if (source !== "google" && haveCoords) {
-    distanceMi = distanceMiles(ctx.pickupLat!, ctx.pickupLng!, ctx.vendorLat!, ctx.vendorLng!);
-    source = "haversine";
-  }
-
-  const distanceFee = calculateDistanceFee(distanceMi);
-  const floorFee = calculateFloorFee(ctx.pickupFloor ?? 1, ctx.pickupHasElevator ?? 1);
-  const handoffFee = calculateHandoffFee(ctx.pickupHandoff || "curbside");
-  const traffic = calculateTrafficMultiplier(durationFreeFlow, durationTraffic);
-  const windowRate = calculateWindowDiscountRate(ctx.pickupWindowMinutes ?? 30);
-
-  const logisticsBase = Math.round((distanceFee + floorFee + handoffFee) * 100) / 100;
-  const afterTraffic = Math.round(logisticsBase * traffic.multiplier * 100) / 100;
-  const windowDiscount = Math.round(afterTraffic * windowRate * 100) / 100;
-  const logisticsTotal = Math.max(0, Math.round((afterTraffic - windowDiscount) * 100) / 100);
-
-  return {
-    distanceMiles: Math.round(distanceMi * 100) / 100,
-    distanceFee,
-    floorFee,
-    handoffFee,
-    trafficMultiplier: traffic.multiplier,
-    trafficRatio: traffic.ratio,
-    trafficLevel: traffic.level,
-    windowDiscount,
-    windowDiscountRate: windowRate,
-    logisticsBase,
-    logisticsTotal,
-    durationFreeFlowSec: durationFreeFlow,
-    durationInTrafficSec: durationTraffic,
-    source,
-  };
-}
-
-/**
- * Picks the cheapest pickup time across the next ~12 hours by sampling traffic
- * for half-hour slots and returning the slot with the lowest in-traffic ratio.
- * Used when the customer asks for "flexible" pickup.
- */
-export async function findCheapestPickupSlot(ctx: LogisticsContext, hoursAhead = 12): Promise<{ scheduledPickup: string; trafficLevel: string; ratio: number; multiplier: number }> {
-  const haveCoords = ctx.pickupLat != null && ctx.pickupLng != null && ctx.vendorLat != null && ctx.vendorLng != null;
-  if (!isGoogleMapsConfigured() || !haveCoords) {
-    // No data — fall back to immediate slot.
-    const dt = new Date();
-    return { scheduledPickup: dt.toISOString(), trafficLevel: "unknown", ratio: 1.0, multiplier: 1.0 };
-  }
-
-  const slots: Array<{ when: Date; ratio: number; level: string; mult: number }> = [];
-  const stepMin = 60; // 1-hour granularity to limit Google API calls
-  for (let m = 0; m < hoursAhead * 60; m += stepMin) {
-    const when = new Date(Date.now() + m * 60 * 1000);
-    try {
-      const dm = await distanceMatrix(`${ctx.pickupLat},${ctx.pickupLng}`, `${ctx.vendorLat},${ctx.vendorLng}`, when);
-      if (dm && dm.durationSeconds && dm.durationInTrafficSeconds) {
-        const t = calculateTrafficMultiplier(dm.durationSeconds, dm.durationInTrafficSeconds);
-        slots.push({ when, ratio: t.ratio, level: t.level, mult: t.multiplier });
-      }
-    } catch (_) { /* skip slot */ }
-  }
-
-  if (slots.length === 0) {
-    const dt = new Date();
-    return { scheduledPickup: dt.toISOString(), trafficLevel: "unknown", ratio: 1.0, multiplier: 1.0 };
-  }
-  slots.sort((a, b) => a.mult - b.mult || a.ratio - b.ratio);
-  const best = slots[0];
-  return { scheduledPickup: best.when.toISOString(), trafficLevel: best.level, ratio: best.ratio, multiplier: best.mult };
-}
-
-async function getDemandMultiplier(serviceType: string): Promise<number> {
-  const vendors = await storage.getActiveVendors();
-  if (vendors.length === 0) return 1.0;
-
-  const totalCapacity = vendors.reduce((sum, v) => sum + (v.capacity || 50), 0);
-  const totalLoad = vendors.reduce((sum, v) => sum + (v.currentLoad || 0), 0);
-  const utilization = totalCapacity > 0 ? totalLoad / totalCapacity : 0;
-
-  // High demand: > 80% utilization
-  if (utilization > 0.8) return 1.15;
-  // Moderate demand: > 60%
-  if (utilization > 0.6) return 1.08;
-  // Low demand: < 30%
-  if (utilization < 0.3) return 0.95;
-  return 1.0;
-}
 
 // ════════════════════════════════════════════════════════════════
 //  AI CHATBOT ENGINE
@@ -1260,7 +615,7 @@ async function generateAIResponse(intent: ChatIntent, userId: number, message: s
         out_for_delivery: "is out for delivery and should arrive soon!",
       };
       return {
-        response: `Your order **${order.orderNumber}** ${statusMsg[order.status] || "is being processed"}. ${order.slaDeadline ? `Estimated delivery by ${new Date(order.slaDeadline).toLocaleString()}.` : ""} Is there anything else I can help you with?`,
+        response: `Your order **${order.orderNumber}** ${statusMsg[order.status] || "is in progress"}. ${order.slaDeadline ? `Estimated delivery by ${new Date(order.slaDeadline).toLocaleString()}.` : ""} Is there anything else I can help you with?`,
         resolved: true,
         escalate: false,
       };
@@ -1715,72 +1070,11 @@ async function startBackgroundTasks() {
 // ════════════════════════════════════════════════════════════════
 
 
-// ── RATE LIMITING ──
-const rateLimitBuckets: Record<string, { count: number; resetAt: number }> = {};
-const RATE_LIMITS: Record<string, { maxRequests: number; windowMs: number }> = {
-  "POST:/api/auth/register": { maxRequests: 5, windowMs: 60000 },
-  "POST:/api/orders": { maxRequests: 20, windowMs: 60000 },
-  "POST:/api/messages": { maxRequests: 30, windowMs: 60000 },
-  "POST:/api/pricing/calculate": { maxRequests: 60, windowMs: 60000 },
-  "POST:/api/disputes": { maxRequests: 5, windowMs: 60000 },
-  "POST:/api/auth/forgot-password": { maxRequests: 3, windowMs: 900000 },
-  "POST:/api/auth/reset-password": { maxRequests: 5, windowMs: 900000 },
-
-};
-
-function checkRateLimit(method: string, path: string, ip: string): boolean {
-  const routeKey = `${method}:${path}`;
-  const limit = RATE_LIMITS[routeKey];
-  if (!limit) return true; // No limit for this route
-  
-  const bucketKey = `${routeKey}:${ip}`;
-  const now = Date.now();
-  const bucket = rateLimitBuckets[bucketKey];
-  
-  if (!bucket || now > bucket.resetAt) {
-    rateLimitBuckets[bucketKey] = { count: 1, resetAt: now + limit.windowMs };
-    return true;
-  }
-  
-  if (bucket.count >= limit.maxRequests) return false;
-  bucket.count++;
-  return true;
-}
-
-// Clean up expired buckets every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const key of Object.keys(rateLimitBuckets)) {
-    if (rateLimitBuckets[key].resetAt < now) delete rateLimitBuckets[key];
-  }
-}, 300000);
+// Rate limiting → server/lib/errors.ts
 
 
 
-// ── IDEMPOTENCY KEY CACHE (DB-backed) ──
-
-async function getIdempotentResponse(key: string): Promise<{ response: any; statusCode: number } | null> {
-  const cached = await storage.getIdempotencyKey(key);
-  if (!cached) return null;
-  return { response: JSON.parse(cached.response), statusCode: cached.statusCode };
-}
-
-async function setIdempotentResponse(key: string, response: any, statusCode: number): Promise<void> {
-  const expiresAt = new Date(Date.now() + 86400000).toISOString(); // 24h
-  await storage.storeIdempotencyKey(key, JSON.stringify(response), statusCode, expiresAt);
-}
-
-
-
-// ── INPUT SANITIZATION ──
-function sanitizeInput(input: string, maxLength = 5000): string {
-  if (!input || typeof input !== "string") return "";
-  return input
-    .replace(/<script[^>]*>.*?<\/script>/gi, "") // Strip script tags
-    .replace(/on\w+="[^"]*"/gi, "")               // Strip event handlers
-    .trim()
-    .substring(0, maxLength);
-}
+// Idempotency → server/lib/stripe.ts; sanitizeInput → server/lib/errors.ts
 
 
 export async function registerRoutes(
@@ -7793,16 +7087,9 @@ export async function registerRoutes(
 
   // Fee model unified in Wave 3: vendor = subtotal × payoutRate, driver = flat per-trip.
   // Old Model B constants (PLATFORM_FEE_RATE, VENDOR_SHARE, DRIVER_SHARE) removed.
-  const hasStripe = !!process.env.STRIPE_SECRET_KEY;
-  const stripe = hasStripe ? new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: "2024-12-18.acacia" as any }) : null;
-
-  function dollarsToCents(amount: number | null | undefined): number {
-    return Math.round(Number(amount || 0) * 100);
-  }
-
-  function centsToDollars(amountCents: number): number {
-    return Math.round(amountCents) / 100;
-  }
+  // Stripe client, money conversions → server/lib/stripe.ts
+  const hasStripe = hasStripeKey();
+  const stripe = getStripe();
 
   function getOrderChargeAmountCents(order: Order): number {
     return dollarsToCents(order.finalPrice ?? order.total ?? 0);
@@ -7947,7 +7234,7 @@ export async function registerRoutes(
         remainingRefundable: remainingRefundableCents - amountCents,
         totalRefunded: newTotalRefundedCents,
         paymentStatus: newPaymentStatus,
-        warning: "Refund processed on Stripe but database update failed — logged for reconciliation",
+        warning: "Refund issued on Stripe but database update failed — logged for reconciliation",
       };
     }
 
@@ -9231,7 +8518,7 @@ export async function registerRoutes(
       },
       payment_receipt: {
         subject: "Payment receipt for order {{orderNumber}}",
-        body: "Hi {{name}}, payment of ${{total}} has been processed for order {{orderNumber}}. Thank you!",
+        body: "Hi {{name}}, payment of ${{total}} has been received for order {{orderNumber}}. Thank you!",
       },
       quote_ready: {
         subject: "Your Offload quote is ready",
@@ -9242,7 +8529,7 @@ export async function registerRoutes(
         body: "Hi {{name}}, your quote {{quoteNumber}} has expired. Request a new quote at offloadusa.com.",
       },
       refund_issued: {
-        subject: "Refund processed for order {{orderNumber}}",
+        subject: "Refund issued for order {{orderNumber}}",
         body: "Hi {{name}}, a refund of ${{refundAmount}} has been issued for order {{orderNumber}}. Allow 3-5 business days.",
       },
     };
@@ -9643,7 +8930,7 @@ export async function registerRoutes(
             await storage.updateOrder(orderId, { paymentStatus: "refunded" });
             await storage.createOrderEvent({
               orderId, eventType: "payment_refunded",
-              description: `Refund of $${(charge.amount_refunded / 100).toFixed(2)} processed`,
+              description: `Refund of $${(charge.amount_refunded / 100).toFixed(2)} confirmed via Stripe`,
               timestamp: now(),
             });
           }
