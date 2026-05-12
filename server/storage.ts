@@ -287,6 +287,28 @@ async function ensureIntegrityConstraints() {
     ["quotes", "total_cents INTEGER"],
     ["quotes", "tier_flat_price_cents INTEGER"],
     ["vendor_payouts", "amount_cents INTEGER"],
+    // Part 6: remaining money fields
+    ["vendors", "payout_rate_cents INTEGER"],
+    ["vendors", "total_earnings_cents INTEGER"],
+    ["vendors", "pending_payout_cents INTEGER"],
+    ["drivers", "payout_per_trip_cents INTEGER"],
+    ["drivers", "total_earnings_cents INTEGER"],
+    ["drivers", "pending_payout_cents INTEGER"],
+    ["users", "total_spent_cents INTEGER"],
+    ["service_types", "base_price_cents INTEGER"],
+    ["consent_records", "additional_charge_cents INTEGER"],
+    ["disputes", "credit_amount_cents INTEGER"],
+    ["disputes", "refund_amount_cents INTEGER"],
+    ["promo_codes", "value_cents INTEGER"],
+    ["promo_codes", "min_order_amount_cents INTEGER"],
+    ["referrals", "referrer_reward_cents INTEGER"],
+    ["referrals", "referee_reward_cents INTEGER"],
+    ["pricing_tiers", "flat_price_cents INTEGER"],
+    ["pricing_tiers", "overage_rate_cents INTEGER"],
+    ["add_ons", "price_cents INTEGER"],
+    ["order_add_ons", "unit_price_cents INTEGER"],
+    ["order_add_ons", "total_cents INTEGER"],
+    ["payment_transactions", "platform_fee_cents INTEGER"],
   ];
   for (const [table, colDef] of centsCols) {
     try {
@@ -317,6 +339,28 @@ async function ensureIntegrityConstraints() {
     "UPDATE quotes SET total_cents = ROUND(total * 100)::integer WHERE total IS NOT NULL AND total_cents IS NULL",
     "UPDATE quotes SET tier_flat_price_cents = ROUND(tier_flat_price * 100)::integer WHERE tier_flat_price IS NOT NULL AND tier_flat_price_cents IS NULL",
     "UPDATE vendor_payouts SET amount_cents = ROUND(amount * 100)::integer WHERE amount IS NOT NULL AND amount_cents IS NULL",
+    // Part 6: remaining money fields
+    "UPDATE vendors SET payout_rate_cents = ROUND(payout_rate * 100)::integer WHERE payout_rate IS NOT NULL AND payout_rate_cents IS NULL",
+    "UPDATE vendors SET total_earnings_cents = ROUND(total_earnings * 100)::integer WHERE total_earnings IS NOT NULL AND total_earnings_cents IS NULL",
+    "UPDATE vendors SET pending_payout_cents = ROUND(pending_payout * 100)::integer WHERE pending_payout IS NOT NULL AND pending_payout_cents IS NULL",
+    "UPDATE drivers SET payout_per_trip_cents = ROUND(payout_per_trip * 100)::integer WHERE payout_per_trip IS NOT NULL AND payout_per_trip_cents IS NULL",
+    "UPDATE drivers SET total_earnings_cents = ROUND(total_earnings * 100)::integer WHERE total_earnings IS NOT NULL AND total_earnings_cents IS NULL",
+    "UPDATE drivers SET pending_payout_cents = ROUND(pending_payout * 100)::integer WHERE pending_payout IS NOT NULL AND pending_payout_cents IS NULL",
+    "UPDATE users SET total_spent_cents = ROUND(total_spent * 100)::integer WHERE total_spent IS NOT NULL AND total_spent_cents IS NULL",
+    "UPDATE service_types SET base_price_cents = ROUND(base_price * 100)::integer WHERE base_price IS NOT NULL AND base_price_cents IS NULL",
+    "UPDATE consent_records SET additional_charge_cents = ROUND(additional_charge * 100)::integer WHERE additional_charge IS NOT NULL AND additional_charge_cents IS NULL",
+    "UPDATE disputes SET credit_amount_cents = ROUND(credit_amount * 100)::integer WHERE credit_amount IS NOT NULL AND credit_amount_cents IS NULL",
+    "UPDATE disputes SET refund_amount_cents = ROUND(refund_amount * 100)::integer WHERE refund_amount IS NOT NULL AND refund_amount_cents IS NULL",
+    "UPDATE promo_codes SET value_cents = ROUND(value * 100)::integer WHERE value IS NOT NULL AND value_cents IS NULL",
+    "UPDATE promo_codes SET min_order_amount_cents = ROUND(min_order_amount * 100)::integer WHERE min_order_amount IS NOT NULL AND min_order_amount_cents IS NULL",
+    "UPDATE referrals SET referrer_reward_cents = ROUND(referrer_reward * 100)::integer WHERE referrer_reward IS NOT NULL AND referrer_reward_cents IS NULL",
+    "UPDATE referrals SET referee_reward_cents = ROUND(referee_reward * 100)::integer WHERE referee_reward IS NOT NULL AND referee_reward_cents IS NULL",
+    "UPDATE pricing_tiers SET flat_price_cents = ROUND(flat_price * 100)::integer WHERE flat_price IS NOT NULL AND flat_price_cents IS NULL",
+    "UPDATE pricing_tiers SET overage_rate_cents = ROUND(overage_rate * 100)::integer WHERE overage_rate IS NOT NULL AND overage_rate_cents IS NULL",
+    "UPDATE add_ons SET price_cents = ROUND(price * 100)::integer WHERE price IS NOT NULL AND price_cents IS NULL",
+    "UPDATE order_add_ons SET unit_price_cents = ROUND(unit_price * 100)::integer WHERE unit_price IS NOT NULL AND unit_price_cents IS NULL",
+    "UPDATE order_add_ons SET total_cents = ROUND(total * 100)::integer WHERE total IS NOT NULL AND total_cents IS NULL",
+    "UPDATE payment_transactions SET platform_fee_cents = ROUND(platform_fee * 100)::integer WHERE platform_fee IS NOT NULL AND platform_fee_cents IS NULL",
   ];
   for (const sql of backfills) {
     try { await pool.query(sql); } catch (e: any) {
@@ -568,6 +612,75 @@ export function addQuoteCents<T extends Record<string, any>>(data: T): T {
   if (d.tierFlatPrice != null && d.tierFlatPriceCents == null) d.tierFlatPriceCents = dollarToCents(d.tierFlatPrice);
   return d;
 }
+function addVendorCents<T extends Record<string, any>>(data: T): T {
+  const d = { ...data } as any;
+  if (d.payoutRate != null && d.payoutRateCents == null) d.payoutRateCents = dollarToCents(d.payoutRate);
+  if (d.totalEarnings != null && d.totalEarningsCents == null) d.totalEarningsCents = dollarToCents(d.totalEarnings);
+  if (d.pendingPayout != null && d.pendingPayoutCents == null) d.pendingPayoutCents = dollarToCents(d.pendingPayout);
+  return d;
+}
+function addDriverCents<T extends Record<string, any>>(data: T): T {
+  const d = { ...data } as any;
+  if (d.payoutPerTrip != null && d.payoutPerTripCents == null) d.payoutPerTripCents = dollarToCents(d.payoutPerTrip);
+  if (d.totalEarnings != null && d.totalEarningsCents == null) d.totalEarningsCents = dollarToCents(d.totalEarnings);
+  if (d.pendingPayout != null && d.pendingPayoutCents == null) d.pendingPayoutCents = dollarToCents(d.pendingPayout);
+  return d;
+}
+function addUserCents<T extends Record<string, any>>(data: T): T {
+  const d = { ...data } as any;
+  if (d.totalSpent != null && d.totalSpentCents == null) d.totalSpentCents = dollarToCents(d.totalSpent);
+  return d;
+}
+function addDisputeCents<T extends Record<string, any>>(data: T): T {
+  const d = { ...data } as any;
+  if (d.creditAmount != null && d.creditAmountCents == null) d.creditAmountCents = dollarToCents(d.creditAmount);
+  if (d.refundAmount != null && d.refundAmountCents == null) d.refundAmountCents = dollarToCents(d.refundAmount);
+  return d;
+}
+function addPromoCents<T extends Record<string, any>>(data: T): T {
+  const d = { ...data } as any;
+  if (d.value != null && d.valueCents == null) d.valueCents = dollarToCents(d.value);
+  if (d.minOrderAmount != null && d.minOrderAmountCents == null) d.minOrderAmountCents = dollarToCents(d.minOrderAmount);
+  return d;
+}
+function addReferralCents<T extends Record<string, any>>(data: T): T {
+  const d = { ...data } as any;
+  if (d.referrerReward != null && d.referrerRewardCents == null) d.referrerRewardCents = dollarToCents(d.referrerReward);
+  if (d.refereeReward != null && d.refereeRewardCents == null) d.refereeRewardCents = dollarToCents(d.refereeReward);
+  return d;
+}
+function addConsentCents<T extends Record<string, any>>(data: T): T {
+  const d = { ...data } as any;
+  if (d.additionalCharge != null && d.additionalChargeCents == null) d.additionalChargeCents = dollarToCents(d.additionalCharge);
+  return d;
+}
+function addServiceTypeCents<T extends Record<string, any>>(data: T): T {
+  const d = { ...data } as any;
+  if (d.basePrice != null && d.basePriceCents == null) d.basePriceCents = dollarToCents(d.basePrice);
+  return d;
+}
+function addPricingTierCents<T extends Record<string, any>>(data: T): T {
+  const d = { ...data } as any;
+  if (d.flatPrice != null && d.flatPriceCents == null) d.flatPriceCents = dollarToCents(d.flatPrice);
+  if (d.overageRate != null && d.overageRateCents == null) d.overageRateCents = dollarToCents(d.overageRate);
+  return d;
+}
+function addAddOnCents<T extends Record<string, any>>(data: T): T {
+  const d = { ...data } as any;
+  if (d.price != null && d.priceCents == null) d.priceCents = dollarToCents(d.price);
+  return d;
+}
+function addOrderAddOnCents<T extends Record<string, any>>(data: T): T {
+  const d = { ...data } as any;
+  if (d.unitPrice != null && d.unitPriceCents == null) d.unitPriceCents = dollarToCents(d.unitPrice);
+  if (d.total != null && d.totalCents == null) d.totalCents = dollarToCents(d.total);
+  return d;
+}
+function addPaymentTxnCents<T extends Record<string, any>>(data: T): T {
+  const d = { ...data } as any;
+  if (d.platformFee != null && d.platformFeeCents == null) d.platformFeeCents = dollarToCents(d.platformFee);
+  return d;
+}
 
 class DatabaseStorage implements IStorage {
   // ─── Users ───
@@ -587,11 +700,11 @@ class DatabaseStorage implements IStorage {
     return db.select().from(schema.users).where(eq(schema.users.role, role));
   }
   async createUser(data: schema.InsertUser) {
-    const [row] = await db.insert(schema.users).values(data).returning();
+    const [row] = await db.insert(schema.users).values(addUserCents(data)).returning();
     return row;
   }
   async updateUser(id: number, data: Partial<schema.InsertUser>) {
-    const [row] = await db.update(schema.users).set(data).where(eq(schema.users.id, id)).returning();
+    const [row] = await db.update(schema.users).set(addUserCents(data)).where(eq(schema.users.id, id)).returning();
     return row;
   }
   async deleteUserAccount(id: number) {
@@ -657,11 +770,11 @@ class DatabaseStorage implements IStorage {
   }
   async getActiveVendors() { return db.select().from(schema.vendors).where(eq(schema.vendors.status, "active")); }
   async createVendor(data: schema.InsertVendor) {
-    const [row] = await db.insert(schema.vendors).values(data).returning();
+    const [row] = await db.insert(schema.vendors).values(addVendorCents(data)).returning();
     return row;
   }
   async updateVendor(id: number, data: Partial<schema.InsertVendor>) {
-    const [row] = await db.update(schema.vendors).set(data).where(eq(schema.vendors.id, id)).returning();
+    const [row] = await db.update(schema.vendors).set(addVendorCents(data)).where(eq(schema.vendors.id, id)).returning();
     return row;
   }
   async getVendorStats(id: number) {
@@ -688,11 +801,11 @@ class DatabaseStorage implements IStorage {
   }
   async getAvailableDrivers() { return db.select().from(schema.drivers).where(eq(schema.drivers.status, "available")); }
   async createDriver(data: schema.InsertDriver) {
-    const [row] = await db.insert(schema.drivers).values(data).returning();
+    const [row] = await db.insert(schema.drivers).values(addDriverCents(data)).returning();
     return row;
   }
   async updateDriver(id: number, data: Partial<schema.InsertDriver>) {
-    const [row] = await db.update(schema.drivers).set(data).where(eq(schema.drivers.id, id)).returning();
+    const [row] = await db.update(schema.drivers).set(addDriverCents(data)).where(eq(schema.drivers.id, id)).returning();
     return row;
   }
   async getDriverStats(id: number) {
@@ -708,7 +821,7 @@ class DatabaseStorage implements IStorage {
   // ─── Service Types ───
   async getServiceTypes() { return db.select().from(schema.serviceTypes).orderBy(schema.serviceTypes.sortOrder); }
   async createServiceType(data: schema.InsertServiceType) {
-    const [row] = await db.insert(schema.serviceTypes).values(data).returning();
+    const [row] = await db.insert(schema.serviceTypes).values(addServiceTypeCents(data)).returning();
     return row;
   }
 
@@ -779,11 +892,11 @@ class DatabaseStorage implements IStorage {
   }
   async getPendingConsents() { return db.select().from(schema.consentRecords).where(eq(schema.consentRecords.status, "pending")); }
   async createConsent(data: schema.InsertConsent) {
-    const [row] = await db.insert(schema.consentRecords).values(data).returning();
+    const [row] = await db.insert(schema.consentRecords).values(addConsentCents(data)).returning();
     return row;
   }
   async updateConsent(id: number, data: Partial<schema.InsertConsent>) {
-    const [row] = await db.update(schema.consentRecords).set(data).where(eq(schema.consentRecords.id, id)).returning();
+    const [row] = await db.update(schema.consentRecords).set(addConsentCents(data)).where(eq(schema.consentRecords.id, id)).returning();
     return row;
   }
 
@@ -806,11 +919,11 @@ class DatabaseStorage implements IStorage {
     return row;
   }
   async createDispute(data: schema.InsertDispute) {
-    const [row] = await db.insert(schema.disputes).values(data).returning();
+    const [row] = await db.insert(schema.disputes).values(addDisputeCents(data)).returning();
     return row;
   }
   async updateDispute(id: number, data: Partial<schema.InsertDispute>) {
-    const [row] = await db.update(schema.disputes).set(data).where(eq(schema.disputes.id, id)).returning();
+    const [row] = await db.update(schema.disputes).set(addDisputeCents(data)).where(eq(schema.disputes.id, id)).returning();
     return row;
   }
 
@@ -900,11 +1013,11 @@ class DatabaseStorage implements IStorage {
   }
   async getPromoCodes() { return db.select().from(schema.promoCodes); }
   async createPromoCode(data: schema.InsertPromoCode) {
-    const [row] = await db.insert(schema.promoCodes).values(data).returning();
+    const [row] = await db.insert(schema.promoCodes).values(addPromoCents(data)).returning();
     return row;
   }
   async updatePromoCode(id: number, data: Partial<schema.InsertPromoCode>) {
-    const [row] = await db.update(schema.promoCodes).set(data).where(eq(schema.promoCodes.id, id)).returning();
+    const [row] = await db.update(schema.promoCodes).set(addPromoCents(data)).where(eq(schema.promoCodes.id, id)).returning();
     return row;
   }
 
@@ -915,11 +1028,11 @@ class DatabaseStorage implements IStorage {
     );
   }
   async createReferral(data: schema.InsertReferral) {
-    const [row] = await db.insert(schema.referrals).values(data).returning();
+    const [row] = await db.insert(schema.referrals).values(addReferralCents(data)).returning();
     return row;
   }
   async updateReferral(id: number, data: Partial<schema.InsertReferral>) {
-    const [row] = await db.update(schema.referrals).set(data).where(eq(schema.referrals.id, id)).returning();
+    const [row] = await db.update(schema.referrals).set(addReferralCents(data)).where(eq(schema.referrals.id, id)).returning();
     return row;
   }
 
@@ -992,7 +1105,7 @@ class DatabaseStorage implements IStorage {
     return row;
   }
   async createPricingTier(data: schema.InsertPricingTier) {
-    const [row] = await db.insert(schema.pricingTiers).values(data).returning();
+    const [row] = await db.insert(schema.pricingTiers).values(addPricingTierCents(data)).returning();
     return row;
   }
 
@@ -1004,11 +1117,11 @@ class DatabaseStorage implements IStorage {
     return row;
   }
   async createAddOn(data: schema.InsertAddOn) {
-    const [row] = await db.insert(schema.addOns).values(data).returning();
+    const [row] = await db.insert(schema.addOns).values(addAddOnCents(data)).returning();
     return row;
   }
   async updateAddOn(id: number, data: Partial<schema.InsertAddOn>) {
-    const [row] = await db.update(schema.addOns).set(data).where(eq(schema.addOns.id, id)).returning();
+    const [row] = await db.update(schema.addOns).set(addAddOnCents(data)).where(eq(schema.addOns.id, id)).returning();
     return row;
   }
   async deleteAddOn(id: number): Promise<boolean> {
@@ -1019,7 +1132,7 @@ class DatabaseStorage implements IStorage {
   // ─── Order Add-Ons ───
   async getOrderAddOns(orderId: number) { return db.select().from(schema.orderAddOns).where(eq(schema.orderAddOns.orderId, orderId)); }
   async createOrderAddOn(data: schema.InsertOrderAddOn) {
-    const [row] = await db.insert(schema.orderAddOns).values(data).returning();
+    const [row] = await db.insert(schema.orderAddOns).values(addOrderAddOnCents(data)).returning();
     return row;
   }
 
@@ -1032,7 +1145,7 @@ class DatabaseStorage implements IStorage {
       .orderBy(desc(schema.paymentTransactions.createdAt));
   }
   async createPaymentTransaction(data: schema.InsertPaymentTransaction) {
-    const [row] = await db.insert(schema.paymentTransactions).values(data).returning();
+    const [row] = await db.insert(schema.paymentTransactions).values(addPaymentTxnCents(data)).returning();
     return row;
   }
   async updatePaymentTransaction(id: number, data: Partial<schema.InsertPaymentTransaction>) {

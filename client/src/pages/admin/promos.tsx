@@ -175,21 +175,25 @@ export default function AdminPromos() {
       id: 1, code: "WELCOME20", type: "percentage", value: 20,
       minOrderAmount: 30, maxUses: 500, usedCount: 142, isActive: 1,
       expiresAt: "2024-12-31T00:00:00Z", createdAt: "2024-01-01T00:00:00Z",
+      valueCents: 2000, minOrderAmountCents: 3000,
     },
     {
       id: 2, code: "FLAT10OFF", type: "fixed", value: 10,
       minOrderAmount: 40, maxUses: 200, usedCount: 87, isActive: 1,
       expiresAt: "2024-06-30T00:00:00Z", createdAt: "2024-01-05T00:00:00Z",
+      valueCents: 1000, minOrderAmountCents: 4000,
     },
     {
       id: 3, code: "FREEDEL", type: "free_delivery", value: 0,
       minOrderAmount: 50, maxUses: 100, usedCount: 100, isActive: 0,
       expiresAt: "2024-03-01T00:00:00Z", createdAt: "2024-01-10T00:00:00Z",
+      valueCents: 0, minOrderAmountCents: 5000,
     },
     {
       id: 4, code: "SUMMER15", type: "percentage", value: 15,
       minOrderAmount: 0, maxUses: 0, usedCount: 34, isActive: 1,
       expiresAt: null, createdAt: "2024-01-12T00:00:00Z",
+      valueCents: 1500, minOrderAmountCents: 0,
     },
   ];
 

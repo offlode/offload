@@ -22,6 +22,7 @@ export const users = pgTable("users", {
   referredBy: integer("referred_by"),
   totalOrders: integer("total_orders").default(0),
   totalSpent: doublePrecision("total_spent").default(0),
+  totalSpentCents: integer("total_spent_cents"),
   // Preferences
   preferredDetergent: text("preferred_detergent").default("standard"), // standard | hypoallergenic | eco | fragrance_free
   preferredWashTemp: text("preferred_wash_temp").default("cold"), // cold | warm | hot
@@ -84,6 +85,10 @@ export const vendors = pgTable("vendors", {
   payoutRate: doublePrecision("payout_rate").default(0.65),
   totalEarnings: doublePrecision("total_earnings").default(0),
   pendingPayout: doublePrecision("pending_payout").default(0),
+  // Shadow _cents columns
+  payoutRateCents: integer("payout_rate_cents"),
+  totalEarningsCents: integer("total_earnings_cents"),
+  pendingPayoutCents: integer("pending_payout_cents"),
   // AI Scoring
   aiHealthScore: doublePrecision("ai_health_score").default(85), // 0-100
   avgProcessingTime: doublePrecision("avg_processing_time").default(180), // minutes
@@ -124,6 +129,10 @@ export const drivers = pgTable("drivers", {
   payoutPerTrip: doublePrecision("payout_per_trip").default(8.50),
   totalEarnings: doublePrecision("total_earnings").default(0),
   pendingPayout: doublePrecision("pending_payout").default(0),
+  // Shadow _cents columns
+  payoutPerTripCents: integer("payout_per_trip_cents"),
+  totalEarningsCents: integer("total_earnings_cents"),
+  pendingPayoutCents: integer("pending_payout_cents"),
   todayTrips: integer("today_trips").default(0),
   // AI route optimization
   currentRouteJson: text("current_route_json"), // JSON: optimized route
@@ -149,6 +158,7 @@ export const serviceTypes = pgTable("service_types", {
   displayName: text("display_name").notNull(),
   description: text("description"),
   basePrice: doublePrecision("base_price").notNull(), // per unit (lb or item)
+  basePriceCents: integer("base_price_cents"),
   unit: text("unit").notNull().default("lb"), // lb | item | load
   icon: text("icon"), // lucide icon name
   isActive: integer("is_active").default(1),
@@ -328,6 +338,7 @@ export const consentRecords = pgTable("consent_records", {
   autoApproveAt: text("auto_approve_at"),
   requestedBy: integer("requested_by"),
   additionalCharge: doublePrecision("additional_charge").default(0),
+  additionalChargeCents: integer("additional_charge_cents"),
 });
 
 export const insertConsentSchema = createInsertSchema(consentRecords).omit({ id: true });
@@ -363,6 +374,8 @@ export const disputes = pgTable("disputes", {
   resolution: text("resolution"),
   creditAmount: doublePrecision("credit_amount"),
   refundAmount: doublePrecision("refund_amount"),
+  creditAmountCents: integer("credit_amount_cents"),
+  refundAmountCents: integer("refund_amount_cents"),
   assignedTo: integer("assigned_to"),
   priority: text("priority").default("medium"),
   // AI analysis
@@ -444,6 +457,8 @@ export const promoCodes = pgTable("promo_codes", {
   type: text("type").notNull(), // percentage | fixed | free_delivery
   value: doublePrecision("value").notNull(), // % off or $ amount
   minOrderAmount: doublePrecision("min_order_amount").default(0),
+  valueCents: integer("value_cents"),
+  minOrderAmountCents: integer("min_order_amount_cents"),
   maxUses: integer("max_uses").default(0), // 0 = unlimited
   usedCount: integer("used_count").default(0),
   isActive: integer("is_active").default(1),
@@ -463,6 +478,8 @@ export const referrals = pgTable("referrals", {
   status: text("status").notNull().default("pending"), // pending | completed | rewarded
   referrerReward: doublePrecision("referrer_reward").default(10), // $ credit
   refereeReward: doublePrecision("referee_reward").default(10), // $ credit
+  referrerRewardCents: integer("referrer_reward_cents"),
+  refereeRewardCents: integer("referee_reward_cents"),
   completedOrderId: integer("completed_order_id"), // first order by referee
   createdAt: text("created_at").notNull(),
   completedAt: text("completed_at"),
@@ -531,6 +548,8 @@ export const pricingTiers = pgTable("pricing_tiers", {
   maxWeight: doublePrecision("max_weight").notNull(), // lbs
   flatPrice: doublePrecision("flat_price").notNull(),
   overageRate: doublePrecision("overage_rate").notNull(), // per lb
+  flatPriceCents: integer("flat_price_cents"),
+  overageRateCents: integer("overage_rate_cents"),
   description: text("description"),
   icon: text("icon"),
   isActive: integer("is_active").default(1),
@@ -547,6 +566,7 @@ export const addOns = pgTable("add_ons", {
   name: text("name").notNull().unique(),
   displayName: text("display_name").notNull(),
   price: doublePrecision("price").notNull(),
+  priceCents: integer("price_cents"),
   description: text("description"),
   category: text("category").notNull().default("service"), // detergent | treatment | service
   isActive: integer("is_active").default(1),
@@ -564,6 +584,8 @@ export const orderAddOns = pgTable("order_add_ons", {
   quantity: integer("quantity").notNull().default(1),
   unitPrice: doublePrecision("unit_price").notNull(),
   total: doublePrecision("total").notNull(),
+  unitPriceCents: integer("unit_price_cents"),
+  totalCents: integer("total_cents"),
 });
 
 export const insertOrderAddOnSchema = createInsertSchema(orderAddOns).omit({ id: true });
@@ -584,6 +606,7 @@ export const paymentTransactions = pgTable("payment_transactions", {
   recipientType: text("recipient_type"), // platform | vendor | driver
   recipientId: integer("recipient_id"),
   platformFee: doublePrecision("platform_fee"),
+  platformFeeCents: integer("platform_fee_cents"),
   metadata: text("metadata"), // JSON
   createdAt: text("created_at").notNull(),
   completedAt: text("completed_at"),
