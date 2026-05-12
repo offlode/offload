@@ -24,9 +24,9 @@ interface Props {
 }
 
 // Cache the loader promise so we don't insert multiple <script> tags.
-let mapsLoaderPromise: Promise<typeof google | null> | null = null;
+let mapsLoaderPromise: Promise<any | null> | null = null;
 
-function loadMapsJs(apiKey: string): Promise<typeof google | null> {
+function loadMapsJs(apiKey: string): Promise<any | null> {
   if (typeof window === "undefined") return Promise.resolve(null);
   if ((window as any).google?.maps) return Promise.resolve((window as any).google);
   if (mapsLoaderPromise) return mapsLoaderPromise;
