@@ -2033,9 +2033,12 @@ export async function registerRoutes(
   // tweaks floor / elevator / handoff / window / scheduled time / laundromat choice.
   app.post("/api/quote/dynamic", async (req, res) => {
     try {
+      // OD-P1 / OD-P3: accept `speedTier` as an alias for `deliverySpeed` and
+      // accept any tier alias supported by TIER_NAME_MAP (xlarge / xl / xl_bag / extra_large).
       const DynamicQuoteBody = z.object({
         tierName: z.string().min(1),
         deliverySpeed: z.string().optional(),
+        speedTier: z.string().optional(),     // alias — will be folded into deliverySpeed below
         serviceType: z.string().optional(),
         vendorId: z.union([z.number(), z.string()]).optional(),
         pickupAddress: z.string().optional(),
@@ -2057,7 +2060,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
       }
       const {
-        tierName, deliverySpeed, serviceType, vendorId,
+        tierName, deliverySpeed: rawDeliverySpeed, speedTier, serviceType, vendorId,
         pickupAddress, pickupLat, pickupLng,
         addOns, promoCode,
         pickupFloor, pickupHasElevator, pickupHandoff, pickupWindowMinutes,
@@ -2065,6 +2068,8 @@ export async function registerRoutes(
         recommendCheapestWindow,
         view,
       } = parsed.data;
+      // OD-P1: fold speedTier alias into deliverySpeed (deliverySpeed wins if both passed)
+      const deliverySpeed = rawDeliverySpeed ?? speedTier;
 
       // Customer-facing UI gets a simplified view; admin/laundromat/driver dashboards
       // get the full breakdown (vendor name, surge label, distance, traffic, etc.).
@@ -2197,6 +2202,7 @@ export async function registerRoutes(
   // ── Public: Create a quote (no auth required for website) ──
   app.post("/api/quotes", async (req, res) => {
     try {
+      // OD-P1: accept `speedTier` alias for `deliverySpeed`
       const QuoteBody = z.object({
         pickupAddress: z.string().min(1),
         pickupCity: z.string().optional().nullable(),
@@ -2208,6 +2214,7 @@ export async function registerRoutes(
         serviceType: z.string().optional(),
         tierName: z.string().min(1),
         deliverySpeed: z.string().optional(),
+        speedTier: z.string().optional(),     // alias — folded into deliverySpeed below
         vendorId: z.union([z.number(), z.string()]).optional(),
         addOns: z.array(z.any()).optional(),
         promoCode: z.string().optional(),
@@ -2225,10 +2232,13 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
       }
       const { pickupAddress, pickupCity, pickupState, pickupZip, pickupLat, pickupLng,
-        deliveryAddress, serviceType, tierName, deliverySpeed, vendorId,
+        deliveryAddress, serviceType, tierName,
+        deliverySpeed: rawQDeliverySpeed, speedTier: qSpeedTier, vendorId,
         addOns, promoCode, sessionId, idempotencyKey,
         pickupFloor, pickupHasElevator, pickupHandoff, pickupWindowMinutes,
         scheduledPickup, vendorChoiceMode } = parsed.data;
+      // OD-P1: fold speedTier alias into deliverySpeed (deliverySpeed wins if both passed)
+      const deliverySpeed = rawQDeliverySpeed ?? qSpeedTier;
 
       // Idempotency check
       if (idempotencyKey) {
@@ -2829,6 +2839,44 @@ export async function registerRoutes(
   // ── Admin: Pricing config ──
   app.get("/api/pricing/config", requireAuth(["admin"]), async (_req, res) => {
     res.json(await storage.getAllPricingConfig());
+  });
+
+  // OD-P2: single-key GET so admin UI and owner review can read current values cleanly.
+  // If the key is not yet in the DB, return the canonical fallback so the UI never sees a 404.
+  app.get("/api/pricing/config/:key", requireAuth(["admin"]), async (req, res) => {
+    const key = String(req.params.key);
+    const row = await storage.getPricingConfig(key);
+    if (row) return res.json(row);
+    // Compute a fallback value from the same source the pricing engine falls back to.
+    // PRICING_TIERS / DELIVERY_FEES / SCHEMA_TAX_RATE are imported at top of file.
+    let fallbackValue: string | null = null;
+    let category = "general";
+    try {
+      if (key === "tax_rate_default") { fallbackValue = String(SCHEMA_TAX_RATE); category = "tax"; }
+      else if (key === "delivery_fee_48h") { fallbackValue = String(DELIVERY_FEES["48h"]?.fee ?? 0); category = "delivery"; }
+      else if (key === "delivery_fee_24h") { fallbackValue = String(DELIVERY_FEES["24h"]?.fee ?? 0); category = "delivery"; }
+      else if (key === "delivery_fee_same_day") { fallbackValue = String(DELIVERY_FEES["same_day"]?.fee ?? 0); category = "delivery"; }
+      else if (key === "wait_fee_free_minutes") { fallbackValue = "5"; category = "wait_fee"; }
+      else if (key === "wait_fee_per_minute") { fallbackValue = "1"; category = "wait_fee"; }
+      else if (key === "wait_fee_cap") { fallbackValue = "15"; category = "wait_fee"; }
+      else if (key.startsWith("bag_price_") || key.startsWith("bag_")) {
+        const tier = key.replace(/^bag_(price_)?/, "");
+        const t = PRICING_TIERS[tier as keyof typeof PRICING_TIERS];
+        if (t) { fallbackValue = JSON.stringify({ flatPrice: t.flatPrice, overageRate: t.overageRate, maxWeight: t.maxWeight }); category = "bag"; }
+      }
+    } catch (_e) {
+      // fall through to 404
+    }
+    if (fallbackValue === null) {
+      return res.status(404).json({ error: "Pricing config key not found", code: "CONFIG_NOT_FOUND", key });
+    }
+    return res.json({
+      key,
+      value: fallbackValue,
+      category,
+      description: `Fallback value (not yet stored in DB)`,
+      source: "fallback",
+    });
   });
 
   app.put("/api/pricing/config/:key", requireAuth(["admin"]), async (req, res) => {

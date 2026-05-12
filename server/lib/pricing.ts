@@ -23,13 +23,34 @@ export function distanceMiles(lat1: number, lng1: number, lat2: number, lng2: nu
 
 export const TAX_RATE = SCHEMA_TAX_RATE; // 0.08875 NY combined sales tax
 
-// Map website tier names to schema tier names
+// Map website / external tier names to schema tier names.
+// Accepts both human-readable and machine forms so external API consumers
+// and forms cannot trip on naming drift (e.g. xlarge vs xl vs xl_bag).
 export const TIER_NAME_MAP: Record<string, string> = {
   small: "small_bag", small_bag: "small_bag",
   medium: "medium_bag", medium_bag: "medium_bag",
   large: "large_bag", large_bag: "large_bag",
+  // OD-P3: add xlarge / extralarge / xLarge aliases — all normalize to xl_bag
   xl: "xl_bag", xl_bag: "xl_bag", extra_large: "xl_bag",
+  xlarge: "xl_bag", extralarge: "xl_bag", xLarge: "xl_bag", XL: "xl_bag", XLARGE: "xl_bag",
 };
+
+// Map external speed aliases to canonical schema speed names.
+// Accepts camelCase, lowercased, kebab/snake variants — keeps website,
+// customer app, and external API consumers in lock-step.
+export function normalizeDeliverySpeed(input: string | null | undefined): "48h" | "24h" | "same_day" {
+  if (!input) return "48h";
+  const v = String(input).trim();
+  // direct schema values
+  if (v === "48h" || v === "24h" || v === "same_day") return v;
+  // common aliases
+  const lc = v.toLowerCase();
+  if (["standard", "express", "48hr", "48-hr", "48 hour", "two_day", "2day", "2 day"].includes(lc)) return "48h";
+  if (["express_24h", "next_day", "nextday", "24hr", "24-hr", "24 hour"].includes(lc)) return "24h";
+  if (["sameday", "same-day", "same day", "same_day_express", "sd"].includes(lc)) return "same_day";
+  // unknown — throw so the caller learns about the typo instead of silently defaulting
+  throw new Error(`Invalid delivery speed: ${input}. Valid options: 48h, 24h, same_day (aliases: standard/express, express_24h/next_day, sameDay/same-day)`);
+}
 
 export interface QuotePriceBreakdown {
   laundryServicePrice: number;
@@ -101,11 +122,13 @@ export async function calculateQuotePrice(input: {
   const laundryServicePrice = Math.round(tier.flatPrice * serviceMultiplier * 100) / 100;
 
   // 3. Delivery fee (flat rate based on speed)
-  const speed = (input.deliverySpeed === "express" ? "48h" : input.deliverySpeed === "express_24h" ? "24h" : input.deliverySpeed === "standard" ? "48h" : input.deliverySpeed) || "48h";
-  if (speed && !DELIVERY_FEES[speed as keyof typeof DELIVERY_FEES]) {
+  // OD-P1: route through normalizeDeliverySpeed so aliases like
+  // sameDay / same-day / next_day all resolve to the canonical key.
+  const speed = normalizeDeliverySpeed(input.deliverySpeed);
+  if (!DELIVERY_FEES[speed as keyof typeof DELIVERY_FEES]) {
     throw new Error(`Invalid delivery speed: ${speed}. Valid options: ${Object.keys(DELIVERY_FEES).join(", ")}`);
   }
-  const deliveryFee = await pricingConfig.getDeliveryFee(speed as "48h" | "24h" | "same_day");
+  const deliveryFee = await pricingConfig.getDeliveryFee(speed);
 
   // 4. Speed surcharge: $0 — speed cost is fully captured in the delivery fee
   const speedSurcharge = 0;
@@ -322,8 +345,8 @@ export async function calculatePricing(bags: any[], deliverySpeed: string) {
       subtotal += fallbackBag.flatPrice * (bag.quantity || 1);
     }
   }
-  const normalizedSpeed = (deliverySpeed === "express" ? "48h" : deliverySpeed === "express_24h" ? "24h" : deliverySpeed === "standard" ? "48h" : deliverySpeed) as "48h" | "24h" | "same_day";
-  const deliveryFee = await pricingConfig.getDeliveryFee(normalizedSpeed || "48h");
+  const normalizedSpeed = normalizeDeliverySpeed(deliverySpeed);
+  const deliveryFee = await pricingConfig.getDeliveryFee(normalizedSpeed);
   const taxRate = await pricingConfig.getTaxRate();
   const tax = Math.round(subtotal * taxRate * 100) / 100;
   const total = Math.round((subtotal + tax + deliveryFee) * 100) / 100;
