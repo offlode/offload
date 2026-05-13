@@ -219,6 +219,17 @@ async function ensureExtraTables() {
     ["vendors", "offers_stain_treatment INTEGER DEFAULT 0"],
     ["vendors", "offers_steam_press INTEGER DEFAULT 0"],
     ["vendors", "offers_hang_dry INTEGER DEFAULT 0"],
+    // D7+D8: operating hours JSON + business details
+    ["vendors", "operating_hours_json TEXT"],
+    ["vendors", "business_name TEXT"],
+    ["vendors", "contact_email TEXT"],
+    ["vendors", "business_address TEXT"],
+    ["vendors", "business_city TEXT"],
+    ["vendors", "business_state TEXT"],
+    ["vendors", "business_zip TEXT"],
+    ["vendors", "business_lat REAL"],
+    ["vendors", "business_lng REAL"],
+    ["vendors", "admin_override_open INTEGER DEFAULT 0"],
   ];
   for (const [table, colDef] of dynamicPricingCols) {
     const colName = colDef.split(/\s+/)[0];
@@ -355,6 +366,7 @@ async function ensureIntegrityConstraints() {
     ["payment_transactions", "platform_fee_cents INTEGER"],
   ];
   for (const [table, colDef] of centsCols) {
+    // D10: idempotent add of price_mode column to add_ons (below this loop, see migration below)
     try {
       await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${colDef}`);
     } catch (e: any) {
@@ -409,6 +421,25 @@ async function ensureIntegrityConstraints() {
   for (const sql of backfills) {
     try { await pool.query(sql); } catch (e: any) {
       console.warn("[integrity] backfill:", e.message);
+    }
+  }
+
+  // D10: idempotent ALTER TABLE for add_ons.price_mode column
+  try {
+    await pool.query(`ALTER TABLE add_ons ADD COLUMN IF NOT EXISTS price_mode TEXT DEFAULT 'per_order'`);
+    // Backfill: set reasonable defaults for existing add-ons by name
+    await pool.query(`
+      UPDATE add_ons SET price_mode = 'per_item'
+      WHERE name = 'stain_treatment' AND price_mode IS NULL
+    `);
+    await pool.query(`
+      UPDATE add_ons SET price_mode = COALESCE(price_mode, 'per_order')
+      WHERE price_mode IS NULL
+    `);
+  } catch (e: any) {
+    const msg = String(e?.message || "");
+    if (!msg.includes("already exists")) {
+      console.warn("[integrity] D10 price_mode column:", msg);
     }
   }
 

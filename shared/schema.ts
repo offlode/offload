@@ -97,6 +97,19 @@ export const vendors = pgTable("vendors", {
   disputeRate: doublePrecision("dispute_rate").default(0.02), // 0-1
   // Operating hours (JSON: {mon: {open: "7:00", close: "22:00"}, ...})
   operatingHours: text("operating_hours"),
+  // Normalized operating hours JSON: {mon:{open:"08:00",close:"20:00",closed:false}, tue:..., ...}
+  operatingHoursJson: text("operating_hours_json"),
+  // Business details
+  businessName: text("business_name"),
+  contactEmail: text("contact_email"),
+  businessAddress: text("business_address"),
+  businessCity: text("business_city"),
+  businessState: text("business_state"),
+  businessZip: text("business_zip"),
+  businessLat: real("business_lat"),
+  businessLng: real("business_lng"),
+  // Admin override: force vendor "open" regardless of operating hours (1 = open)
+  adminOverrideOpen: integer("admin_override_open").default(0),
   // Services offered
   offersDryCleaning: integer("offers_dry_cleaning").default(0),
   offersAlterations: integer("offers_alterations").default(0),
@@ -608,6 +621,8 @@ export const addOns = pgTable("add_ons", {
   description: text("description"),
   category: text("category").notNull().default("service"), // detergent | treatment | service
   isActive: integer("is_active").default(1),
+  // D10: priceMode controls whether qty is forced to 1 (per_order) or matches item count (per_item)
+  priceMode: text("price_mode").default("per_order"), // "per_item" | "per_order"
 });
 
 export const insertAddOnSchema = createInsertSchema(addOns).omit({ id: true });

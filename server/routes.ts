@@ -1,4 +1,5 @@
 import type { Express, Request, Response, NextFunction } from "express";
+import { registerVoiceRoutes } from "./voice";
 import { z } from "zod";
 import { createServer, type Server } from "http";
 import { createHash, randomBytes } from "crypto";
@@ -160,6 +161,61 @@ function generateQuoteNumber(): string {
 //  AUTO-DISPATCH ENGINE
 // ════════════════════════════════════════════════════════════════
 
+// ── D8: Operating-hours gate ──
+const DAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
+type DayKey = typeof DAY_KEYS[number];
+interface DayHours { open?: string; close?: string; closed?: boolean; }
+type OperatingHoursJson = Partial<Record<DayKey, DayHours>>;
+
+function parseTimeToMinutes(t: string): number {
+  const [hh, mm] = t.split(":").map(Number);
+  return (hh || 0) * 60 + (mm || 0);
+}
+
+/** Return the next "open" ISO datetime string for a vendor (up to 7 days ahead), or null. */
+function nextOpenAt(vendor: any, fromDate: Date): string | null {
+  let hours: OperatingHoursJson;
+  try { hours = JSON.parse(vendor.operatingHoursJson || ""); } catch { return null; }
+  for (let d = 0; d < 7; d++) {
+    const candidate = new Date(fromDate);
+    candidate.setDate(candidate.getDate() + d);
+    const dayKey = DAY_KEYS[candidate.getDay()];
+    const dayHours = hours[dayKey];
+    if (!dayHours || dayHours.closed) continue;
+    if (!dayHours.open) continue;
+    const openMins = parseTimeToMinutes(dayHours.open);
+    const result = new Date(candidate);
+    result.setHours(Math.floor(openMins / 60), openMins % 60, 0, 0);
+    if (d === 0 && result <= fromDate) continue; // already past today's open
+    return result.toISOString();
+  }
+  return null;
+}
+
+/**
+ * Returns true if the vendor should accept orders at the given date/time.
+ * - adminOverrideOpen=1 → always true
+ * - pauseOrderIntake=1  → always false
+ * - operatingHoursJson  → check day/time
+ * - fallback            → true (back-compat for vendors without hours configured)
+ */
+function isVendorOpenNow(vendor: any, atDate: Date): boolean {
+  if (vendor.adminOverrideOpen === 1) return true;
+  if (vendor.pauseOrderIntake === 1) return false;
+  if (!vendor.operatingHoursJson) return true; // no hours set → default open
+  let hours: OperatingHoursJson;
+  try { hours = JSON.parse(vendor.operatingHoursJson); } catch { return true; }
+  const dayKey = DAY_KEYS[atDate.getDay()];
+  const dayHours = hours[dayKey];
+  if (!dayHours) return true; // day not configured → default open
+  if (dayHours.closed) return false;
+  if (!dayHours.open || !dayHours.close) return true; // partial config → default open
+  const nowMins = atDate.getHours() * 60 + atDate.getMinutes();
+  const openMins = parseTimeToMinutes(dayHours.open);
+  const closeMins = parseTimeToMinutes(dayHours.close);
+  return nowMins >= openMins && nowMins < closeMins;
+}
+
 function scoreVendor(vendor: Vendor, order: Order, pickupLat: number, pickupLng: number): number {
   let score = 0;
 
@@ -222,9 +278,15 @@ function scoreDriver(driver: Driver, pickupLat: number, pickupLng: number): numb
   return Math.round(score * 10) / 10;
 }
 
-async function findBestVendor(order: Order, pickupLat: number, pickupLng: number): Promise<Vendor | null> {
+async function findBestVendor(order: Order, pickupLat: number, pickupLng: number, scheduledAt?: Date): Promise<Vendor | null> {
   const activeVendors = await storage.getActiveVendors();
   if (activeVendors.length === 0) return null;
+
+  // D8: use scheduledPickup or now as the reference time for operating-hours gate
+  let dispatchAt: Date = scheduledAt || new Date();
+  if (!scheduledAt && (order as any).scheduledPickup) {
+    try { dispatchAt = new Date((order as any).scheduledPickup); } catch { dispatchAt = new Date(); }
+  }
 
   // Parse order required washType — check preferences.washType first, then fall back to order.serviceType
   let requiredWashType: string | null = null;
@@ -249,6 +311,10 @@ async function findBestVendor(order: Order, pickupLat: number, pickupLng: number
     .filter(v => {
       // Skip vendors that have paused order intake
       return (v as any).pauseOrderIntake !== 1;
+    })
+    .filter(v => {
+      // D8: operating-hours gate — skip vendors closed at scheduled dispatch time
+      return isVendorOpenNow(v, dispatchAt);
     })
     .filter(v => {
       // If certified-only required, filter
@@ -2066,12 +2132,54 @@ export async function registerRoutes(
       const service = req.query.service ? String(req.query.service) : undefined;
       const addOnsRaw = req.query.addOns ? String(req.query.addOns) : "";
       const addOns = addOnsRaw ? addOnsRaw.split(",").map(s => s.trim()).filter(Boolean) : undefined;
+      // D8: optional scheduled time for hours gating
+      const scheduledForRaw = req.query.scheduledFor ? String(req.query.scheduledFor) : undefined;
+      let scheduledForDate: Date | undefined;
+      if (scheduledForRaw) {
+        try { scheduledForDate = new Date(scheduledForRaw); } catch { /* ignore invalid */ }
+      }
 
       if (!zip && (lat == null || lng == null)) {
         return res.status(400).json({ error: "zip OR (lat,lng) required" });
       }
 
       const coverage = await checkCoverage({ zip, lat, lng, service, addOns });
+
+      // D8: if coverage eligible but scheduledFor provided, check operating hours
+      if (coverage.eligible && scheduledForDate) {
+        const refDate = scheduledForDate;
+        const vendors = await storage.getVendors();
+        const openMatchedIds = coverage.matchedVendors.filter(vid => {
+          const v = vendors.find(x => x.id === vid);
+          return v ? isVendorOpenNow(v, refDate) : false;
+        });
+        if (openMatchedIds.length === 0) {
+          // All matched vendors are closed at scheduledFor — find nextOpenAt across them
+          let earliestNextOpen: string | null = null;
+          for (const vid of coverage.matchedVendors) {
+            const v = vendors.find(x => x.id === vid);
+            if (!v) continue;
+            const n = nextOpenAt(v, refDate);
+            if (n && (!earliestNextOpen || n < earliestNextOpen)) earliestNextOpen = n;
+          }
+          return res.json({
+            serviceable: false,
+            zip: zip || null,
+            reason: "closed_at_scheduled_time",
+            nextOpenAt: earliestNextOpen,
+            matchedVendors: coverage.matchedVendors.length,
+            details: coverage,
+          });
+        }
+        return res.json({
+          serviceable: true,
+          zip: zip || null,
+          reason: null,
+          matchedVendors: openMatchedIds.length,
+          details: { ...coverage, matchedVendors: openMatchedIds },
+        });
+      }
+
       res.json({
         serviceable: coverage.eligible,
         zip: zip || null,
@@ -2633,6 +2741,8 @@ export async function registerRoutes(
       });
 
       // ── Stripe PaymentIntent (OUTSIDE txn — network side-effect) ──
+      // SERVER-AUTHORITATIVE PRICING — do not trust client total
+      // amountCents comes from quote.total fetched from DB (server-computed at quote creation time)
       const amountCents = Math.round((quote.total || 0) * 100);
       let clientSecret: string;
       let paymentIntentId: string;
@@ -2918,7 +3028,8 @@ export async function registerRoutes(
         }
       } else {
         // Auto-assign best vendor
-        const bestVendor = await findBestVendor(order, pickupLat, pickupLng);
+        const scheduledPickupAt = order.scheduledPickup ? (() => { try { return new Date(order.scheduledPickup!); } catch { return new Date(); } })() : new Date();
+        const bestVendor = await findBestVendor(order, pickupLat, pickupLng, scheduledPickupAt);
         if (bestVendor) {
           assignedVendorId = bestVendor.id;
           await storage.updateOrder(order.id, { vendorId: bestVendor.id, aiMatchScore: scoreVendor(bestVendor, order, pickupLat, pickupLng) });
@@ -2932,12 +3043,17 @@ export async function registerRoutes(
             timestamp: now(),
           });
         } else {
-          // No eligible vendor — flag for admin review so order is not silently orphaned
+          // No eligible vendor — check whether hours gating is the cause
+          const allActive = await storage.getActiveVendors();
+          const closedCount = allActive.filter(v => !isVendorOpenNow(v, scheduledPickupAt)).length;
+          const eventType = closedCount > 0 && closedCount === allActive.length ? "no_vendor_open" : "no_vendor_found";
           await storage.createOrderEvent({
             orderId: order.id,
-            eventType: "no_vendor_found",
-            description: "No eligible vendor available for this order — admin manual assignment required",
-            details: JSON.stringify({ pickupLat, pickupLng, serviceType: (order as any).serviceType }),
+            eventType,
+            description: eventType === "no_vendor_open"
+              ? "All vendors are closed at the scheduled pickup time — admin manual assignment required"
+              : "No eligible vendor available for this order — admin manual assignment required",
+            details: JSON.stringify({ pickupLat, pickupLng, serviceType: (order as any).serviceType, scheduledAt: scheduledPickupAt.toISOString() }),
             actorRole: "system",
             timestamp: now(),
           });
@@ -3241,19 +3357,25 @@ export async function registerRoutes(
       }
 
       // Calculate add-ons total
+      // SERVER-AUTHORITATIVE PRICING — do not trust client total
+      // D10: enforce priceMode — per_order add-ons always get qty=1
       let addOnsTotal = 0;
       let parsedAddOns: { addOnId: number; quantity: number; unitPrice: number }[] = [];
       if (selectedAddOns && Array.isArray(selectedAddOns)) {
         for (const sa of selectedAddOns) {
           const addon = await storage.getAddOn(sa.addOnId);
           if (addon) {
-            const qty = sa.quantity || 1;
+            // D10: enforce priceMode — per_order forces qty=1, per_item uses client qty
+            const addonPriceMode = (addon as any).priceMode || "per_order";
+            const qty = addonPriceMode === "per_item" ? (sa.quantity || 1) : 1;
             parsedAddOns.push({ addOnId: addon.id, quantity: qty, unitPrice: addon.price });
             addOnsTotal += addon.price * qty;
           }
         }
       }
 
+      // SERVER-AUTHORITATIVE PRICING — do not trust client total
+      // All pricing is recomputed server-side from inputs; client-supplied totals are ignored.
       // Dynamic pricing with surge (DB-driven holiday list)
       const basePickupTime = scheduledPickup;
       const surge = await getSurgePricingTierAsync(basePickupTime);
@@ -3473,7 +3595,8 @@ export async function registerRoutes(
       const pickupLat = addr?.lat || 25.78;
       const pickupLng = addr?.lng || -80.19;
 
-      const bestVendor = await findBestVendor(order, pickupLat, pickupLng);
+      const scheduledPickupAt2 = order.scheduledPickup ? (() => { try { return new Date(order.scheduledPickup!); } catch { return new Date(); } })() : new Date();
+      const bestVendor = await findBestVendor(order, pickupLat, pickupLng, scheduledPickupAt2);
       if (bestVendor) {
         await storage.updateOrder(order.id, { vendorId: bestVendor.id, aiMatchScore: scoreVendor(bestVendor, order, pickupLat, pickupLng) });
         await storage.updateVendor(bestVendor.id, { currentLoad: (bestVendor.currentLoad || 0) + 1 });
@@ -3486,12 +3609,17 @@ export async function registerRoutes(
           timestamp: now(),
         });
       } else {
-        // No eligible vendor — flag for admin review
+        // No eligible vendor — check whether hours gating is the cause
+        const allActive2 = await storage.getActiveVendors();
+        const closedCount2 = allActive2.filter(v => !isVendorOpenNow(v, scheduledPickupAt2)).length;
+        const eventType2 = closedCount2 > 0 && closedCount2 === allActive2.length ? "no_vendor_open" : "no_vendor_found";
         await storage.createOrderEvent({
           orderId: order.id,
-          eventType: "no_vendor_found",
-          description: "No eligible vendor available for this order — admin manual assignment required",
-          details: JSON.stringify({ pickupLat, pickupLng, serviceType: (order as any).serviceType }),
+          eventType: eventType2,
+          description: eventType2 === "no_vendor_open"
+            ? "All vendors are closed at the scheduled pickup time — admin manual assignment required"
+            : "No eligible vendor available for this order — admin manual assignment required",
+          details: JSON.stringify({ pickupLat, pickupLng, serviceType: (order as any).serviceType, scheduledAt: scheduledPickupAt2.toISOString() }),
           actorRole: "system",
           timestamp: now(),
         });
@@ -9627,6 +9755,8 @@ export async function registerRoutes(
         description: z.string().optional().nullable(),
         category: z.string().optional(),
         isActive: z.number().optional(),
+        // D10: priceMode controls per_order vs per_item billing
+        priceMode: z.enum(["per_order", "per_item"]).optional(),
       }).strip();
       const parsed = AddOnPatch.safeParse(req.body);
       if (!parsed.success) {
@@ -10398,6 +10528,9 @@ export async function registerRoutes(
     res.setHeader("X-Powered-By", "Offload");
     next();
   });
+
+  // ── Voice Order endpoints (STT + extraction) ──
+  registerVoiceRoutes(app);
 
   return httpServer;
 }
