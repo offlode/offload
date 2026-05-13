@@ -198,27 +198,58 @@ export function registerWebhookRoutes(app: Express) {
           break;
         }
         case "payment_intent.payment_failed": {
+          // P2-062: wrap in db.transaction()
           const pi = event.data?.object;
           if (pi?.metadata?.orderId) {
             const orderId = Number(pi.metadata.orderId);
-            await storage.updateOrder(orderId, { paymentStatus: "failed" });
-            await storage.createOrderEvent({
-              orderId, eventType: "payment_failed",
-              description: `Payment failed: ${pi.last_payment_error?.message || "Unknown error"}`,
-              timestamp: now(),
+            await db.transaction(async (tx) => {
+              await tx.update(schema.orders).set({
+                paymentStatus: "failed",
+                updatedAt: now(),
+              } as any).where(eq(schema.orders.id, orderId));
+              await tx.insert(schema.orderEvents).values({
+                orderId, eventType: "payment_failed",
+                description: `Payment failed: ${pi.last_payment_error?.message || "Unknown error"}`,
+                timestamp: now(),
+              } as any);
             });
           }
           break;
         }
         case "charge.refunded": {
+          // P2-017: check partial vs full refund
+          // P2-018: insert paymentTransactions refund row
+          // P2-062: wrap in db.transaction()
           const charge = event.data?.object;
           if (charge?.metadata?.orderId) {
             const orderId = Number(charge.metadata.orderId);
-            await storage.updateOrder(orderId, { paymentStatus: "refunded" });
-            await storage.createOrderEvent({
-              orderId, eventType: "payment_refunded",
-              description: `Refund of $${(charge.amount_refunded / 100).toFixed(2)} confirmed via Stripe`,
-              timestamp: now(),
+            const isPartial = charge.amount_refunded < charge.amount;
+            const newPaymentStatus = isPartial ? "partially_refunded" : "refunded";
+            const refundAmountCents = charge.amount_refunded || 0;
+            const ts_refund = now();
+            await db.transaction(async (tx) => {
+              await tx.update(schema.orders).set({
+                paymentStatus: newPaymentStatus,
+                updatedAt: ts_refund,
+              } as any).where(eq(schema.orders.id, orderId));
+              // P2-018: record refund transaction row
+              await tx.insert(schema.paymentTransactions).values({
+                orderId,
+                type: "refund",
+                amount: refundAmountCents / 100,
+                amountCents: refundAmountCents,
+                currency: "usd",
+                status: "completed",
+                recipientType: "platform",
+                metadata: JSON.stringify({ source: "stripe_webhook", chargeId: charge.id, partial: isPartial }),
+                createdAt: ts_refund,
+                completedAt: ts_refund,
+              } as any);
+              await tx.insert(schema.orderEvents).values({
+                orderId, eventType: "payment_refunded",
+                description: `${isPartial ? "Partial refund" : "Full refund"} of $${(refundAmountCents / 100).toFixed(2)} confirmed via Stripe`,
+                timestamp: ts_refund,
+              } as any);
             });
           }
           break;

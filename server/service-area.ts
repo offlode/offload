@@ -14,6 +14,7 @@
 
 import { storage } from "./storage";
 import type { Vendor } from "@shared/schema";
+import { isNJZip } from "./lib/nj-zip";
 
 export interface CoverageQuery {
   zip?: string;
@@ -116,13 +117,8 @@ function vendorHasCapability(vendor: Vendor, service?: string, addOns?: string[]
   return true;
 }
 
-// ── NJ ZIP detection ──
-// NJ ZIPs begin with 07xxx or 08xxx.
-function isNJZip(zip?: string): boolean {
-  if (!zip) return false;
-  const z = String(zip).trim();
-  return z.startsWith("07") || z.startsWith("08");
-}
+// P2-061: NJ ZIP detection — use shared utility (USPS range 7000-8999)
+// isNJZip imported from ./lib/nj-zip
 
 export async function checkCoverage(q: CoverageQuery): Promise<CoverageResult> {
   const vendors = await storage.getVendors();

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { randomBytes } from "crypto";
 import rateLimit from "express-rate-limit";
 import Stripe from "stripe";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import * as schema from "@shared/schema";
 import { storage, db, addOrderCents } from "../storage";
 import {
@@ -11,6 +11,7 @@ import {
 } from "@shared/schema";
 import { pricingConfig } from "../pricing-config-service";
 import { checkCoverage } from "../service-area";
+import { isNJZip } from "../lib/nj-zip";
 import { hashPassword } from "../lib/auth";
 import {
   hasStripe as hasStripeKey,
@@ -134,8 +135,9 @@ export function registerQuotesCheckoutRoutes(app: Express) {
       let paymentIntentId = "";
       let createdNewUser = false;
 
-      // Customer, address, order, Stripe PaymentIntent, payment txn, quote conversion,
-      // and audit rows are one transaction. Stripe failures throw, causing DB rollback.
+      // P2-026: Create order in DB transaction first, then create Stripe
+      // PaymentIntent outside the transaction. Idempotency key prevents
+      // duplicate intents on retry.
       const checkoutFeeRate = await pricingConfig.getPlatformFeeRate();
       const { customer, order } = await db.transaction(async (tx) => {
         let cust: typeof schema.users.$inferSelect;
@@ -200,24 +202,37 @@ export function registerQuotesCheckoutRoutes(app: Express) {
           updatedAt: ts,
         }) as any).returning();
 
-        if (amountCents > 0) {
-          const stripeClient = new Stripe(stripeKey, { apiVersion: "2024-12-18.acacia" as any });
-          const intent = await stripeClient.paymentIntents.create({
-            amount: amountCents,
-            currency: "usd",
-            metadata: { orderId: String(ord.id), orderNumber, quoteId: String(quote.id), customerEmail: email },
-            receipt_email: email,
-          }, { idempotencyKey: `order-${ord.id}-intent` });
-          paymentIntentId = intent.id;
-          clientSecret = intent.client_secret!;
-        } else {
-          paymentIntentId = `pi_zero_${Date.now()}_${randomBytes(4).toString("hex")}`;
-          clientSecret = "";
-        }
+        await tx.update(schema.quotes).set({ status: "converted", customerId: cust.id, updatedAt: ts } as any).where(eq(schema.quotes.id, quote.id));
+        await tx.insert(schema.orderEvents).values({ orderId: ord.id, eventType: "order_created", description: `Order placed via website checkout. Email: ${email}`, timestamp: ts } as any);
+        await tx.insert(schema.orderEvents).values({ orderId: ord.id, eventType: "vendor_assigned", description: `Assigned to ${eligibleVendor.name} (pre-checkout serviceability match)`, details: JSON.stringify({ vendorId: eligibleVendor.id, vendorName: eligibleVendor.name }), actorRole: "system", timestamp: ts } as any);
+        // P2-023: atomic vendor capacity increment
+        await tx.update(schema.vendors).set({ currentLoad: sql`COALESCE(${schema.vendors.currentLoad}, 0) + 1` } as any).where(eq(schema.vendors.id, eligibleVendor.id));
+        await tx.insert(schema.pricingAuditLog).values({ action: "public_checkout", details: JSON.stringify({ orderId: ord.id, orderNumber, quoteId: quote.id, total: quote.total, email }), actorId: cust.id, actorRole: "customer", timestamp: ts } as any);
+        return { customer: cust, order: ord };
+      });
 
-        await tx.update(schema.orders).set({ stripePaymentIntentId: paymentIntentId, updatedAt: now() } as any).where(eq(schema.orders.id, ord.id));
+      // P2-026: Create Stripe PaymentIntent OUTSIDE the DB transaction.
+      // Idempotency key (order-{id}-intent) prevents duplicates on retry.
+      if (amountCents > 0) {
+        const stripeClient = new Stripe(stripeKey, { apiVersion: "2024-12-18.acacia" as any });
+        const intent = await stripeClient.paymentIntents.create({
+          amount: amountCents,
+          currency: "usd",
+          metadata: { orderId: String(order.id), orderNumber, quoteId: String(quote.id), customerEmail: email },
+          receipt_email: email,
+        }, { idempotencyKey: `order-${order.id}-intent` });
+        paymentIntentId = intent.id;
+        clientSecret = intent.client_secret!;
+      } else {
+        paymentIntentId = `pi_zero_${Date.now()}_${randomBytes(4).toString("hex")}`;
+        clientSecret = "";
+      }
+
+      // Update order + create payment txn with the PaymentIntent ID
+      await db.transaction(async (tx) => {
+        await tx.update(schema.orders).set({ stripePaymentIntentId: paymentIntentId, updatedAt: now() } as any).where(eq(schema.orders.id, order.id));
         await tx.insert(schema.paymentTransactions).values({
-          orderId: ord.id,
+          orderId: order.id,
           type: "charge",
           amount: quote.total || 0,
           amountCents,
@@ -229,12 +244,6 @@ export function registerQuotesCheckoutRoutes(app: Express) {
           metadata: JSON.stringify({ quoteId: quote.id, email, phone: digits }),
           createdAt: ts,
         } as any);
-        await tx.update(schema.quotes).set({ status: "converted", customerId: cust.id, updatedAt: ts } as any).where(eq(schema.quotes.id, quote.id));
-        await tx.insert(schema.orderEvents).values({ orderId: ord.id, eventType: "order_created", description: `Order placed via website checkout. Email: ${email}`, timestamp: ts } as any);
-        await tx.insert(schema.orderEvents).values({ orderId: ord.id, eventType: "vendor_assigned", description: `Assigned to ${eligibleVendor.name} (pre-checkout serviceability match)`, details: JSON.stringify({ vendorId: eligibleVendor.id, vendorName: eligibleVendor.name }), actorRole: "system", timestamp: ts } as any);
-        await tx.update(schema.vendors).set({ currentLoad: ((eligibleVendor as any).currentLoad || 0) + 1 } as any).where(eq(schema.vendors.id, eligibleVendor.id));
-        await tx.insert(schema.pricingAuditLog).values({ action: "public_checkout", details: JSON.stringify({ orderId: ord.id, orderNumber, quoteId: quote.id, total: quote.total, email }), actorId: cust.id, actorRole: "customer", timestamp: ts } as any);
-        return { customer: cust, order: ord };
       });
 
       if (createdNewUser) {
@@ -324,10 +333,10 @@ export function registerQuotesCheckoutRoutes(app: Express) {
       }
 
       // D4: NJ checkout-gating — block order placement for NJ addresses
+      // P2-061: use shared NJ ZIP utility (USPS range 7000-8999)
       const quoteZip = quote.pickupZip || "";
       const quoteState = quote.pickupState || "";
-      const isNJAddress = quoteState.trim().toUpperCase() === "NJ" ||
-        quoteZip.startsWith("07") || quoteZip.startsWith("08");
+      const isNJAddress = quoteState.trim().toUpperCase() === "NJ" || isNJZip(quoteZip);
       if (isNJAddress) {
         return res.status(400).json({
           error: "NJ checkout not yet available",

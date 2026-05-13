@@ -492,9 +492,10 @@ export function registerCommsRoutes(app: Express) {
 
   // ── Enhanced refund with reason codes and partial refund support ──
   app.post("/api/payments/partial-refund", requireAuth(["admin", "manager"]), async (req, res) => {
+    // P2-024: renamed amount → amountCents with .int() constraint
     const PartialRefundBody = z.object({
       orderId: z.number(),
-      amount: z.number(),
+      amountCents: z.number().int().nonnegative(),
       reasonCode: z.enum(["damaged_items", "late_delivery", "wrong_items", "quality_issue", "customer_request", "overcharge", "other"]).optional(),
       notes: z.string().optional(),
     }).strip();
@@ -502,16 +503,16 @@ export function registerCommsRoutes(app: Express) {
     if (!parsedPR.success) {
       return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedPR.error.issues });
     }
-    const { orderId, amount, reasonCode, notes } = parsedPR.data;
+    const { orderId, amountCents, reasonCode, notes } = parsedPR.data;
 
     const order = await storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    const result = await issueStripeRefundForOrder(order, Number(amount), reasonCode === "overcharge" ? "duplicate" : "requested_by_customer", `refund-${order.id}-${Date.now()}`);
+    const result = await issueStripeRefundForOrder(order, amountCents, reasonCode === "overcharge" ? "duplicate" : "requested_by_customer", `refund-${order.id}-${Date.now()}`);
     if ("errorStatus" in result) {
       return res.status(result.errorStatus as number).json(result);
     }
-    logAdminAction(req, { action: "payment.partial_refund", entityType: "order", entityId: order.id, newValue: { amount: Number(amount), reasonCode, notes } });
+    logAdminAction(req, { action: "payment.partial_refund", entityType: "order", entityId: order.id, newValue: { amountCents, reasonCode, notes } });
 
     res.json({
       refundId: result.txn.id,

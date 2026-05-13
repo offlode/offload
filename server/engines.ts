@@ -204,8 +204,8 @@ export async function findBestDriver(pickupLat: number, pickupLng: number, vendo
 export function calculateSLADeadline(deliverySpeed: string, createdAt: string): string {
   const config = SLA_CONFIGS[deliverySpeed as keyof typeof SLA_CONFIGS] || SLA_CONFIGS["48h"];
   const created = new Date(createdAt);
-  created.setHours(created.getHours() + config.hours);
-  return created.toISOString();
+  // P2-032: use getTime() + millis to avoid setHours mutation pitfalls around DST
+  return new Date(created.getTime() + config.hours * 3600000).toISOString();
 }
 
 export function checkSLAStatus(order: Order): "on_track" | "at_risk" | "breached" {
@@ -443,11 +443,19 @@ export async function awardLoyaltyPoints(userId: number, orderId: number, orderT
   const user = await storage.getUser(userId);
   if (!user) return;
 
+  // P2-029: dedup — check if loyalty points already awarded for this order
+  const existingTxns = await storage.getLoyaltyTransactions(userId);
+  if (existingTxns.some(t => t.type === "earned" && t.orderId === orderId)) {
+    return; // already awarded
+  }
+
   const loyaltyConfig = await pricingConfig.getLoyaltyConfig();
   const tier = user.loyaltyTier || "bronze";
   const tierConfig = (loyaltyConfig.tiers as any)[tier];
   const multiplier = tierConfig?.multiplier || 1.0;
-  const basePoints = Math.floor(orderTotal * loyaltyConfig.pointsPerDollarEarned);
+  // P2-033: use totalCents (integer math) not float total
+  const totalCents = Math.round(orderTotal * 100);
+  const basePoints = Math.floor(totalCents * loyaltyConfig.pointsPerDollarEarned / 100);
   const pointsEarned = Math.floor(basePoints * multiplier);
 
   let bonusMultiplier = 1.0;
@@ -771,7 +779,8 @@ export const validTransitions: Record<string, string[]> = {
   arrived_delivery: [...(FSM_TRANSITIONS.arrived_delivery || []), "delivery_failed"],
   pickup_failed: ["scheduled", "cancelled"],
   delivery_failed: ["driver_en_route_delivery", "cancelled"],
-  confirmed: ["driver_assigned", "cancelled"],
+  // P2-019: include 'scheduled' (matches order-fsm.ts:47)
+  confirmed: ["scheduled", "driver_assigned", "cancelled"],
   pickup_in_progress: ["picked_up", "arrived_pickup"],
   at_laundromat: ["washing", "processing"],
   wash_complete: ["packing", "drying"],
@@ -845,7 +854,8 @@ export async function startBackgroundTasks() {
 
             const deliveryFee = order.deliveryFee || 0;
             const creditCents = dollarsToCreditCents(deliveryFee);
-            if (creditCents > 0 && !(order.customerNotes || "").includes("SLA_CREDIT_ISSUED")) {
+            // P2-021: dedup via dedicated slaCreditIssuedAt column instead of customerNotes scan
+            if (creditCents > 0 && !(order as any).slaCreditIssuedAt) {
               const customer = await storage.getUser(order.customerId);
               if (customer) {
                 const currentCredits = customer.credits || 0;
@@ -862,7 +872,7 @@ export async function startBackgroundTasks() {
                   `We're sorry your order was delayed. A ${formatCents(creditCents)} credit has been applied to your account.`,
                   `/orders/${order.id}`
                 );
-                await storage.updateOrder(order.id, { customerNotes: `${order.customerNotes || ""}\n[SLA_CREDIT_ISSUED:${creditCents}]` } as any);
+                await storage.updateOrder(order.id, { slaCreditIssuedAt: now() } as any);
               }
             }
           }

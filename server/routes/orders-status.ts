@@ -1,6 +1,8 @@
 import type { Express } from "express";
 import { z } from "zod";
-import { storage } from "../storage";
+import { eq, sql } from "drizzle-orm";
+import * as schema from "@shared/schema";
+import { storage, db } from "../storage";
 import { logAdminAction } from "../audit-helpers";
 import { TRANSITION_ACTORS } from "../order-fsm";
 import { requireAuth } from "../session";
@@ -118,54 +120,8 @@ export function registerOrdersStatusRoutes(app: Express) {
     if (status === "out_for_delivery") updateData.outForDeliveryAt = ts_;
     if (status === "delivered") {
       updateData.deliveredAt = ts_;
-      // Process payment capture on delivery
-      await processPaymentCapture(order);
-      // Award loyalty points
-      awardLoyaltyPoints(order.customerId, order.id, order.total || 0);
-      // Check if this completes a referral
-      const referrals_ = await storage.getReferralsByUser(order.customerId);
-      const pendingReferral = referrals_.find(r => r.refereeId === order.customerId && r.status === "pending");
-      if (pendingReferral) {
-        // First completed order — complete the referral
-        await storage.updateReferral(pendingReferral.id, {
-          status: "rewarded",
-          completedOrderId: order.id,
-          completedAt: ts_,
-        });
-        // Credit referrer $10 in points (1000 points = $10)
-        const referrer = await storage.getUser(pendingReferral.referrerId);
-        if (referrer) {
-          await storage.updateUser(referrer.id, {
-            loyaltyPoints: (referrer.loyaltyPoints || 0) + 1000,
-          });
-          await storage.createLoyaltyTransaction({
-            userId: referrer.id,
-            type: "referral",
-            points: 1000,
-            description: `Referral reward: your friend placed their first order!`,
-            createdAt: ts_,
-          });
-          await notifyUser(referrer.id, null, "loyalty",
-            "Referral Reward!",
-            `You earned 1,000 points because your referral placed their first order.`,
-            "/profile"
-          );
-        }
-        // Credit referee $10 in points
-        const referee = await storage.getUser(order.customerId);
-        if (referee) {
-          await storage.updateUser(referee.id, {
-            loyaltyPoints: (referee.loyaltyPoints || 0) + 1000,
-          });
-          await storage.createLoyaltyTransaction({
-            userId: referee.id,
-            type: "referral",
-            points: 1000,
-            description: "Referral completion bonus — thanks for your first order!",
-            createdAt: ts_,
-          });
-        }
-      }
+      // P2-016: payment capture + loyalty + referral moved AFTER the atomic
+      // transitionOrderStatus call below. Only set timestamp fields here.
     }
     if (status === "cancelled") {
       updateData.cancelledAt = ts_;
@@ -196,12 +152,11 @@ export function registerOrdersStatusRoutes(app: Express) {
           updateData.paymentStatus = "refunded";
         }
       }
-      // Release vendor capacity
+      // P2-023: Release vendor capacity with atomic SQL
       if (order.vendorId) {
-        const vendor = await storage.getVendor(order.vendorId);
-        if (vendor && (vendor.currentLoad || 0) > 0) {
-          await storage.updateVendor(vendor.id, { currentLoad: (vendor.currentLoad || 0) - 1 });
-        }
+        await db.update(schema.vendors)
+          .set({ currentLoad: sql`GREATEST(0, COALESCE(${schema.vendors.currentLoad}, 0) - 1)` } as any)
+          .where(eq(schema.vendors.id, order.vendorId));
       }
       // Free driver
       if (order.driverId) {
@@ -222,18 +177,55 @@ export function registerOrdersStatusRoutes(app: Express) {
       if (status === "delivered") updateData.deliveryPhotoUrl = photoUrl;
     }
 
-    await storage.transitionOrderStatus(order.id, order.status, status, {
-      eventType: status,
-      description: description || `Order status: ${status.replace(/_/g, " ")}`,
-      details: details ? (typeof details === "string" ? details : JSON.stringify(details)) : undefined,
-      actorId,
-      actorRole: actorRole || "system",
-      photoUrl,
-      lat,
-      lng,
-      timestamp: ts_,
-      orderUpdate: updateData,
-    } as any);
+    // P2-016: atomic transition FIRST; catch conflict for 409 response
+    try {
+      await storage.transitionOrderStatus(order.id, order.status, status, {
+        eventType: status,
+        description: description || `Order status: ${status.replace(/_/g, " ")}`,
+        details: details ? (typeof details === "string" ? details : JSON.stringify(details)) : undefined,
+        actorId,
+        actorRole: actorRole || "system",
+        photoUrl,
+        lat,
+        lng,
+        timestamp: ts_,
+        orderUpdate: updateData,
+      } as any);
+    } catch (transitionErr: any) {
+      if (transitionErr?.message?.includes("order_status_conflict") || transitionErr?.code === "23505") {
+        return res.status(409).json({ error: "Order status has changed — please retry" });
+      }
+      throw transitionErr;
+    }
+
+    // P2-016: Side-effects AFTER successful atomic status transition
+    if (status === "delivered") {
+      await processPaymentCapture(order);
+      awardLoyaltyPoints(order.customerId, order.id, order.total || 0);
+      // P2-030: atomic referral UPDATE — only proceed if row returned
+      const referrals_ = await storage.getReferralsByUser(order.customerId);
+      const pendingReferral = referrals_.find(r => r.refereeId === order.customerId && r.status === "pending");
+      if (pendingReferral) {
+        const [claimed] = await db.update(schema.referrals)
+          .set({ status: "rewarded", completedOrderId: order.id, completedAt: ts_ } as any)
+          .where(sql`${schema.referrals.id} = ${pendingReferral.id} AND ${schema.referrals.status} = 'pending'`)
+          .returning();
+        if (claimed) {
+          const referrer = await storage.getUser(pendingReferral.referrerId);
+          if (referrer) {
+            await storage.updateUser(referrer.id, { loyaltyPoints: (referrer.loyaltyPoints || 0) + 1000 });
+            await storage.createLoyaltyTransaction({ userId: referrer.id, type: "referral", points: 1000, description: "Referral reward: your friend placed their first order!", createdAt: ts_ });
+            await notifyUser(referrer.id, null, "loyalty", "Referral Reward!", "You earned 1,000 points because your referral placed their first order.", "/profile");
+          }
+          const referee = await storage.getUser(order.customerId);
+          if (referee) {
+            await storage.updateUser(referee.id, { loyaltyPoints: (referee.loyaltyPoints || 0) + 1000 });
+            await storage.createLoyaltyTransaction({ userId: referee.id, type: "referral", points: 1000, description: "Referral completion bonus — thanks for your first order!", createdAt: ts_ });
+          }
+        }
+      }
+    }
+
     if (currentUser.role === "admin" || currentUser.role === "manager") {
       await logAdminAction(req, { action: "order_status_override", entityType: "order", entityId: order.id, oldValue: { status: order.status }, newValue: { status } });
     }
@@ -342,12 +334,11 @@ export function registerOrdersStatusRoutes(app: Express) {
         const driver = await storage.getDriver(order.driverId);
         if (driver) await storage.updateDriver(driver.id, { status: "available" });
       }
-      // Free vendor capacity
+      // P2-023: Free vendor capacity with atomic SQL
       if (order.vendorId) {
-        const vendor = await storage.getVendor(order.vendorId);
-        if (vendor && (vendor.currentLoad || 0) > 0) {
-          await storage.updateVendor(vendor.id, { currentLoad: (vendor.currentLoad || 0) - 1 });
-        }
+        await db.update(schema.vendors)
+          .set({ currentLoad: sql`GREATEST(0, COALESCE(${schema.vendors.currentLoad}, 0) - 1)` } as any)
+          .where(eq(schema.vendors.id, order.vendorId));
       }
     }
 
@@ -355,7 +346,8 @@ export function registerOrdersStatusRoutes(app: Express) {
     if (status === "ready_for_delivery") {
       const vendorObj = order.vendorId ? await storage.getVendor(order.vendorId) : null;
       if (vendorObj) {
-        const returnDriver = await findBestDriver(vendorObj.lat || 25.78, vendorObj.lng || -80.19);
+        // P2-025: NYC fallback coords instead of Miami
+        const returnDriver = await findBestDriver(vendorObj.lat || 40.7128, vendorObj.lng || -74.0060);
         if (returnDriver) {
           await storage.updateOrder(order.id, { returnDriverId: returnDriver.id });
           await storage.updateDriver(returnDriver.id, { status: "busy", todayTrips: (returnDriver.todayTrips || 0) + 1 });

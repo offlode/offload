@@ -16,6 +16,7 @@ import {
 } from "../lib/stripe";
 import { getOrderEmailTemplate } from "../lib/email-templates";
 import { requireAuth } from "../session";
+import { isNJZip } from "../lib/nj-zip";
 import {
   generateOrderNumber, now,
   isVendorOpenNow, scoreVendor,
@@ -362,6 +363,17 @@ export function registerOrdersCrudRoutes(app: Express) {
   // ── CREATE ORDER (the main flow) ──
   app.post("/api/orders", requireAuth(), async (req, res) => {
     try {
+      // P2-027: idempotency key support — accept from header or body
+      const idempotencyKey = req.headers["idempotency-key"] as string || req.body?.idempotencyKey;
+      if (idempotencyKey) {
+        // Check for existing order with this key via raw query
+        const [existingOrder] = await db.select().from(schema.orders)
+          .where(eq((schema.orders as any).idempotencyKey, idempotencyKey));
+        if (existingOrder) {
+          return res.status(200).json(existingOrder);
+        }
+      }
+
       const currentUser = (req as any).currentUser;
       const customerId = currentUser.id;
       const OrderBody = z.object({
@@ -383,6 +395,7 @@ export function registerOrdersCrudRoutes(app: Express) {
         pricingTierId: z.number().optional().nullable(),
         tierName: z.string().optional().nullable(),
         selectedAddOns: z.array(z.any()).optional(),
+        idempotencyKey: z.string().optional(),
       }).strip();
       const parsed = OrderBody.safeParse(req.body);
       if (!parsed.success) {
@@ -401,7 +414,8 @@ export function registerOrdersCrudRoutes(app: Express) {
         if (addrForNJCheck) {
           const addrState = (addrForNJCheck.state || "").trim().toUpperCase();
           const addrZip = (addrForNJCheck.zip || "").trim();
-          const isNJAddr = addrState === "NJ" || addrZip.startsWith("07") || addrZip.startsWith("08");
+          // P2-061: use shared NJ ZIP utility (USPS range 7000-8999)
+          const isNJAddr = addrState === "NJ" || isNJZip(addrZip);
           if (isNJAddr) {
             return res.status(400).json({
               error: "NJ checkout not yet available",
@@ -573,6 +587,8 @@ export function registerOrdersCrudRoutes(app: Express) {
           promoCode: promoCode || null,
           loyaltyPointsRedeemed,
           aiPricingTier: surge.tier,
+          // P2-027: store idempotency key on order for dedup
+          idempotencyKey: idempotencyKey || null,
           createdAt: ts_,
           updatedAt: ts_,
         });

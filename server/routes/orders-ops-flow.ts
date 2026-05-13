@@ -420,16 +420,13 @@ export function registerOrdersFlowRoutes(app: Express) {
         if (order.status !== "processing" && order.status !== "washing" && order.status !== "wash_complete") {
           return res.status(400).json({ error: "Order must be in processing/washing to quality check" });
         }
-        await storage.updateOrder(order.id, {
-          status: "ready_for_delivery",
-          qualityCheckedAt: ts,
-          washCompletedAt: ts,
-        });
-        await storage.createOrderEvent({
-          orderId: order.id, eventType: "quality_checked",
+        // P2-015: Use transitionOrderStatus with proper fromStatus, not direct updateOrder
+        await storage.transitionOrderStatus(order.id, order.status, "ready_for_delivery", {
+          eventType: "quality_checked",
           description: "Quality check passed — order ready for delivery",
           actorId: currentUser.id, actorRole: currentUser.role, timestamp: ts,
-        });
+          orderUpdate: { qualityCheckedAt: ts, washCompletedAt: ts },
+        } as any);
         break;
 
       default:
@@ -463,28 +460,45 @@ export function registerOrdersFlowRoutes(app: Express) {
 
     const ts_ = now();
 
-    // If payment was captured, issue Stripe refund first
+    // P2-014: Transition status BEFORE issuing refund so FSM state is consistent
+    // if Stripe call fails. Use orderId-derived idempotency key.
+    try {
+      await storage.transitionOrderStatus(order.id, order.status, "cancelled", {
+        eventType: "cancelled",
+        description: parsedCancel.data.reason || "Order cancelled by customer",
+        actorId: currentUser.id,
+        actorRole: currentUser.role,
+        timestamp: ts_,
+        orderUpdate: { cancelledAt: ts_ },
+      } as any);
+    } catch (transitionErr: any) {
+      if (transitionErr?.message?.includes("order_status_conflict")) {
+        return res.status(409).json({ error: "Order status has changed — please retry" });
+      }
+      throw transitionErr;
+    }
+
+    // If payment was captured, issue Stripe refund AFTER transition
     if (order.paymentStatus === "captured" || order.paymentStatus === "paid") {
       try {
         const totalCents = Math.round((order.finalPrice ?? order.total ?? 0) * 100);
         if (totalCents > 0) {
-          const refundResult = await issueStripeRefundForOrder(order, totalCents, "requested_by_customer", `cancel-${order.id}-${Date.now()}`);
+          const idempotencyKey = `cancel-order-${order.id}`;
+          const refundResult = await issueStripeRefundForOrder(order, totalCents, "requested_by_customer", idempotencyKey);
           if (refundResult?.errorStatus) {
             console.error("[cancel] Stripe refund failed:", refundResult.error);
+            // Order is already cancelled; mark payment status for manual reconciliation
+            await storage.updateOrder(order.id, { paymentStatus: "refund_pending" } as any);
             return res.status(500).json({ error: "Refund failed — please contact support" });
           }
+          await storage.updateOrder(order.id, { paymentStatus: "refunded" });
         }
       } catch (refundErr) {
         console.error("[cancel] Stripe refund exception", refundErr);
+        await storage.updateOrder(order.id, { paymentStatus: "refund_pending" } as any);
         return res.status(500).json({ error: "Refund failed — please contact support" });
       }
     }
-
-    await storage.updateOrder(order.id, {
-      status: "cancelled",
-      cancelledAt: ts_,
-      paymentStatus: (order.paymentStatus === "captured" || order.paymentStatus === "paid") ? "refunded" : order.paymentStatus,
-    });
 
     // Restore redeemed loyalty points on cancellation
     if (order.loyaltyPointsRedeemed && order.loyaltyPointsRedeemed > 0) {
@@ -525,14 +539,7 @@ export function registerOrdersFlowRoutes(app: Express) {
       await storage.deletePromoUsageByOrder(order.id);
     }
 
-    await storage.createOrderEvent({
-      orderId: order.id,
-      eventType: "cancelled",
-      description: parsedCancel.data.reason || "Order cancelled by customer — full refund issued",
-      actorId: currentUser.id,
-      actorRole: currentUser.role,
-      timestamp: ts_,
-    });
+    // Order event already recorded by transitionOrderStatus above
 
     await notifyOrderUpdate(order, "Order Cancelled", "Your order has been cancelled and a full refund has been initiated.");
 

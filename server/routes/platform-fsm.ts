@@ -332,7 +332,8 @@ export function registerFsmRoutes(app: Express) {
     if (newStatus === "ready_for_delivery") {
       const vendorObj = order.vendorId ? await storage.getVendor(order.vendorId) : null;
       if (vendorObj) {
-        const returnDriver = await findBestDriver(vendorObj.lat || 25.78, vendorObj.lng || -80.19);
+        // P2-025: NYC fallback coords instead of Miami
+        const returnDriver = await findBestDriver(vendorObj.lat || 40.7128, vendorObj.lng || -74.0060);
         if (returnDriver) {
           updateData.returnDriverId = returnDriver.id;
           await storage.updateDriver(returnDriver.id, { status: "busy", todayTrips: (returnDriver.todayTrips || 0) + 1 });

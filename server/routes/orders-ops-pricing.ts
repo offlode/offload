@@ -365,6 +365,7 @@ export function registerOrdersOpsPricingRoutes(app: Express) {
   });
 
   app.post("/api/admin/promos", requireAuth(["admin"]), async (req, res) => {
+    // P2-031: validate percentage value is 0-100
     const PromoCreateBody = z.object({
       code: z.string().min(1),
       type: z.enum(["percentage", "fixed", "free_delivery"]),
@@ -372,7 +373,10 @@ export function registerOrdersOpsPricingRoutes(app: Express) {
       minOrderAmount: z.number().optional(),
       maxUses: z.number().optional(),
       expiresAt: z.string().optional().nullable(),
-    }).strip();
+    }).strip().refine(
+      (v) => v.type !== "percentage" || (v.value >= 0 && v.value <= 100),
+      { message: "Percentage promo value must be between 0 and 100" }
+    );
     const parsedPromo = PromoCreateBody.safeParse(req.body);
     if (!parsedPromo.success) {
       return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedPromo.error.issues });

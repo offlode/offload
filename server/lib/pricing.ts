@@ -277,6 +277,8 @@ export async function calculateQuotePrice(input: {
   const taxAmount = Math.round(taxableSubtotal * dbTaxRate * 100) / 100;
 
   // 9. Promo discount
+  // P2-022: percentage discount on subtotal only (pre-tax); fixed capped at subtotal.
+  // Recalculate tax AFTER discount.
   let discount = 0;
   if (input.promoCode) {
     const promo = await storage.getPromoCode(input.promoCode);
@@ -284,9 +286,9 @@ export async function calculateQuotePrice(input: {
       if (!promo.minOrderAmount || (subtotal + taxAmount) >= promo.minOrderAmount) {
         if (!promo.maxUses || (promo.usedCount ?? 0) < promo.maxUses) {
           if (promo.type === "percentage") {
-            discount = Math.round((subtotal + taxAmount) * (promo.value / 100) * 100) / 100;
+            discount = Math.round(subtotal * (promo.value / 100) * 100) / 100;
           } else if (promo.type === "fixed") {
-            discount = Math.min(promo.value, subtotal + taxAmount);
+            discount = Math.min(promo.value, subtotal);
           } else if (promo.type === "free_delivery") {
             discount = deliveryFee;
           }
@@ -295,8 +297,14 @@ export async function calculateQuotePrice(input: {
     }
   }
 
+  // P2-022: recalculate tax on discounted taxable subtotal
+  const discountedTaxableSubtotal = Math.max(0, taxableSubtotal - discount);
+  const finalTaxAmount = discount > 0
+    ? Math.round(discountedTaxableSubtotal * dbTaxRate * 100) / 100
+    : taxAmount;
+
   // 10. Total
-  const total = Math.max(0, Math.round((subtotal + taxAmount - discount) * 100) / 100);
+  const total = Math.max(0, Math.round((subtotal + finalTaxAmount - discount) * 100) / 100);
   if (!Number.isFinite(total)) throw new Error("pricing_invalid");
 
   // Build line items for display
@@ -344,7 +352,7 @@ export async function calculateQuotePrice(input: {
   for (const ao of addOnItems) {
     lineItems.push({ label: `${ao.name} x${ao.qty}`, amount: ao.price * ao.qty, type: "addon" });
   }
-  lineItems.push({ label: `Tax (${(dbTaxRate * 100).toFixed(3)}%)`, amount: taxAmount, type: "tax" });
+  lineItems.push({ label: `Tax (${(dbTaxRate * 100).toFixed(3)}%)`, amount: finalTaxAmount, type: "tax" });
   if (discount > 0) {
     lineItems.push({ label: `Promo discount (${input.promoCode})`, amount: -discount, type: "discount" });
   }
@@ -372,7 +380,7 @@ export async function calculateQuotePrice(input: {
     demandMultiplier: rawDemandMultiplier,
     demandReason,
     subtotal, subtotalCents: dollarsToCents(subtotal), taxRate: dbTaxRate,
-    taxAmount, taxAmountCents: dollarsToCents(taxAmount),
+    taxAmount: finalTaxAmount, taxAmountCents: dollarsToCents(finalTaxAmount),
     discount, discountCents: dollarsToCents(discount),
     total, totalCents: dollarsToCents(total),
     lineItems, tierName: normalizedTier, tierFlatPrice: tier.flatPrice, tierFlatPriceCents: dollarsToCents(tier.flatPrice),

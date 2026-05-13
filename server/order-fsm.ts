@@ -55,9 +55,10 @@ export const VALID_TRANSITIONS: Record<string, string[]> = {
   driver_en_route_facility: ['at_facility'],
   at_facility: ['processing', 'disputed'],
   processing: ['washing', 'disputed'],
-  washing: ['drying'],
-  drying: ['folding'],
-  folding: ['ready_for_delivery'],
+  // P2-020: add 'disputed' as valid transition from washing/drying/folding
+  washing: ['drying', 'disputed'],
+  drying: ['folding', 'disputed'],
+  folding: ['ready_for_delivery', 'disputed'],
   ready_for_delivery: ['driver_en_route_delivery'],
   driver_en_route_delivery: ['arrived_delivery', 'disputed'],
   // Legacy alias accepted by older clients/admin screens.
@@ -110,6 +111,10 @@ export const TRANSITION_ACTORS: Record<string, string[]> = {
   'out_for_delivery->disputed': ['customer', 'admin', 'manager'],
   'at_facility->disputed': ['customer', 'admin', 'manager'],
   'processing->disputed': ['customer', 'admin', 'manager'],
+  // P2-020: disputed from washing/drying/folding — restricted to admin/manager
+  'washing->disputed': ['admin', 'manager'],
+  'drying->disputed': ['admin', 'manager'],
+  'folding->disputed': ['admin', 'manager'],
   'disputed->delivered': ['admin', 'manager'],
   'disputed->refunded': ['admin', 'manager'],
   'disputed->cancelled': ['admin', 'manager'],

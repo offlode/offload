@@ -297,16 +297,26 @@ export function registerPaymentRoutes(app: Express) {
       });
     }
 
-    // Verified by Stripe. Flip txn + order, record payouts.
-    await storage.updatePaymentTransaction(chargeTxn.id, { status: "completed", completedAt: now() });
-    await storage.updateOrder(order.id, { paymentStatus: "captured" });
+    // P2-039: wrap updatePaymentTransaction + updateOrder + createOrderEvent
+    // in db.transaction(). recordPayoutsForCapturedOrder stays outside (has own tx).
+    const confirmTs = now();
+    await db.transaction(async (tx) => {
+      await tx.update(schema.paymentTransactions).set({
+        status: "completed",
+        completedAt: confirmTs,
+      } as any).where(eq(schema.paymentTransactions.id, chargeTxn.id));
+      await tx.update(schema.orders).set({
+        paymentStatus: "captured",
+        updatedAt: confirmTs,
+      } as any).where(eq(schema.orders.id, order.id));
+      await tx.insert(schema.orderEvents).values({
+        orderId: order.id, eventType: "payment_captured",
+        description: `Payment of $${order.total?.toFixed(2)} captured (admin-verified via Stripe)`,
+        timestamp: confirmTs,
+      } as any);
+    });
     const fresh = await storage.getOrder(order.id);
     if (fresh) await recordPayoutsForCapturedOrder(fresh);
-    await storage.createOrderEvent({
-      orderId: order.id, eventType: "payment_captured",
-      description: `Payment of $${order.total?.toFixed(2)} captured (admin-verified via Stripe)`,
-      timestamp: now(),
-    });
     logAdminAction(req, { action: "payment.confirm", entityType: "order", entityId: order.id, newValue: { paymentStatus: "captured" } });
     res.json({ status: "completed", orderId: order.id, intentStatus: stripePi.status });
   });
