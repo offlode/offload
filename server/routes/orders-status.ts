@@ -15,7 +15,8 @@ import {
   findBestDriver,
   validTransitions,
 } from "../engines";
-import { issueStripeRefundForOrder, sendOrderEmail } from "./orders-crud";
+import { sendOrderEmail } from "./orders-crud";
+import { cancelOrderSideEffects } from "../lib/order-cancel";
 
 export function registerOrdersStatusRoutes(app: Express) {
 
@@ -67,11 +68,18 @@ export function registerOrdersStatusRoutes(app: Express) {
       });
     }
 
-    // Security: enforce actor roles per transition (from order-fsm.ts TRANSITION_ACTORS)
+    // Security: enforce actor roles per transition (deny-by-default).
+    // If TRANSITION_ACTORS has no entry for a transition, only admin/manager may trigger it.
     const transitionKey = `${order.status}->${status}`;
     const allowedActors = TRANSITION_ACTORS[transitionKey as keyof typeof TRANSITION_ACTORS];
-    if (allowedActors && allowedActors.length > 0) {
-      if (!allowedActors.includes(currentUser.role as any) && currentUser.role !== "admin" && currentUser.role !== "manager") {
+    if (currentUser.role !== "admin" && currentUser.role !== "manager") {
+      if (!allowedActors || allowedActors.length === 0) {
+        return res.status(403).json({
+          error: `No actor roles configured for transition '${order.status}' → '${status}'; only admin/manager may perform it`,
+          allowedRoles: ["admin", "manager"],
+        });
+      }
+      if (!allowedActors.includes(currentUser.role as any)) {
         return res.status(403).json({
           error: `Role '${currentUser.role}' is not allowed to perform transition '${order.status}' → '${status}'`,
           allowedRoles: allowedActors,
@@ -125,50 +133,6 @@ export function registerOrdersStatusRoutes(app: Express) {
     }
     if (status === "cancelled") {
       updateData.cancelledAt = ts_;
-      // Wave 2: only mark "refunded" if there was actually something to refund.
-      // If a real Stripe charge was captured, attempt a real refund. Otherwise
-      // preserve current paymentStatus ("pending" / "failed" / etc.).
-      if (order.paymentStatus === "captured" || order.paymentStatus === "paid") {
-        const totalCents = Math.round(((order as any).finalPrice ?? order.total ?? 0) * 100);
-        if (totalCents > 0) {
-          try {
-            const refundResult: any = await issueStripeRefundForOrder(
-              order,
-              totalCents,
-              "requested_by_customer",
-              `patch-cancel-${order.id}-${Date.now()}`
-            );
-            if (refundResult && "errorStatus" in refundResult) {
-              return res.status(refundResult.errorStatus as number).json({
-                error: refundResult.error || "Refund failed",
-              });
-            }
-            updateData.paymentStatus = refundResult?.paymentStatus || "refunded";
-          } catch (err: any) {
-            console.error("[PATCH cancel] Stripe refund failed:", err?.message);
-            return res.status(500).json({ error: "Refund failed; cancel aborted." });
-          }
-        } else {
-          updateData.paymentStatus = "refunded";
-        }
-      }
-      // P2-023: Release vendor capacity with atomic SQL
-      if (order.vendorId) {
-        await db.update(schema.vendors)
-          .set({ currentLoad: sql`GREATEST(0, COALESCE(${schema.vendors.currentLoad}, 0) - 1)` } as any)
-          .where(eq(schema.vendors.id, order.vendorId));
-      }
-      // Free driver
-      if (order.driverId) {
-        const driver = await storage.getDriver(order.driverId);
-        if (driver) {
-          await storage.updateDriver(driver.id, { status: "available" });
-        }
-      }
-      // Delete per-user promo usage on cancellation
-      if (order.promoCode) {
-        await storage.deletePromoUsageByOrder(order.id);
-      }
     }
 
     // If photo provided (pickup proof, delivery proof)
@@ -196,6 +160,11 @@ export function registerOrdersStatusRoutes(app: Express) {
         return res.status(409).json({ error: "Order status has changed — please retry" });
       }
       throw transitionErr;
+    }
+
+    // P3-001: Cancel side-effects AFTER successful FSM transition (mirroring POST cancel endpoint)
+    if (status === "cancelled") {
+      await cancelOrderSideEffects(order, ts_);
     }
 
     // P2-016: Side-effects AFTER successful atomic status transition

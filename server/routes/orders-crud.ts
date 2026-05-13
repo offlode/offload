@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import * as schema from "@shared/schema";
 import { PRICING_TIERS } from "@shared/schema";
 import type { Order } from "@shared/schema";
@@ -166,7 +166,7 @@ export function registerOrdersCrudRoutes(app: Express) {
 
     res.json({
       ...sanitizedOrder,
-      ...(userRole === "admin" || userRole === "manager" ? enrichAdminOrder(order) : {}),
+      ...(userRole === "admin" || userRole === "manager" ? await enrichAdminOrder(order) : {}),
       events,
       statusHistory: await storage.getOrderStatusHistory(order.id),
       // Customers see vendor name + address (so they know where their laundry is) but not rating-internals or vendor IDs they can't act on.
@@ -354,7 +354,7 @@ export function registerOrdersCrudRoutes(app: Express) {
             if (!promoRow.minOrderAmount || surgeTotal >= promoRow.minOrderAmount) {
               if (!promoRow.maxUses || (promoRow.usedCount ?? 0) < promoRow.maxUses) {
                 if (promoRow.type === "percentage") {
-                  discount = Math.round(surgeTotal * (promoRow.value / 100) * 100) / 100;
+                  discount = Math.round(surgeSubtotal * (promoRow.value / 100) * 100) / 100;
                 } else if (promoRow.type === "fixed") {
                   discount = Math.min(promoRow.value, surgeTotal);
                 } else if (promoRow.type === "free_delivery") {
@@ -518,14 +518,14 @@ export function registerOrdersCrudRoutes(app: Express) {
 
       // ── STEP 3: Auto-dispatch vendor ──
       const addr = await storage.getAddress(pickupAddressId);
-      const pickupLat = addr?.lat || 25.78;
-      const pickupLng = addr?.lng || -80.19;
+      const pickupLat = addr?.lat || 40.7128;
+      const pickupLng = addr?.lng || -74.0060;
 
       const scheduledPickupAt2 = order.scheduledPickup ? (() => { try { return new Date(order.scheduledPickup!); } catch { return new Date(); } })() : new Date();
       const bestVendor = await findBestVendor(order, pickupLat, pickupLng, scheduledPickupAt2);
       if (bestVendor) {
         await storage.updateOrder(order.id, { vendorId: bestVendor.id, aiMatchScore: scoreVendor(bestVendor, order, pickupLat, pickupLng) });
-        await storage.updateVendor(bestVendor.id, { currentLoad: (bestVendor.currentLoad || 0) + 1 });
+        await db.update(schema.vendors).set({ currentLoad: sql`COALESCE(${schema.vendors.currentLoad}, 0) + 1` } as any).where(eq(schema.vendors.id, bestVendor.id));
         await storage.createOrderEvent({
           orderId: order.id,
           eventType: "vendor_assigned",

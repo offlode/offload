@@ -16,7 +16,8 @@ import {
   calculatePredictiveETA,
   validTransitions,
 } from "../engines";
-import { issueStripeRefundForOrder, sendOrderEmail } from "./orders-crud";
+import { sendOrderEmail } from "./orders-crud";
+import { cancelOrderSideEffects } from "../lib/order-cancel";
 
 export function registerOrdersFlowRoutes(app: Express) {
 
@@ -453,7 +454,7 @@ export function registerOrdersFlowRoutes(app: Express) {
     }
 
     // Can only cancel before washing starts
-    const cancellableStatuses = ["pending", "scheduled", "driver_assigned", "driver_en_route_pickup", "arrived_pickup", "pickup_in_progress"];
+    const cancellableStatuses = ["pending", "confirmed", "scheduled", "driver_assigned", "driver_en_route_pickup", "arrived_pickup", "pickup_in_progress"];
     if (!cancellableStatuses.includes(order.status)) {
       return res.status(400).json({ error: "Order cannot be cancelled at this stage. Please file a dispute instead." });
     }
@@ -478,68 +479,8 @@ export function registerOrdersFlowRoutes(app: Express) {
       throw transitionErr;
     }
 
-    // If payment was captured, issue Stripe refund AFTER transition
-    if (order.paymentStatus === "captured" || order.paymentStatus === "paid") {
-      try {
-        const totalCents = Math.round((order.finalPrice ?? order.total ?? 0) * 100);
-        if (totalCents > 0) {
-          const idempotencyKey = `cancel-order-${order.id}`;
-          const refundResult = await issueStripeRefundForOrder(order, totalCents, "requested_by_customer", idempotencyKey);
-          if (refundResult?.errorStatus) {
-            console.error("[cancel] Stripe refund failed:", refundResult.error);
-            // Order is already cancelled; mark payment status for manual reconciliation
-            await storage.updateOrder(order.id, { paymentStatus: "refund_pending" } as any);
-            return res.status(500).json({ error: "Refund failed — please contact support" });
-          }
-          await storage.updateOrder(order.id, { paymentStatus: "refunded" });
-        }
-      } catch (refundErr) {
-        console.error("[cancel] Stripe refund exception", refundErr);
-        await storage.updateOrder(order.id, { paymentStatus: "refund_pending" } as any);
-        return res.status(500).json({ error: "Refund failed — please contact support" });
-      }
-    }
-
-    // Restore redeemed loyalty points on cancellation
-    if (order.loyaltyPointsRedeemed && order.loyaltyPointsRedeemed > 0) {
-      const user = await storage.getUser(order.customerId);
-      if (user) {
-        await storage.updateUser(order.customerId, {
-          loyaltyPoints: (user.loyaltyPoints || 0) + order.loyaltyPointsRedeemed,
-        });
-        await storage.createLoyaltyTransaction({
-          userId: order.customerId,
-          orderId: order.id,
-          type: "bonus",
-          points: order.loyaltyPointsRedeemed,
-          description: `Points restored after order cancellation`,
-          createdAt: ts_,
-        });
-      }
-    }
-
-    // Release resources
-    if (order.vendorId) {
-      const vendor = await storage.getVendor(order.vendorId);
-      if (vendor && (vendor.currentLoad || 0) > 0) {
-        await storage.updateVendor(vendor.id, { currentLoad: (vendor.currentLoad || 0) - 1 });
-      }
-    }
-    if (order.driverId) {
-      const driver = await storage.getDriver(order.driverId);
-      if (driver) await storage.updateDriver(driver.id, { status: "available" });
-    }
-
-    // Decrement promo usedCount and delete per-user usage on cancellation
-    if (order.promoCode) {
-      const promo = await storage.getPromoCode(order.promoCode);
-      if (promo && (promo.usedCount || 0) > 0) {
-        await storage.updatePromoCode(promo.id, { usedCount: (promo.usedCount || 0) - 1 });
-      }
-      await storage.deletePromoUsageByOrder(order.id);
-    }
-
-    // Order event already recorded by transitionOrderStatus above
+    // P3-004: shared cancel side-effects (refund, loyalty restore, capacity, driver, promo)
+    await cancelOrderSideEffects(order, ts_);
 
     await notifyOrderUpdate(order, "Order Cancelled", "Your order has been cancelled and a full refund has been initiated.");
 

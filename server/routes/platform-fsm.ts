@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import * as schema from "@shared/schema";
 import type { Order } from "@shared/schema";
 import { storage, db, logStripeReconciliation } from "../storage";
@@ -140,10 +140,7 @@ export function registerFsmRoutes(app: Express) {
         if (order.paymentStatus) updateData.paymentStatus = order.paymentStatus;
       }
       if (order.vendorId) {
-        const vendor = await storage.getVendor(order.vendorId);
-        if (vendor && (vendor.currentLoad || 0) > 0) {
-          await storage.updateVendor(vendor.id, { currentLoad: (vendor.currentLoad || 0) - 1 });
-        }
+        await db.update(schema.vendors).set({ currentLoad: sql`GREATEST(0, COALESCE(${schema.vendors.currentLoad}, 0) - 1)` } as any).where(eq(schema.vendors.id, order.vendorId));
       }
       if (order.driverId) {
         const driver = await storage.getDriver(order.driverId);
@@ -162,10 +159,7 @@ export function registerFsmRoutes(app: Express) {
         if (driver) await storage.updateDriver(driver.id, { status: "available" });
       }
       if (order.vendorId) {
-        const vendor = await storage.getVendor(order.vendorId);
-        if (vendor && (vendor.currentLoad || 0) > 0) {
-          await storage.updateVendor(vendor.id, { currentLoad: (vendor.currentLoad || 0) - 1 });
-        }
+        await db.update(schema.vendors).set({ currentLoad: sql`GREATEST(0, COALESCE(${schema.vendors.currentLoad}, 0) - 1)` } as any).where(eq(schema.vendors.id, order.vendorId));
       }
     }
 

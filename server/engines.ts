@@ -783,7 +783,7 @@ export const validTransitions: Record<string, string[]> = {
   confirmed: ["scheduled", "driver_assigned", "cancelled"],
   pickup_in_progress: ["picked_up", "arrived_pickup"],
   at_laundromat: ["washing", "processing"],
-  wash_complete: ["packing", "drying"],
+  wash_complete: ["packing", "drying", "ready_for_delivery"],
   packing: ["ready_for_delivery", "folding"],
   out_for_delivery: ["delivered", "arrived_delivery"],
 };

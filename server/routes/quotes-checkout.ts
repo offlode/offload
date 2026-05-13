@@ -436,7 +436,7 @@ export function registerQuotesCheckoutRoutes(app: Express) {
         if (selectedVendor) {
           assignedVendorId = selectedVendor.id;
           await storage.updateOrder(order.id, { vendorId: selectedVendor.id });
-          await storage.updateVendor(selectedVendor.id, { currentLoad: (selectedVendor.currentLoad || 0) + 1 });
+          await db.update(schema.vendors).set({ currentLoad: sql`COALESCE(${schema.vendors.currentLoad}, 0) + 1` } as any).where(eq(schema.vendors.id, selectedVendor.id));
           await storage.createOrderEvent({
             orderId: order.id,
             eventType: "vendor_assigned",
@@ -453,7 +453,7 @@ export function registerQuotesCheckoutRoutes(app: Express) {
         if (bestVendor) {
           assignedVendorId = bestVendor.id;
           await storage.updateOrder(order.id, { vendorId: bestVendor.id, aiMatchScore: scoreVendor(bestVendor, order, pickupLat, pickupLng) });
-          await storage.updateVendor(bestVendor.id, { currentLoad: (bestVendor.currentLoad || 0) + 1 });
+          await db.update(schema.vendors).set({ currentLoad: sql`COALESCE(${schema.vendors.currentLoad}, 0) + 1` } as any).where(eq(schema.vendors.id, bestVendor.id));
           await storage.createOrderEvent({
             orderId: order.id,
             eventType: "vendor_assigned",

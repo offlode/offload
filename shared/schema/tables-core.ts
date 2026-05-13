@@ -351,6 +351,7 @@ export const orders = pgTable("orders", {
   outForDeliveryAt: timestamptz("out_for_delivery_at"),
   deliveredAt: timestamptz("delivered_at"),
   cancelledAt: timestamptz("cancelled_at"),
+  slaCreditIssuedAt: timestamptz("sla_credit_issued_at"),
   createdAt: timestamptz("created_at").notNull(),
   updatedAt: timestamptz("updated_at").notNull(),
 }, (table) => ({

@@ -54,9 +54,10 @@ export const VALID_TRANSITIONS: Record<string, string[]> = {
   picked_up: ['driver_en_route_facility'],
   driver_en_route_facility: ['at_facility'],
   at_facility: ['processing', 'disputed'],
-  processing: ['washing', 'disputed'],
+  processing: ['washing', 'ready_for_delivery', 'disputed'],
   // P2-020: add 'disputed' as valid transition from washing/drying/folding
-  washing: ['drying', 'disputed'],
+  // P3-007: quality_check can skip remaining processing steps to ready_for_delivery
+  washing: ['drying', 'ready_for_delivery', 'disputed'],
   drying: ['folding', 'disputed'],
   folding: ['ready_for_delivery', 'disputed'],
   ready_for_delivery: ['driver_en_route_delivery'],
@@ -102,12 +103,18 @@ export const TRANSITION_ACTORS: Record<string, string[]> = {
   'washing->drying': ['laundromat'],
   'drying->folding': ['laundromat'],
   'folding->ready_for_delivery': ['laundromat'],
+  // P3-007: quality_check skip — vendor can jump to ready_for_delivery from processing/washing
+  'processing->ready_for_delivery': ['laundromat', 'vendor'],
+  'washing->ready_for_delivery': ['laundromat', 'vendor'],
   'ready_for_delivery->driver_en_route_delivery': ['driver'],
   'driver_en_route_delivery->arrived_delivery': ['driver', 'system'],
   'arrived_delivery->delivered': ['driver'],
   'delivered->completed': ['system'],
   'delivered->disputed': ['customer', 'admin', 'manager'],
   'driver_en_route_delivery->disputed': ['customer', 'admin', 'manager'],
+  // Legacy alias transitions
+  'out_for_delivery->delivered': ['driver'],
+  'out_for_delivery->arrived_delivery': ['driver', 'system'],
   'out_for_delivery->disputed': ['customer', 'admin', 'manager'],
   'at_facility->disputed': ['customer', 'admin', 'manager'],
   'processing->disputed': ['customer', 'admin', 'manager'],
