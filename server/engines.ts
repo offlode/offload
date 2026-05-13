@@ -855,7 +855,7 @@ export async function startBackgroundTasks() {
             const deliveryFee = order.deliveryFee || 0;
             const creditCents = dollarsToCreditCents(deliveryFee);
             // P2-021: dedup via dedicated slaCreditIssuedAt column instead of customerNotes scan
-            if (creditCents > 0 && !(order as any).slaCreditIssuedAt) {
+            if (creditCents > 0 && !order.slaCreditIssuedAt) {
               const customer = await storage.getUser(order.customerId);
               if (customer) {
                 const currentCredits = customer.credits || 0;
@@ -872,7 +872,7 @@ export async function startBackgroundTasks() {
                   `We're sorry your order was delayed. A ${formatCents(creditCents)} credit has been applied to your account.`,
                   `/orders/${order.id}`
                 );
-                await storage.updateOrder(order.id, { slaCreditIssuedAt: now() } as any);
+                await storage.updateOrder(order.id, { slaCreditIssuedAt: now() });
               }
             }
           }

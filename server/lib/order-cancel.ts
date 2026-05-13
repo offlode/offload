@@ -78,11 +78,13 @@ export async function cancelOrderSideEffects(
     }
   }
 
-  // 5. Decrement promo usedCount + delete per-user usage
+  // 5. Decrement promo usedCount (atomic SQL) + delete per-user usage
   if (order.promoCode) {
     const promo = await storage.getPromoCode(order.promoCode);
-    if (promo && (promo.usedCount || 0) > 0) {
-      await storage.updatePromoCode(promo.id, { usedCount: (promo.usedCount || 0) - 1 });
+    if (promo) {
+      await db.update(schema.promoCodes)
+        .set({ usedCount: sql`GREATEST(0, COALESCE(${schema.promoCodes.usedCount}, 0) - 1)` } as any)
+        .where(eq(schema.promoCodes.id, promo.id));
     }
     await storage.deletePromoUsageByOrder(order.id);
   }

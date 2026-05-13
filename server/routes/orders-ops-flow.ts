@@ -137,14 +137,21 @@ export function registerOrdersFlowRoutes(app: Express) {
 
     let updated: any;
     if (effectivePatch.status && effectivePatch.status !== order.status) {
-      updated = await storage.transitionOrderStatus(order.id, order.status, effectivePatch.status, {
-        eventType: "status_change",
-        description: `Order ${effectivePatch.status} (admin assignment)`,
-        actorId: currentUser.id,
-        actorRole: currentUser.role,
-        timestamp: now(),
-        orderUpdate: effectivePatch,
-      } as any);
+      try {
+        updated = await storage.transitionOrderStatus(order.id, order.status, effectivePatch.status, {
+          eventType: "status_change",
+          description: `Order ${effectivePatch.status} (admin assignment)`,
+          actorId: currentUser.id,
+          actorRole: currentUser.role,
+          timestamp: now(),
+          orderUpdate: effectivePatch,
+        } as any);
+      } catch (err: any) {
+        if (err.message?.includes("order_status_conflict")) {
+          return res.status(409).json({ error: "Order status has changed — please refresh and retry", code: "ORDER_STATUS_CONFLICT" });
+        }
+        throw err;
+      }
       if (currentUser.role === "admin" || currentUser.role === "manager") {
         await logAdminAction(req, { action: "order_status_override", entityType: "order", entityId: order.id, oldValue: { status: order.status }, newValue: { status: effectivePatch.status } });
       }

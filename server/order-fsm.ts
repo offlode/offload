@@ -255,13 +255,14 @@ export function validateTransition(
     };
   }
 
-  if (actorRole) {
+  if (actorRole && actorRole !== "admin" && actorRole !== "manager") {
     const transitionKey = `${currentStatus}->${newStatus}`;
     const allowedActors = TRANSITION_ACTORS[transitionKey];
-    if (allowedActors && !allowedActors.includes(actorRole)) {
+    // Default-deny: if no actors are configured for this transition, block it
+    if (!allowedActors || !allowedActors.includes(actorRole)) {
       return {
         valid: false,
-        error: `Role '${actorRole}' cannot trigger transition from '${currentStatus}' to '${newStatus}'. Allowed: ${allowedActors.join(', ')}`,
+        error: `Role '${actorRole}' cannot trigger transition from '${currentStatus}' to '${newStatus}'. Allowed: ${allowedActors?.join(', ') || 'none'}`,
         allowed,
       };
     }

@@ -152,6 +152,16 @@ export function registerWebhookRoutes(app: Express) {
               if (freshOrder) await recordPayoutsForCapturedOrder(freshOrder);
               // Trigger email notification
               await sendOrderEmail(order, "payment_confirmed");
+            } else {
+              // Orphaned PI: Stripe confirmed payment but no matching order in DB
+              console.warn(`[webhook] payment_intent.succeeded: no order found for orderId=${orderId}, PI=${pi.id}`);
+              await logStripeReconciliation({
+                stripeEventId: event.id,
+                stripeResourceId: pi.id,
+                action: "payment_intent_orphan",
+                dbState: JSON.stringify({ orderId, found: false }),
+                notes: "PaymentIntent succeeded but no matching order — needs manual reconciliation",
+              });
             }
           }
           break;
@@ -184,7 +194,8 @@ export function registerWebhookRoutes(app: Express) {
             const orderId = Number(charge.metadata.orderId);
             const isPartial = charge.amount_refunded < charge.amount;
             const newPaymentStatus = isPartial ? "partially_refunded" : "refunded";
-            const refundAmountCents = charge.amount_refunded || 0;
+            // Use latest incremental refund (data[0] is most recent), not cumulative amount_refunded
+            const refundAmountCents = charge.refunds?.data?.[0]?.amount ?? charge.amount_refunded ?? 0;
             const ts_refund = now();
             await db.transaction(async (tx) => {
               await tx.update(schema.orders).set({
