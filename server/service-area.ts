@@ -187,11 +187,11 @@ export async function checkCoverage(q: CoverageQuery): Promise<CoverageResult> {
   }
 
   // Build a helpful reason
+  // Default + zero-active-vendors case both show the standard "coming soon" copy
+  // so customers see a clear lead-capture message instead of a transient-error message.
   let reason = "We do not have laundromats available in your area yet. Offload is coming soon to your area.";
   if (failures.missingCapability > 0 && (failures.notInZip + failures.outsideRadius) === 0) {
     reason = `We service your area but no laundromat currently offers ${q.service?.replace(/_/g, " ") || "this service"}. We'll let you know when it's available.`;
-  } else if (totalActive === 0) {
-    reason = "Service is temporarily unavailable. Please try again shortly.";
   }
 
   return {
