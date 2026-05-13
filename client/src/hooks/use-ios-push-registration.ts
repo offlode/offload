@@ -4,10 +4,17 @@ import { PushNotifications } from "@capacitor/push-notifications";
 import { apiRequest } from "@/lib/queryClient";
 import type { User } from "@shared/schema";
 
+/**
+ * Register for push notifications on native platforms (iOS + Android).
+ * iOS uses APNs, Android uses FCM (requires google-services.json in the build).
+ */
 export function useIOSPushRegistration(user: User | null) {
   useEffect(() => {
     if (!user) return;
-    if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "ios") return;
+    if (!Capacitor.isNativePlatform()) return;
+
+    const platform = Capacitor.getPlatform() as "ios" | "android";
+    if (platform !== "ios" && platform !== "android") return;
 
     let cancelled = false;
     let registrationHandle: { remove: () => Promise<void> } | undefined;
@@ -20,12 +27,12 @@ export function useIOSPushRegistration(user: User | null) {
           await apiRequest("/api/push/register-token", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ token: token.value, platform: "ios" }),
+            body: JSON.stringify({ token: token.value, platform }),
           });
         });
 
         errorHandle = await PushNotifications.addListener("registrationError", error => {
-          console.error("[Push] Registration failed", error);
+          console.error(`[Push] ${platform} registration failed`, error);
         });
 
         const permission = await PushNotifications.requestPermissions();
@@ -33,7 +40,7 @@ export function useIOSPushRegistration(user: User | null) {
           await PushNotifications.register();
         }
       } catch (err) {
-        console.error("[Push] Unable to register for notifications", err);
+        console.error(`[Push] Unable to register for ${platform} notifications`, err);
       }
     }
 

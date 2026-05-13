@@ -45,6 +45,17 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.offloadusa.app</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>offload</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Offload uses the camera to let drivers and laundromat staff capture photos of laundry bags at pickup, weigh-in, and delivery for an accurate, transparent record.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
@@ -57,5 +68,7 @@
 	<string>Offload uses your location, including in the background for drivers, to keep customers updated with live pickup and delivery progress.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Offload uses the microphone only when you record a voice note about an order — audio is never captured otherwise.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Offload uses Bluetooth to communicate with smart weight scales for accurate laundry pricing.</string>
 </dict>
 </plist>

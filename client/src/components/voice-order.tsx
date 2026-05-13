@@ -124,6 +124,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Reset on open and check voice endpoint health
   useEffect(() => {
@@ -144,6 +145,10 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
   }, [open]);
 
   const stopRecording = useCallback(() => {
+    if (recordingTimerRef.current) {
+      clearTimeout(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
     }
@@ -155,12 +160,14 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      // Prefer webm/opus; fall back to whatever the browser supports
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : MediaRecorder.isTypeSupported("audio/webm")
-        ? "audio/webm"
-        : "";
+      // Codec preference chain: mp4 first (iOS Safari), then webm, then browser default
+      const codecPreferences = [
+        "audio/mp4",
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/ogg;codecs=opus",
+      ];
+      const mimeType = codecPreferences.find((m) => MediaRecorder.isTypeSupported(m)) || "";
 
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
       mediaRecorderRef.current = recorder;
@@ -171,14 +178,23 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
 
       recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(chunksRef.current, {
-          type: mimeType || "audio/webm",
-        });
+        // Use the actual MIME type from the recorder (more reliable than our preference)
+        const actualMime = recorder.mimeType || mimeType || "audio/webm";
+        const blob = new Blob(chunksRef.current, { type: actualMime });
         await processAudio(blob);
       };
 
       recorder.start();
       setIsRecording(true);
+
+      // Auto-stop after 60 seconds to stay within Whisper's 25MB limit
+      recordingTimerRef.current = setTimeout(() => {
+        stopRecording();
+        toast({
+          title: "Recording limit reached",
+          description: "Maximum 60 seconds. Processing your recording now.",
+        });
+      }, 60_000);
     } catch (err: any) {
       toast({
         title: "Microphone access denied",
@@ -186,7 +202,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
         variant: "destructive",
       });
     }
-  }, [lang]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [lang, stopRecording]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function processAudio(blob: Blob) {
     setStep("processing");
@@ -195,14 +211,26 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
     try {
       // 1. Transcribe
       const formData = new FormData();
-      const ext = blob.type.includes("webm") ? "webm" : blob.type.includes("mp4") ? "mp4" : "webm";
+      const ext = blob.type.includes("mp4") ? "mp4"
+        : blob.type.includes("ogg") ? "ogg"
+        : blob.type.includes("webm") ? "webm"
+        : "webm";
       formData.append("audio", blob, `voice.${ext}`);
 
-      const transcribeRes = await fetch("/api/voice/transcribe", {
-        method: "POST",
-        body: formData,
-        credentials: "include",
-      });
+      const transcribeController = new AbortController();
+      const transcribeTimeout = setTimeout(() => transcribeController.abort(), 30_000);
+
+      let transcribeRes: Response;
+      try {
+        transcribeRes = await fetch("/api/voice/transcribe", {
+          method: "POST",
+          body: formData,
+          credentials: "include",
+          signal: transcribeController.signal,
+        });
+      } finally {
+        clearTimeout(transcribeTimeout);
+      }
 
       if (!transcribeRes.ok) {
         const err = await transcribeRes.json().catch(() => ({}));
@@ -233,12 +261,21 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
       setProcessingLabel("Extracting order details…");
 
       // 2. Extract
-      const extractRes = await fetch("/api/voice/extract", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript: text, language: detectedLang }),
-      });
+      const extractController = new AbortController();
+      const extractTimeout = setTimeout(() => extractController.abort(), 30_000);
+
+      let extractRes: Response;
+      try {
+        extractRes = await fetch("/api/voice/extract", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transcript: text, language: detectedLang }),
+          signal: extractController.signal,
+        });
+      } finally {
+        clearTimeout(extractTimeout);
+      }
 
       if (!extractRes.ok) {
         const err = await extractRes.json().catch(() => ({}));
@@ -270,9 +307,12 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
       setStep("confirm");
     } catch (err: any) {
       console.error("[VoiceOrder]", err);
+      const isTimeout = err?.name === "AbortError";
       toast({
-        title: "Voice processing failed",
-        description: err?.message || "Try again or enter your order manually.",
+        title: isTimeout ? "Voice service taking too long" : "Voice processing failed",
+        description: isTimeout
+          ? "Please try again."
+          : (err?.message || "Try again or enter your order manually."),
         variant: "destructive",
       });
       setStep("record");

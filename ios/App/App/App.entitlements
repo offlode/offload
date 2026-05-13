@@ -8,5 +8,10 @@
 	</array>
 	<key>aps-environment</key>
 	<string>production</string>
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:offloadusa.com</string>
+		<string>applinks:www.offloadusa.com</string>
+	</array>
 </dict>
 </plist>
