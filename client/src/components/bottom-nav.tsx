@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Home, ClipboardList, User, MessageCircle, Gift } from "lucide-react";
+import { Home, ClipboardList, User, MessageCircle, Gift, HelpCircle } from "lucide-react";
 import { useAuth } from "@/contexts/auth-context";
 import { NotificationBell } from "@/components/notification-bell";
 

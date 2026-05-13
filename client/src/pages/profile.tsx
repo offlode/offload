@@ -434,7 +434,7 @@ export default function ProfilePage() {
             label="Help Center"
             value="FAQs and support"
             color="bg-muted text-muted-foreground"
-            onClick={() => setHelpOpen(true)}
+            onClick={() => navigate("/support")}
           />
           <SettingsRow
             icon={<LogOut className="w-4 h-4" />}

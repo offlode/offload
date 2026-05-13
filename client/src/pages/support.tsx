@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
+import { Link } from "wouter";
 import {
   HelpCircle, ChevronDown, ChevronUp, Mail, MessageSquare, Send,
   Phone,
@@ -258,11 +259,11 @@ export default function SupportPage() {
               <p className="text-xs text-muted-foreground mb-3">
                 Our in-app chat connects you with our support team in real time.
               </p>
-              <a href="#/chat">
+              <Link href="/chat">
                 <Button size="sm" variant="secondary" data-testid="button-open-chat">
                   Open Chat
                 </Button>
-              </a>
+              </Link>
             </div>
           </div>
         </Card>
