@@ -1281,6 +1281,14 @@ export async function registerRoutes(
     return { items: sliced, total: items.length, limit: pagination.limit, offset: pagination.offset };
   }
 
+  function camelizeRow(row: Record<string, any>) {
+    const out: Record<string, any> = {};
+    for (const [key, value] of Object.entries(row)) {
+      out[key.replace(/_([a-z])/g, (_m, ch: string) => ch.toUpperCase())] = value;
+    }
+    return out;
+  }
+
   // Set Socket.io reference for emit helpers
   setIO(io);
 
@@ -1878,7 +1886,14 @@ export async function registerRoutes(
       const cancellable = ["pending", "scheduled", "confirmed", "driver_assigned"];
       for (const order of userOrders) {
         if (cancellable.includes(order.status)) {
-          await storage.updateOrder(order.id, { status: "cancelled", cancelledAt: now() });
+          await storage.transitionOrderStatus(order.id, order.status, "cancelled", {
+            eventType: "account_deleted_cancelled",
+            description: "Order cancelled because customer deleted account",
+            actorId: user.id,
+            actorRole: user.role,
+            timestamp: now(),
+            orderUpdate: { cancelledAt: now() },
+          } as any);
         }
       }
 
@@ -3124,14 +3139,13 @@ export async function registerRoutes(
       });
 
       // Auto-confirm
-      await storage.updateOrder(order.id, { status: "scheduled", confirmedAt: now() });
-      await storage.createOrderEvent({
-        orderId: order.id,
+      await storage.transitionOrderStatus(order.id, order.status, "scheduled", {
         eventType: "order_scheduled",
         description: "Order scheduled — finding best match",
         actorRole: "system",
         timestamp: now(),
-      });
+        orderUpdate: { confirmedAt: now() },
+      } as any);
 
       // Auto-dispatch vendor
       const pickupLat = quote.pickupLat || 40.7128;
@@ -3191,19 +3205,15 @@ export async function registerRoutes(
       // Auto-assign driver (prefer vendor-owned drivers when present)
       const bestDriver = await findBestDriver(pickupLat, pickupLng, assignedVendorId);
       if (bestDriver) {
-        await storage.updateOrder(order.id, { status: "driver_assigned", driverId: bestDriver.id });
-        await storage.updateDriver(bestDriver.id, {
-          status: "busy",
-          todayTrips: (bestDriver.todayTrips || 0) + 1,
-        });
-        await storage.createOrderEvent({
-          orderId: order.id,
+        await storage.transitionOrderStatus(order.id, "scheduled", "driver_assigned", {
           eventType: "driver_assigned",
           description: `${bestDriver.name} assigned (proximity + rating match)`,
           details: JSON.stringify({ driverId: bestDriver.id, driverName: bestDriver.name }),
           actorRole: "system",
           timestamp: now(),
-        });
+          orderUpdate: { driverId: bestDriver.id },
+          driverUpdate: { id: bestDriver.id, data: { status: "busy", todayTrips: (bestDriver.todayTrips || 0) + 1 } },
+        } as any);
         await notifyUser(bestDriver.userId, order.id, "order_update",
           "New Pickup Assigned",
           `Pickup at ${quote.pickupAddress}. ${pickupTimeWindow || "ASAP"}`,
@@ -3726,14 +3736,13 @@ export async function registerRoutes(
       }
 
       // ── STEP 2: Auto-confirm ──
-      await storage.updateOrder(order.id, { status: "scheduled", confirmedAt: now() });
-      await storage.createOrderEvent({
-        orderId: order.id,
+      await storage.transitionOrderStatus(order.id, order.status, "scheduled", {
         eventType: "order_scheduled",
         description: "Order scheduled — finding best match",
         actorRole: "system",
         timestamp: now(),
-      });
+        orderUpdate: { confirmedAt: now() },
+      } as any);
 
       // ── STEP 3: Auto-dispatch vendor ──
       const addr = await storage.getAddress(pickupAddressId);
@@ -3773,19 +3782,15 @@ export async function registerRoutes(
       // ── STEP 4: Auto-assign driver (prefer vendor-owned drivers) ──
       const bestDriver = await findBestDriver(pickupLat, pickupLng, bestVendor?.id ?? null);
       if (bestDriver) {
-        await storage.updateOrder(order.id, { status: "driver_assigned", driverId: bestDriver.id });
-        await storage.updateDriver(bestDriver.id, {
-          status: "busy",
-          todayTrips: (bestDriver.todayTrips || 0) + 1,
-        });
-        await storage.createOrderEvent({
-          orderId: order.id,
+        await storage.transitionOrderStatus(order.id, "scheduled", "driver_assigned", {
           eventType: "driver_assigned",
           description: `${bestDriver.name} assigned (proximity + rating match)`,
           details: JSON.stringify({ driverId: bestDriver.id, driverName: bestDriver.name }),
           actorRole: "system",
           timestamp: now(),
-        });
+          orderUpdate: { driverId: bestDriver.id },
+          driverUpdate: { id: bestDriver.id, data: { status: "busy", todayTrips: (bestDriver.todayTrips || 0) + 1 } },
+        } as any);
 
         // Notify driver
         await notifyUser(bestDriver.userId, order.id, "order_update",
@@ -4370,15 +4375,13 @@ export async function registerRoutes(
     // Determine appropriate status transition
     const failureStatus = order.status.includes("pickup") ? "pickup_failed" : "delivery_failed";
     
-    await storage.updateOrder(order.id, { status: failureStatus });
-    await storage.createOrderEvent({
-      orderId: order.id,
+    await storage.transitionOrderStatus(order.id, order.status, failureStatus, {
       eventType: failureStatus,
       description: `Driver reported issue: ${issueType} — ${description || "No details provided"}`,
       actorId: currentUser.id,
       actorRole: "driver",
       timestamp: ts,
-    });
+    } as any);
 
     // Notify customer
     const customer = await storage.getUser(order.customerId);
@@ -4590,12 +4593,11 @@ export async function registerRoutes(
         if (order.status !== "at_facility" && order.status !== "at_laundromat") {
           return res.status(400).json({ error: "Order must be at facility to accept" });
         }
-        await storage.updateOrder(order.id, { status: "processing" });
-        await storage.createOrderEvent({
-          orderId: order.id, eventType: "vendor_accepted",
+        await storage.transitionOrderStatus(order.id, order.status, "processing", {
+          eventType: "vendor_accepted",
           description: `Vendor accepted order${estimatedCompletionTime ? `. Estimated completion: ${estimatedCompletionTime}` : ""}`,
           actorId: currentUser.id, actorRole: currentUser.role, timestamp: ts,
-        });
+        } as any);
         break;
 
       case "reject":
@@ -6994,7 +6996,7 @@ export async function registerRoutes(
       LEFT JOIN drivers rd ON rd.id = o.return_driver_id
       ORDER BY o.created_at DESC
     `);
-    res.json(paginatedResponse(rows, pg));
+    res.json(paginatedResponse(rows.map(camelizeRow), pg));
   });
 
   app.get("/api/admin/orders/:id", requireAuth(ADMIN_ROLES), async (req, res) => {
@@ -7033,7 +7035,7 @@ export async function registerRoutes(
       JOIN orders o ON o.id = pt.order_id
       ORDER BY pt.created_at DESC
     `);
-    res.json(paginatedResponse(rows, pg));
+    res.json(paginatedResponse(rows.map(camelizeRow), pg));
   });
 
   app.get("/api/admin/drivers", requireAuth(ADMIN_ROLES), async (_req, res) => {
@@ -7987,7 +7989,7 @@ export async function registerRoutes(
     let intentId: string;
     let clientSecret: string | null = null;
 
-    if (stripe) {
+    if (stripe && !(process.env.STRIPE_SECRET_KEY || "").startsWith("sk_test_DISABLED")) {
       // Real Stripe payment intent
       try {
         const intent = await stripe.paymentIntents.create({
@@ -8002,9 +8004,7 @@ export async function registerRoutes(
         return res.status(500).json({ error: "Payment processing failed" });
       }
     } else {
-      // Demo mode fallback
-      intentId = `pi_demo_${Date.now()}_${randomBytes(4).toString("hex")}`;
-      clientSecret = `demo_secret_${intentId}`;
+      return res.status(503).json({ error: "payments_unavailable" });
     }
 
     const txn = await storage.createPaymentTransaction({

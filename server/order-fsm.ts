@@ -28,6 +28,8 @@ export const ORDER_STATES = {
   DRIVER_EN_ROUTE_DELIVERY: 'driver_en_route_delivery',
   ARRIVED_DELIVERY: 'arrived_delivery',
   DELIVERED: 'delivered',
+  DISPUTED: 'disputed',
+  REFUNDED: 'refunded',
   COMPLETED: 'completed',
   CANCELLED: 'cancelled',
 } as const;
@@ -51,15 +53,19 @@ export const VALID_TRANSITIONS: Record<string, string[]> = {
   arrived_pickup: ['picked_up', 'cancelled'],
   picked_up: ['driver_en_route_facility'],
   driver_en_route_facility: ['at_facility'],
-  at_facility: ['processing'],
-  processing: ['washing'],
+  at_facility: ['processing', 'disputed'],
+  processing: ['washing', 'disputed'],
   washing: ['drying'],
   drying: ['folding'],
   folding: ['ready_for_delivery'],
   ready_for_delivery: ['driver_en_route_delivery'],
-  driver_en_route_delivery: ['arrived_delivery'],
+  driver_en_route_delivery: ['arrived_delivery', 'disputed'],
+  // Legacy alias accepted by older clients/admin screens.
+  out_for_delivery: ['delivered', 'arrived_delivery', 'disputed'],
   arrived_delivery: ['delivered'],
-  delivered: ['completed'],
+  delivered: ['completed', 'disputed'],
+  disputed: ['delivered', 'refunded', 'cancelled'],
+  refunded: [],
   completed: [],
   cancelled: [],
 };
@@ -99,6 +105,14 @@ export const TRANSITION_ACTORS: Record<string, string[]> = {
   'driver_en_route_delivery->arrived_delivery': ['driver', 'system'],
   'arrived_delivery->delivered': ['driver'],
   'delivered->completed': ['system'],
+  'delivered->disputed': ['customer', 'admin', 'manager'],
+  'driver_en_route_delivery->disputed': ['customer', 'admin', 'manager'],
+  'out_for_delivery->disputed': ['customer', 'admin', 'manager'],
+  'at_facility->disputed': ['customer', 'admin', 'manager'],
+  'processing->disputed': ['customer', 'admin', 'manager'],
+  'disputed->delivered': ['admin', 'manager'],
+  'disputed->refunded': ['admin', 'manager'],
+  'disputed->cancelled': ['admin', 'manager'],
   // Cancellation can be triggered by multiple actors
   'pending->cancelled': ['customer', 'admin', 'system'],
   'scheduled->cancelled': ['customer', 'admin', 'system'],
@@ -130,6 +144,8 @@ export const STATUS_NOTIFICATIONS: Record<string, { customer?: string; driver?: 
   'arrived_delivery': { customer: 'Your driver has arrived with your laundry!' },
   'delivered': { customer: 'Delivery complete! Rate your experience.' },
   'completed': { customer: 'Order complete. Thank you!' },
+  'disputed': { customer: 'A dispute has been opened for your order.' },
+  'refunded': { customer: 'Your order has been refunded.' },
   'cancelled': { customer: 'Your order has been cancelled.' },
 };
 
@@ -157,6 +173,8 @@ export const STATUS_LABELS: Record<string, string> = {
   driver_en_route_delivery: 'Out for Delivery',
   arrived_delivery: 'Driver Arrived',
   delivered: 'Delivered',
+  disputed: 'Disputed',
+  refunded: 'Refunded',
   completed: 'Completed',
   cancelled: 'Cancelled',
 };
@@ -184,6 +202,8 @@ export const TIMELINE_STEPS: string[] = [
   'driver_en_route_delivery',
   'arrived_delivery',
   'delivered',
+  'disputed',
+  'refunded',
   'completed',
 ];
 
@@ -199,7 +219,6 @@ export const LEGACY_STATUS_MAP: Record<string, string> = {
   quality_check: 'folding',
   packing: 'folding',
   out_for_delivery: 'driver_en_route_delivery',
-  disputed: 'delivered', // disputes are a separate concern
 };
 
 /**
