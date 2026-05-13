@@ -2821,23 +2821,32 @@ export async function registerRoutes(
         throw new Error("pricing_invalid");
       }
 
-      const stripeKey = process.env.STRIPE_SECRET_KEY || "";
-      if (amountCents > 0 && (!stripeKey || stripeKey.startsWith("sk_test_DISABLED"))) {
-        return res.status(503).json({ error: "payments_unavailable" });
-      }
-
       // Pre-checkout serviceability gate: do not create an order or PaymentIntent
       // unless at least one eligible laundromat can serve the quote.
-      const serviceabilityOrder = {
-        serviceType: quote.serviceType,
-        certifiedOnly: true,
-        deliverySpeed: quote.deliverySpeed,
-      } as any;
+      let quoteAddOns: string[] | undefined;
+      try {
+        const parsedAddOns = quote.addOnsJson ? JSON.parse(quote.addOnsJson) : [];
+        quoteAddOns = Array.isArray(parsedAddOns) ? parsedAddOns.map((a: any) => String(a?.type || a?.name || a)).filter(Boolean) : undefined;
+      } catch { quoteAddOns = undefined; }
+      const coverage = await checkCoverage({
+        zip: quote.pickupZip || undefined,
+        lat: quote.pickupLat == null ? undefined : Number(quote.pickupLat),
+        lng: quote.pickupLng == null ? undefined : Number(quote.pickupLng),
+        service: quote.serviceType || undefined,
+        addOns: quoteAddOns,
+      });
       const scheduledForService = pickupDate ? new Date(`${pickupDate}T${pickupTime || "09:00"}:00.000Z`) : new Date();
+      const matchedVendorIds = new Set(coverage.matchedVendors || []);
+      const vendorsForService = (await storage.getVendors())
+        .filter(v => matchedVendorIds.has(v.id))
+        .filter(v => isVendorOpenNow(v, scheduledForService));
+      const serviceabilityOrder = { serviceType: quote.serviceType, certifiedOnly: true, deliverySpeed: quote.deliverySpeed } as any;
       const eligibleVendor = quote.vendorId
-        ? await storage.getVendor(quote.vendorId)
-        : await findBestVendor(serviceabilityOrder, quote.pickupLat || 40.7128, quote.pickupLng || -74.0060, scheduledForService);
-      if (!eligibleVendor || (eligibleVendor as any).status !== "active" || (eligibleVendor as any).pauseOrderIntake) {
+        ? vendorsForService.find(v => v.id === quote.vendorId) || null
+        : vendorsForService
+            .map(v => ({ vendor: v, score: scoreVendor(v, serviceabilityOrder, quote.pickupLat || 40.7128, quote.pickupLng || -74.0060) }))
+            .sort((a, b) => b.score - a.score)[0]?.vendor || null;
+      if (!coverage.eligible || coverage.checkoutGated || !eligibleVendor) {
         await storage.createServiceAreaRequest({
           email,
           phone: digits,
@@ -2850,12 +2859,17 @@ export async function registerRoutes(
           requestedService: quote.serviceType,
           requestedSpeed: quote.deliverySpeed,
           source: "public_checkout",
-          notes: `No eligible vendor during checkout for quote ${quote.id}`,
+          notes: `No eligible vendor during checkout for quote ${quote.id}: ${coverage.reason || coverage.checkoutGateReason || "closed_or_unavailable"}`,
         } as any);
         return res.status(503).json({
           error: "no_vendor_available",
           message: "We do not have laundromats available in your area yet.",
         });
+      }
+
+      const stripeKey = process.env.STRIPE_SECRET_KEY || "";
+      if (amountCents > 0 && (!stripeKey || stripeKey.startsWith("sk_test_DISABLED"))) {
+        return res.status(503).json({ error: "payments_unavailable" });
       }
 
       const ts = now();
