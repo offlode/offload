@@ -235,6 +235,11 @@ async function ensureExtraTables() {
     ["vendors", "admin_override_open INTEGER DEFAULT 0"],
     // Vendor AI scoring + operations columns (added to schema but missing from prod DB migration)
     ["vendors", "ai_health_score DOUBLE PRECISION DEFAULT 85"],
+    // offload-admin uses a parallel Drizzle schema that references "health_score" (no ai_ prefix). Keep both for cross-app compat.
+    ["vendors", "health_score DOUBLE PRECISION DEFAULT 85"],
+    ["vendors", "total_orders INTEGER DEFAULT 0"],
+    ["vendors", "total_payout DOUBLE PRECISION DEFAULT 0"],
+    ["vendors", "joined_at TEXT"],
     ["vendors", "avg_processing_time DOUBLE PRECISION DEFAULT 180"],
     ["vendors", "on_time_rate DOUBLE PRECISION DEFAULT 0.95"],
     ["vendors", "quality_score DOUBLE PRECISION DEFAULT 4.5"],
