@@ -491,6 +491,27 @@ async function ensureIntegrityConstraints() {
     }
   }
 
+  // Wave G: P2-021 — dedicated SLA credit timestamp column (idempotent)
+  try {
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS sla_credit_issued_at TIMESTAMPTZ DEFAULT NULL`);
+  } catch (e: any) {
+    const msg = String(e?.message || "");
+    if (!msg.includes("already exists")) {
+      console.warn("[integrity] Wave G sla_credit_issued_at column:", msg);
+    }
+  }
+
+  // Wave H: P2-044 — consolidate operating_hours into operating_hours_json (idempotent)
+  try {
+    await pool.query(`ALTER TABLE vendors ADD COLUMN IF NOT EXISTS operating_hours_json JSONB DEFAULT NULL`);
+    await pool.query(`UPDATE vendors SET operating_hours_json = operating_hours::jsonb WHERE operating_hours_json IS NULL AND operating_hours IS NOT NULL AND operating_hours <> ''`);
+  } catch (e: any) {
+    const msg = String(e?.message || "");
+    if (!msg.includes("already exists") && !msg.includes("does not exist")) {
+      console.warn("[integrity] Wave H operating_hours_json:", msg);
+    }
+  }
+
   // D10: idempotent ALTER TABLE for add_ons.price_mode column
   try {
     await pool.query(`ALTER TABLE add_ons ADD COLUMN IF NOT EXISTS price_mode TEXT DEFAULT 'per_order'`);
