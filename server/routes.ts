@@ -17,6 +17,7 @@ import { SLA_CONFIGS, WEIGHT_TOLERANCE, CONSENT_TIMEOUT_HOURS, LOYALTY_TIERS, SU
 import { pricingConfig } from "./pricing-config-service";
 import { logAdminAction } from "./audit-helpers";
 import { applyVendorCertification, getCertifiedRules, evaluateVendorCertification } from "./certified";
+import { checkCoverage } from "./service-area";
 import { hashPassword, verifyPassword, checkLoginRateLimit, recordLoginAttempt } from "./lib/auth";
 import {
   distanceMiles, TAX_RATE, TIER_NAME_MAP, calculateQuotePrice, calculatePricing,
@@ -1138,24 +1139,27 @@ export async function registerRoutes(
   // Set Socket.io reference for emit helpers
   setIO(io);
 
-  // ── Ensure Super Admin exists ──
-  const superAdminEmail = "chaimfischer2@gmail.com";
-  const existingSuperAdmin = await storage.getUserByEmail(superAdminEmail);
-  if (!existingSuperAdmin) {
-    const randomPw = randomBytes(32).toString("hex");
-    await storage.createUser({
-      username: superAdminEmail,
-      email: superAdminEmail,
-      name: "Chaim Fischer",
-      role: "admin",
-      password: hashPassword(randomPw),
-      phone: "",
-      memberSince: new Date().toISOString().slice(0, 10),
-    });
-    console.log(`[Seed] Super admin created: ${superAdminEmail} (use forgot-password to set password)`);
-  } else if (existingSuperAdmin.role !== "admin") {
-    await storage.updateUser(existingSuperAdmin.id, { role: "admin" });
-    console.log(`[Seed] Upgraded ${superAdminEmail} to admin role`);
+  // ── Ensure Super Admin exists (env-driven, no personal info in source) ──
+  const superAdminEmail = (process.env.SUPER_ADMIN_EMAIL || "").trim().toLowerCase();
+  const superAdminName  = (process.env.SUPER_ADMIN_NAME || "Owner").trim();
+  if (superAdminEmail) {
+    const existingSuperAdmin = await storage.getUserByEmail(superAdminEmail);
+    if (!existingSuperAdmin) {
+      const randomPw = randomBytes(32).toString("hex");
+      await storage.createUser({
+        username: superAdminEmail,
+        email: superAdminEmail,
+        name: superAdminName,
+        role: "admin",
+        password: hashPassword(randomPw),
+        phone: "",
+        memberSince: new Date().toISOString().slice(0, 10),
+      });
+      console.log(`[Seed] Super admin created via SUPER_ADMIN_EMAIL (use forgot-password to set password)`);
+    } else if (existingSuperAdmin.role !== "admin") {
+      await storage.updateUser(existingSuperAdmin.id, { role: "admin" });
+      console.log(`[Seed] Upgraded existing user to admin role`);
+    }
   }
 
   // Seed WELCOME20 promo code if it doesn't exist
@@ -1174,25 +1178,7 @@ export async function registerRoutes(
     });
   }
 
-  // Seed super admin: chaimfischer2@gmail.com
-  const adminEmail = "chaimfischer2@gmail.com";
-  const existingAdmin = await storage.getUserByEmail(adminEmail);
-  if (!existingAdmin) {
-    const randomPw = randomBytes(32).toString("hex");
-    await storage.createUser({
-      username: adminEmail,
-      password: hashPassword(randomPw),
-      name: "Chaim Fischer",
-      email: adminEmail,
-      phone: null,
-      role: "admin",
-      memberSince: new Date().toISOString().split("T")[0],
-      loyaltyPoints: 0,
-      loyaltyTier: "bronze",
-      referralCode: "ADMIN-" + Date.now().toString(36).toUpperCase(),
-    });
-    console.log(`[Seed] Created super admin: ${adminEmail}`);
-  }
+  // (Duplicate super-admin seed block removed — see SUPER_ADMIN_EMAIL env-driven block above.)
 
   // ── Security headers + CORS for website ──
   app.use((req, res, next) => {
@@ -2058,22 +2044,118 @@ export async function registerRoutes(
   });
 
   // ── Public: Check serviceability ──
-  app.get("/api/quotes/check-serviceability", (req, res) => {
-    const { zip } = req.query;
-    if (!zip || typeof zip !== "string") {
-      return res.status(400).json({ error: "zip query parameter required" });
+  // Real vendor-coverage check.
+  // Replaces hardcoded NYC/NJ ZIP range with a check against approved active vendors.
+  // Returns matchedVendors so callers can see whether ANY laundromat services the area
+  // — not just whether the ZIP looks NYC-ish.
+  app.get("/api/quotes/check-serviceability", async (req, res) => {
+    try {
+      const zip = req.query.zip ? String(req.query.zip) : undefined;
+      const lat = req.query.lat ? Number(req.query.lat) : undefined;
+      const lng = req.query.lng ? Number(req.query.lng) : undefined;
+      const service = req.query.service ? String(req.query.service) : undefined;
+      const addOnsRaw = req.query.addOns ? String(req.query.addOns) : "";
+      const addOns = addOnsRaw ? addOnsRaw.split(",").map(s => s.trim()).filter(Boolean) : undefined;
+
+      if (!zip && (lat == null || lng == null)) {
+        return res.status(400).json({ error: "zip OR (lat,lng) required" });
+      }
+
+      const coverage = await checkCoverage({ zip, lat, lng, service, addOns });
+      res.json({
+        serviceable: coverage.eligible,
+        zip: zip || null,
+        reason: coverage.eligible ? null : coverage.reason,
+        matchedVendors: coverage.matchedVendors.length,
+        details: coverage,
+      });
+    } catch (err: any) {
+      console.error("[check-serviceability] error:", err);
+      res.status(500).json({ error: "Failed to check serviceability", code: "INTERNAL_ERROR" });
     }
-    // NYC metro area zip codes (10001-10499, 11001-11999) + common NJ/CT suburbs
-    const zipNum = parseInt(zip, 10);
-    const serviceable = (
-      (zipNum >= 10001 && zipNum <= 10499) ||
-      (zipNum >= 10501 && zipNum <= 10599) ||
-      (zipNum >= 10701 && zipNum <= 10710) ||
-      (zipNum >= 10801 && zipNum <= 10805) ||
-      (zipNum >= 11001 && zipNum <= 11999) ||
-      (zipNum >= 7001 && zipNum <= 7999)   // NJ
-    );
-    res.json({ serviceable, zip, reason: serviceable ? null : "We don't serve this area yet. Currently available in the NYC metro area." });
+  });
+
+  // ═══════════════════════════════════════════════════════════════
+  //  SERVICE AREA REQUESTS — capture unserved-area demand
+  // ═══════════════════════════════════════════════════════════════
+  app.post("/api/service-area-requests", async (req, res) => {
+    try {
+      const Body = z.object({
+        name: z.string().max(200).optional(),
+        email: z.string().email().max(200).optional(),
+        phone: z.string().max(40).optional(),
+        address: z.string().max(500).optional(),
+        city: z.string().max(120).optional(),
+        state: z.string().max(60).optional(),
+        zip: z.string().max(20).optional(),
+        lat: z.number().optional(),
+        lng: z.number().optional(),
+        requestedService: z.string().max(60).optional(),
+        requestedSpeed: z.string().max(40).optional(),
+        requestedOptions: z.union([z.string(), z.array(z.string())]).optional(),
+        source: z.string().max(80).optional(),
+      }).strip();
+      const parsed = Body.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+      }
+      const data = { ...parsed.data } as any;
+      if (Array.isArray(data.requestedOptions)) data.requestedOptions = JSON.stringify(data.requestedOptions);
+      if (!data.zip && !data.email && !data.phone) {
+        return res.status(400).json({ error: "At least one of zip/email/phone required so we can contact you" });
+      }
+      const row = await storage.createServiceAreaRequest(data);
+      res.status(201).json({ id: row.id, message: "Thanks — we'll let you know as soon as Offload is in your area." });
+    } catch (err: any) {
+      console.error("[service-area-requests] create error:", err);
+      res.status(500).json({ error: "Failed to save request", code: "INTERNAL_ERROR" });
+    }
+  });
+
+  app.get("/api/admin/service-area-requests", requireAuth(["admin", "manager"]), async (req, res) => {
+    try {
+      const status = req.query.status ? String(req.query.status) : undefined;
+      const zip = req.query.zip ? String(req.query.zip) : undefined;
+      const state = req.query.state ? String(req.query.state) : undefined;
+      const limit = Number(req.query.limit) || 200;
+      const offset = Number(req.query.offset) || 0;
+      const rows = await storage.getServiceAreaRequests({ status, zip, state, limit, offset });
+      res.json(rows);
+    } catch (err: any) {
+      console.error("[admin/service-area-requests] error:", err);
+      res.status(500).json({ error: "Failed to load requests", code: "INTERNAL_ERROR" });
+    }
+  });
+
+  app.get("/api/admin/service-area-requests/demand", requireAuth(["admin", "manager"]), async (_req, res) => {
+    try {
+      const demand = await storage.getServiceAreaDemandByZip();
+      res.json(demand);
+    } catch (err: any) {
+      console.error("[admin/service-area-requests/demand] error:", err);
+      res.status(500).json({ error: "Failed to load demand", code: "INTERNAL_ERROR" });
+    }
+  });
+
+  app.patch("/api/admin/service-area-requests/:id", requireAuth(["admin"]), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: "Invalid id" });
+      const Body = z.object({
+        status: z.enum(["new", "contacted", "converted", "closed"]).optional(),
+        notes: z.string().max(2000).optional(),
+      }).strip();
+      const parsed = Body.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+      }
+      const updated = await storage.updateServiceAreaRequest(id, parsed.data);
+      if (!updated) return res.status(404).json({ error: "Not found" });
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[admin/service-area-requests] update error:", err);
+      res.status(500).json({ error: "Failed to update", code: "INTERNAL_ERROR" });
+    }
   });
 
   // ── Public: Dynamic quote (Uber-style breakdown + cheapest-window recommendation) ──

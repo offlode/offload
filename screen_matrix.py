@@ -79,7 +79,8 @@ for target_name, base in TARGETS:
         url = f"{base}{path}"
         status, body = fetch(url)
         is_spa_shell = "<div id=\"root\">" in body or "id=\"root\"" in body
-        has_offload = "ffload" in body.lower() or "tudelu" in body.lower()
+        # Offload-only brand check — customer/vendor/driver surfaces must never show Tudelu.
+        has_offload = "ffload" in body.lower()
         has_inter_font = "inter" in body.lower()
         has_brand_purple = "5b4bc4" in body.lower() or "rgb(91, 75, 196)" in body.lower()
         # SPA shell should be the same HTML for all routes (single index.html)

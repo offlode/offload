@@ -102,10 +102,45 @@ export const vendors = pgTable("vendors", {
   offersAlterations: integer("offers_alterations").default(0),
   offersComforters: integer("offers_comforters").default(0),
   offersCommercial: integer("offers_commercial").default(0),
+  offersStainTreatment: integer("offers_stain_treatment").default(0),
+  offersSteamPress: integer("offers_steam_press").default(0),
+  offersHangDry: integer("offers_hang_dry").default(0),
+  // Service area — vendors can define coverage as ZIPs, radius, or both
+  serviceZips: text("service_zips"),                 // JSON array: ["11201","11215",...]
+  serviceRadiusMiles: doublePrecision("service_radius_miles"),  // null = no radius coverage; numeric = miles around (lat,lng)
+  serviceAreaType: text("service_area_type").default("zip"),    // "zip" | "radius" | "both"
+  ownsDrivers: integer("owns_drivers").default(0),   // 1 if vendor has own drivers preferred for routing
+  pauseOrderIntake: integer("pause_order_intake").default(0),   // admin/vendor toggle
+  acceptanceTimeoutSec: integer("acceptance_timeout_sec").default(120),
   // Demand forecasting
   avgDailyOrders: doublePrecision("avg_daily_orders").default(10),
   peakDayOfWeek: text("peak_day_of_week").default("Monday"),
 });
+
+// ─── Service Area Requests — unserved-area demand capture ───
+export const serviceAreaRequests = pgTable("service_area_requests", {
+  id: serial("id").primaryKey(),
+  name: text("name"),
+  email: text("email"),
+  phone: text("phone"),
+  address: text("address"),
+  city: text("city"),
+  state: text("state"),
+  zip: text("zip"),
+  lat: doublePrecision("lat"),
+  lng: doublePrecision("lng"),
+  requestedService: text("requested_service"),     // wash_fold | dry_cleaning | comforters | etc.
+  requestedSpeed: text("requested_speed"),         // 48h | 24h | same_day
+  requestedOptions: text("requested_options"),     // JSON array of add-ons
+  source: text("source"),                          // website_quote | customer_app | voice | api
+  status: text("status").notNull().default("new"), // new | contacted | converted | closed
+  notes: text("notes"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+export const insertServiceAreaRequestSchema = createInsertSchema(serviceAreaRequests).omit({ id: true, status: true, notes: true, createdAt: true, updatedAt: true });
+export type InsertServiceAreaRequest = z.infer<typeof insertServiceAreaRequestSchema>;
+export type ServiceAreaRequest = typeof serviceAreaRequests.$inferSelect;
 
 export const insertVendorSchema = createInsertSchema(vendors).omit({ id: true });
 export type InsertVendor = z.infer<typeof insertVendorSchema>;

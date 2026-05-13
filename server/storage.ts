@@ -141,6 +141,30 @@ async function ensureExtraTables() {
     );
     CREATE INDEX IF NOT EXISTS idx_stripe_recon_action ON stripe_reconciliation_log(action);
     CREATE INDEX IF NOT EXISTS idx_stripe_recon_resolved ON stripe_reconciliation_log(resolved_at);
+
+    CREATE TABLE IF NOT EXISTS service_area_requests (
+      id SERIAL PRIMARY KEY,
+      name TEXT,
+      email TEXT,
+      phone TEXT,
+      address TEXT,
+      city TEXT,
+      state TEXT,
+      zip TEXT,
+      lat DOUBLE PRECISION,
+      lng DOUBLE PRECISION,
+      requested_service TEXT,
+      requested_speed TEXT,
+      requested_options TEXT,
+      source TEXT,
+      status TEXT NOT NULL DEFAULT 'new',
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sar_status ON service_area_requests(status);
+    CREATE INDEX IF NOT EXISTS idx_sar_zip ON service_area_requests(zip);
+    CREATE INDEX IF NOT EXISTS idx_sar_created ON service_area_requests(created_at);
   `);
 
   // Add amount_cents column if missing (idempotent)
@@ -185,6 +209,16 @@ async function ensureExtraTables() {
     ["quotes", "traffic_multiplier DOUBLE PRECISION DEFAULT 1.0"],
     ["quotes", "window_discount DOUBLE PRECISION DEFAULT 0"],
     ["quotes", "vendor_choice_mode TEXT DEFAULT 'auto'"],
+    // Vendor service-area + capability + intake controls (master pass)
+    ["vendors", "service_zips TEXT"],
+    ["vendors", "service_radius_miles DOUBLE PRECISION"],
+    ["vendors", "service_area_type TEXT DEFAULT 'zip'"],
+    ["vendors", "owns_drivers INTEGER DEFAULT 0"],
+    ["vendors", "pause_order_intake INTEGER DEFAULT 0"],
+    ["vendors", "acceptance_timeout_sec INTEGER DEFAULT 120"],
+    ["vendors", "offers_stain_treatment INTEGER DEFAULT 0"],
+    ["vendors", "offers_steam_press INTEGER DEFAULT 0"],
+    ["vendors", "offers_hang_dry INTEGER DEFAULT 0"],
   ];
   for (const [table, colDef] of dynamicPricingCols) {
     const colName = colDef.split(/\s+/)[0];
@@ -1320,6 +1354,56 @@ class DatabaseStorage implements IStorage {
   }
   async getPricingAuditLog(limit = 100) {
     return db.select().from(schema.pricingAuditLog).orderBy(desc(schema.pricingAuditLog.timestamp)).limit(limit);
+  }
+
+  // ─── Service Area Requests (unserved-area demand capture) ───
+  async createServiceAreaRequest(data: schema.InsertServiceAreaRequest & { notes?: string }) {
+    const now = new Date().toISOString();
+    const [row] = await db.insert(schema.serviceAreaRequests).values({
+      ...data,
+      status: "new",
+      createdAt: now,
+      updatedAt: now,
+    } as any).returning();
+    return row;
+  }
+  async getServiceAreaRequests(opts?: { status?: string; zip?: string; state?: string; limit?: number; offset?: number }) {
+    const conditions: any[] = [];
+    if (opts?.status) conditions.push(eq(schema.serviceAreaRequests.status, opts.status));
+    if (opts?.zip)    conditions.push(eq(schema.serviceAreaRequests.zip, opts.zip));
+    if (opts?.state)  conditions.push(eq(schema.serviceAreaRequests.state, opts.state));
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+    const limit = Math.min(opts?.limit || 100, 500);
+    const offset = opts?.offset || 0;
+    return db.select().from(schema.serviceAreaRequests)
+      .where(where)
+      .orderBy(desc(schema.serviceAreaRequests.createdAt))
+      .limit(limit)
+      .offset(offset);
+  }
+  async getServiceAreaRequest(id: number) {
+    const [row] = await db.select().from(schema.serviceAreaRequests).where(eq(schema.serviceAreaRequests.id, id));
+    return row;
+  }
+  async updateServiceAreaRequest(id: number, patch: { status?: string; notes?: string }) {
+    const [row] = await db.update(schema.serviceAreaRequests)
+      .set({ ...patch, updatedAt: new Date().toISOString() })
+      .where(eq(schema.serviceAreaRequests.id, id))
+      .returning();
+    return row;
+  }
+  async getServiceAreaDemandByZip() {
+    // Aggregated lead count per ZIP for the admin expansion dashboard
+    const rows = await db.select().from(schema.serviceAreaRequests);
+    const byZip: Record<string, { zip: string; count: number; newCount: number; latest: string }> = {};
+    for (const r of rows) {
+      const z = r.zip || "";
+      if (!byZip[z]) byZip[z] = { zip: z, count: 0, newCount: 0, latest: r.createdAt };
+      byZip[z].count++;
+      if (r.status === "new") byZip[z].newCount++;
+      if (r.createdAt > byZip[z].latest) byZip[z].latest = r.createdAt;
+    }
+    return Object.values(byZip).sort((a, b) => b.count - a.count);
   }
 
   // ─── Admin Audit Log ───
