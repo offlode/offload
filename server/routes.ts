@@ -226,12 +226,18 @@ async function findBestVendor(order: Order, pickupLat: number, pickupLng: number
   const activeVendors = await storage.getActiveVendors();
   if (activeVendors.length === 0) return null;
 
-  // Parse order required washType once
+  // Parse order required washType — check preferences.washType first, then fall back to order.serviceType
   let requiredWashType: string | null = null;
   try {
     const prefs = order.preferences ? JSON.parse(order.preferences) : {};
     if (prefs.washType) requiredWashType = String(prefs.washType);
   } catch (e) { /* ignore */ }
+  if (!requiredWashType && (order as any).serviceType) {
+    const st = String((order as any).serviceType);
+    // Map serviceType ("wash_fold" | "dry_cleaning" | "comforters" | "alterations" | "commercial" | "mixed") to washType requirement.
+    // "mixed" requires multiple services, but for routing we cannot reduce to a single capability — only require dry_cleaning if mixed.
+    if (st !== "mixed") requiredWashType = st;
+  }
 
   const scored = activeVendors
     .filter(v => {
@@ -239,6 +245,10 @@ async function findBestVendor(order: Order, pickupLat: number, pickupLng: number
       const cap = v.capacity || 50;
       const load = v.currentLoad || 0;
       return load < cap;
+    })
+    .filter(v => {
+      // Skip vendors that have paused order intake
+      return (v as any).pauseOrderIntake !== 1;
     })
     .filter(v => {
       // If certified-only required, filter
@@ -2921,6 +2931,16 @@ export async function registerRoutes(
             actorRole: "system",
             timestamp: now(),
           });
+        } else {
+          // No eligible vendor — flag for admin review so order is not silently orphaned
+          await storage.createOrderEvent({
+            orderId: order.id,
+            eventType: "no_vendor_found",
+            description: "No eligible vendor available for this order — admin manual assignment required",
+            details: JSON.stringify({ pickupLat, pickupLng, serviceType: (order as any).serviceType }),
+            actorRole: "system",
+            timestamp: now(),
+          });
         }
       }
 
@@ -3462,6 +3482,16 @@ export async function registerRoutes(
           eventType: "vendor_assigned",
           description: `Assigned to ${bestVendor.name} (score-based match)`,
           details: JSON.stringify({ vendorId: bestVendor.id, vendorName: bestVendor.name }),
+          actorRole: "system",
+          timestamp: now(),
+        });
+      } else {
+        // No eligible vendor — flag for admin review
+        await storage.createOrderEvent({
+          orderId: order.id,
+          eventType: "no_vendor_found",
+          description: "No eligible vendor available for this order — admin manual assignment required",
+          details: JSON.stringify({ pickupLat, pickupLng, serviceType: (order as any).serviceType }),
           actorRole: "system",
           timestamp: now(),
         });
