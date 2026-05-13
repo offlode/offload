@@ -54,6 +54,10 @@ import StaffQuality from "@/pages/staff/quality";
 import ManagerOrders from "@/pages/manager/orders";
 import ManagerPayouts from "@/pages/manager/payouts";
 import TrackingPage from "@/pages/tracking";
+import DashboardPage from "@/pages/dashboard";
+import CheckoutPage from "@/pages/checkout";
+import TrackEntryPage from "@/pages/track";
+import SupportPage from "@/pages/support";
 import NotFound from "@/pages/not-found";
 import ForgotPasswordPage from "@/pages/forgot-password";
 import ResetPasswordPage from "@/pages/reset-password";
@@ -123,6 +127,23 @@ function AppRouter() {
       </Route>
       <Route path="/tracking/:id">
         {() => <RequireAuth allowedRoles={["customer"]}><TrackingPage /></RequireAuth>}
+      </Route>
+
+      {/* D4: additional customer routes */}
+      <Route path="/dashboard">
+        {() => <RequireAuth allowedRoles={["customer"]}><DashboardPage /></RequireAuth>}
+      </Route>
+      <Route path="/checkout">
+        {() => <RequireAuth allowedRoles={["customer"]}><CheckoutPage /></RequireAuth>}
+      </Route>
+      <Route path="/track/:orderId">
+        {() => <RequireAuth allowedRoles={["customer"]}><TrackEntryPage /></RequireAuth>}
+      </Route>
+      <Route path="/track">
+        {() => <RequireAuth allowedRoles={["customer"]}><TrackEntryPage /></RequireAuth>}
+      </Route>
+      <Route path="/support">
+        {() => <RequireAuth allowedRoles={["customer"]}><SupportPage /></RequireAuth>}
       </Route>
 
       {/* Staff routes */}
