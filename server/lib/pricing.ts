@@ -71,6 +71,9 @@ export interface QuotePriceBreakdown {
   surgeMultiplier: number;
   surgeTier: string;
   surgeReason: string;
+  // D9: demand multiplier
+  demandMultiplier: number;
+  demandReason: string;
   logisticsBase: number;
   logisticsTotal: number;
   // ── totals ──
@@ -225,12 +228,29 @@ export async function calculateQuotePrice(input: {
   const surge = await getSurgePricingTierAsync(input.scheduledPickup || undefined);
   const logisticsAfterSurge = Math.round(logistics.logisticsTotal * surge.multiplier * 100) / 100;
 
+  // 6e. D9 — Demand multiplier (admin-configurable, capped, applied to logistics only)
+  // Read admin config: demand_multiplier_enabled (default false), demand_multiplier_cap (default 1.35)
+  const demandEnabled = await pricingConfig.getJSON<boolean>("demand_multiplier_enabled", false);
+  const demandCap = await pricingConfig.getJSON<number>("demand_multiplier_cap", 1.35);
+  let rawDemandMultiplier = 1.0;
+  let demandReason = "Demand pricing (standard)";
+  if (demandEnabled) {
+    rawDemandMultiplier = await getDemandMultiplier(input.serviceType || "wash_fold");
+    // Clamp to [0.85, cap]
+    rawDemandMultiplier = Math.max(0.85, Math.min(demandCap, rawDemandMultiplier));
+    if (rawDemandMultiplier > 1.0) demandReason = "High demand pricing";
+    else if (rawDemandMultiplier < 1.0) demandReason = "Low demand discount";
+    else demandReason = "Demand pricing (standard)";
+  }
+  const logisticsAfterDemand = Math.round(logisticsAfterSurge * rawDemandMultiplier * 100) / 100;
+  const demandDelta = Math.round((logisticsAfterDemand - logisticsAfterSurge) * 100) / 100;
+
   // 7. Subtotal (laundry + preferred surcharge + addons + dynamic logistics)
   // Note: deliveryFee is intentionally EXCLUDED from the tax base — NY does not tax
   // separately stated delivery charges, and the direct /api/orders path uses the same rule.
   // This keeps the public-quote path and the direct-order path in sync.
   const taxableSubtotal = Math.round(
-    (laundryServicePrice + speedSurcharge + preferredVendorSurcharge + addOnsTotal + logisticsAfterSurge) * 100
+    (laundryServicePrice + speedSurcharge + preferredVendorSurcharge + addOnsTotal + logisticsAfterDemand) * 100
   ) / 100;
   const subtotal = Math.round((taxableSubtotal + deliveryFee) * 100) / 100;
 
@@ -298,6 +318,10 @@ export async function calculateQuotePrice(input: {
       lineItems.push({ label: `${surge.reason} (${surge.tier})`, amount: surgeDelta, type: surgeDelta > 0 ? "logistics" : "discount" });
     }
   }
+  // D9: Demand pricing line item — only shown when delta != 0
+  if (demandDelta !== 0) {
+    lineItems.push({ label: demandReason, amount: demandDelta, type: demandDelta > 0 ? "logistics" : "discount" });
+  }
   for (const ao of addOnItems) {
     lineItems.push({ label: `${ao.name} x${ao.qty}`, amount: ao.price * ao.qty, type: "addon" });
   }
@@ -322,7 +346,9 @@ export async function calculateQuotePrice(input: {
     surgeTier: surge.tier,
     surgeReason: surge.reason,
     logisticsBase: logistics.logisticsBase,
-    logisticsTotal: logisticsAfterSurge,
+    logisticsTotal: logisticsAfterDemand,
+    demandMultiplier: rawDemandMultiplier,
+    demandReason,
     subtotal, taxRate: dbTaxRate, taxAmount, discount, total,
     lineItems, tierName: normalizedTier, tierFlatPrice: tier.flatPrice,
     tierMaxWeight: tier.maxWeight, overageRate: tier.overageRate, deliverySpeed: speed,
@@ -581,6 +607,9 @@ export interface LogisticsBreakdown {
   durationFreeFlowSec: number;
   durationInTrafficSec: number;
   source: "google" | "haversine" | "unknown";
+  // D9: demand multiplier fields (populated by calculateQuotePrice)
+  demandMultiplier?: number;
+  demandReason?: string;
 }
 
 export async function computeLogisticsBreakdown(ctx: LogisticsContext): Promise<LogisticsBreakdown> {

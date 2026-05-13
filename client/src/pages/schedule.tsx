@@ -63,15 +63,19 @@ export default function SchedulePage() {
   // Clean up after reading
   if (washParam) delete (window as any).__offload_wash_type;
 
+  // Read voice-order prefill (set by VoiceOrderModal — same window-global pattern)
+  const voicePrefill = (window as any).__offload_voice_prefill || null;
+  if (voicePrefill) delete (window as any).__offload_voice_prefill;
+
   const [tab, setTab] = useState<"now" | "schedule">("now");
-  const [selectedTier, setSelectedTier] = useState<string | null>(null);
+  const [selectedTier, setSelectedTier] = useState<string | null>(voicePrefill?.tierName || null);
   const [selectedAddOns, setSelectedAddOns] = useState<Record<number, boolean>>({});
   const [addressNotes, setAddressNotes] = useState("");
-  const [customerNotes, setCustomerNotes] = useState("");
+  const [customerNotes, setCustomerNotes] = useState(voicePrefill?.customerNotes || "");
   const [certifiedOnly, setCertifiedOnly] = useState(true);
-  const [deliverySpeed, setDeliverySpeed] = useState("48h");
-  const [timeWindow, setTimeWindow] = useState("");
-  const [pickupDate, setPickupDate] = useState("");
+  const [deliverySpeed, setDeliverySpeed] = useState(voicePrefill?.deliverySpeed || "48h");
+  const [timeWindow, setTimeWindow] = useState(voicePrefill?.pickupTimeWindow || "");
+  const [pickupDate, setPickupDate] = useState(voicePrefill?.pickupDate || "");
   const [selectedVendorId, setSelectedVendorId] = useState<number | null>(null);
   const [selectedAddressId, setSelectedAddressId] = useState<number | null>(null);
   const [selectedPaymentMethodId, setSelectedPaymentMethodId] = useState<number | null>(null);

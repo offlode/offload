@@ -148,12 +148,15 @@ async function ensureAddOns() {
       return;
     }
     const seeds = [
-      { name: "hypoallergenic_detergent", displayName: "Hypoallergenic Detergent", price: 2.50, description: "Free of dyes and fragrances — safe for sensitive skin.", category: "detergent", isActive: 1 },
-      { name: "eco_detergent",            displayName: "Eco-Friendly Detergent",   price: 2.00, description: "Plant-based, biodegradable formula.",               category: "detergent", isActive: 1 },
-      { name: "fragrance_free_detergent", displayName: "Fragrance-Free Detergent", price: 2.00, description: "No added fragrances.",                              category: "detergent", isActive: 1 },
-      { name: "stain_treatment",          displayName: "Stain Pre-Treatment",       price: 4.99, description: "Professional pre-treatment for tough stains.",     category: "treatment", isActive: 1 },
-      { name: "folded_separately",        displayName: "Folded Separately",         price: 3.00, description: "Items folded by family member.",                   category: "service",   isActive: 1 },
-      { name: "hangered_delivery",        displayName: "Hangered Delivery",          price: 5.99, description: "Delivered on hangers instead of folded.",          category: "service",   isActive: 1 },
+      // D10: priceMode set per business rules
+      // per_order: detergents + folded + hangered — charged once regardless of item count
+      // per_item:  stain_treatment — charged per garment treated
+      { name: "hypoallergenic_detergent", displayName: "Hypoallergenic Detergent", price: 2.50, description: "Free of dyes and fragrances — safe for sensitive skin.", category: "detergent", isActive: 1, priceMode: "per_order" },
+      { name: "eco_detergent",            displayName: "Eco-Friendly Detergent",   price: 2.00, description: "Plant-based, biodegradable formula.",               category: "detergent", isActive: 1, priceMode: "per_order" },
+      { name: "fragrance_free_detergent", displayName: "Fragrance-Free Detergent", price: 2.00, description: "No added fragrances.",                              category: "detergent", isActive: 1, priceMode: "per_order" },
+      { name: "stain_treatment",          displayName: "Stain Pre-Treatment",       price: 4.99, description: "Professional pre-treatment for tough stains.",     category: "treatment", isActive: 1, priceMode: "per_item" },
+      { name: "folded_separately",        displayName: "Folded Separately",         price: 3.00, description: "Items folded by family member.",                   category: "service",   isActive: 1, priceMode: "per_order" },
+      { name: "hangered_delivery",        displayName: "Hangered Delivery",          price: 5.99, description: "Delivered on hangers instead of folded.",          category: "service",   isActive: 1, priceMode: "per_order" },
       // Legacy same_day add-on REMOVED 2026-05-12: would double-charge alongside DELIVERY_FEES.same_day ($12.99).
       // Same-day is now a delivery-speed concept only, priced via pricing_config / DELIVERY_FEES.
       // { name: "same_day", ... } // DO NOT RESTORE without removing the delivery-fee path.
