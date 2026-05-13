@@ -74,9 +74,10 @@ export function registerTrackingRoutes(app: Express) {
     const activeOrders = (await storage.getOrdersByDriver(driverId)).filter(
       o => !["completed", "cancelled", "delivered"].includes(o.status)
     );
-    activeOrders.forEach(async order => {
+    // P2-049: replaced .forEach(async ...) with for...of
+    for (const order of activeOrders) {
       emitToOrder(order.id, "driver_location", { driverId, lat, lng, speed, heading, timestamp: loc.timestamp });
-    });
+    }
 
     res.json({ id: loc.id, lat, lng, timestamp: loc.timestamp });
   });
@@ -262,7 +263,7 @@ export function registerTrackingRoutes(app: Express) {
     if (!orderForPhotos) return res.status(404).json({ error: "Order not found" });
     const cu = (req as any).currentUser;
     const drPhoto = cu.role === "driver" ? await storage.getDriverByUserId(cu.id) : null;
-    const vnPhoto = ["laundromat","vendor"].includes(cu.role) ? (await (storage as any).getVendorByUserId?.(cu.id)) ?? (orderForPhotos.vendorId ? await storage.getVendor(orderForPhotos.vendorId) : null) : null;
+    const vnPhoto = ["laundromat","vendor"].includes(cu.role) ? (await storage.getVendorByUserId(cu.id)) ?? (orderForPhotos.vendorId ? await storage.getVendor(orderForPhotos.vendorId) : null) : null;
     if (!getOrderOwnershipAllowed(orderForPhotos, cu, drPhoto, vnPhoto)) {
       return res.status(403).json({ error: "Access denied" });
     }
@@ -291,7 +292,7 @@ export function registerTrackingRoutes(app: Express) {
     if (!orderSingle) return res.status(404).json({ error: "Order not found" });
     const cuS = (req as any).currentUser;
     const drS = cuS.role === "driver" ? await storage.getDriverByUserId(cuS.id) : null;
-    const vnS = ["laundromat","vendor"].includes(cuS.role) ? (await (storage as any).getVendorByUserId?.(cuS.id)) ?? (orderSingle.vendorId ? await storage.getVendor(orderSingle.vendorId) : null) : null;
+    const vnS = ["laundromat","vendor"].includes(cuS.role) ? (await storage.getVendorByUserId(cuS.id)) ?? (orderSingle.vendorId ? await storage.getVendor(orderSingle.vendorId) : null) : null;
     if (!getOrderOwnershipAllowed(orderSingle, cuS, drS, vnS)) {
       return res.status(403).json({ error: "Access denied" });
     }
@@ -315,7 +316,7 @@ export function registerTrackingRoutes(app: Express) {
     if (!orderT) return res.status(404).json({ error: "Order not found" });
     const cuT = (req as any).currentUser;
     const drT = cuT.role === "driver" ? await storage.getDriverByUserId(cuT.id) : null;
-    const vnT = ["laundromat","vendor"].includes(cuT.role) ? (await (storage as any).getVendorByUserId?.(cuT.id)) ?? (orderT.vendorId ? await storage.getVendor(orderT.vendorId) : null) : null;
+    const vnT = ["laundromat","vendor"].includes(cuT.role) ? (await storage.getVendorByUserId(cuT.id)) ?? (orderT.vendorId ? await storage.getVendor(orderT.vendorId) : null) : null;
     if (!getOrderOwnershipAllowed(orderT, cuT, drT, vnT)) {
       return res.status(403).json({ error: "Access denied" });
     }

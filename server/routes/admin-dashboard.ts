@@ -35,13 +35,13 @@ export function registerAdminDashboardRoutes(app: Express) {
 
     // Status distribution
     const statusCounts: Record<string, number> = {};
-    allOrders.forEach(async o => {
+    allOrders.forEach(o => {
       statusCounts[o.status] = (statusCounts[o.status] || 0) + 1;
     });
 
     // Revenue by vendor
     const revenueByVendor: Record<string, number> = {};
-    allOrders.filter(o => o.status === "delivered").forEach(async o => {
+    allOrders.filter(o => o.status === "delivered").forEach(o => {
       const vendor = allVendors.find(v => v.id === o.vendorId);
       const name = vendor?.name || "Unassigned";
       revenueByVendor[name] = (revenueByVendor[name] || 0) + (o.total || 0);
@@ -60,14 +60,14 @@ export function registerAdminDashboardRoutes(app: Express) {
     const allCustomers = await storage.getUsersByRole("customer");
     const totalLoyaltyPoints = allCustomers.reduce((sum, u) => sum + (u.loyaltyPoints || 0), 0);
     const tierBreakdown: Record<string, number> = { bronze: 0, silver: 0, gold: 0, platinum: 0 };
-    allCustomers.forEach(async u => {
+    allCustomers.forEach(u => {
       const t = u.loyaltyTier || "bronze";
       tierBreakdown[t] = (tierBreakdown[t] || 0) + 1;
     });
 
     // Pricing tier distribution
     const pricingTierCounts: Record<string, number> = {};
-    allOrders.forEach(async o => {
+    allOrders.forEach(o => {
       if (o.aiPricingTier) {
         pricingTierCounts[o.aiPricingTier] = (pricingTierCounts[o.aiPricingTier] || 0) + 1;
       }
@@ -232,7 +232,7 @@ export function registerAdminDashboardRoutes(app: Express) {
   app.get("/api/dashboard/revenue", requireAuth(ADMIN_ROLES), async (_req, res) => {
     const delivered = (await storage.getOrders()).filter(o => o.status === "delivered");
     const buckets: Record<string, number> = {};
-    delivered.forEach(async o => {
+    delivered.forEach(o => {
       const key = new Date(o.deliveredAt || o.createdAt).toISOString().slice(0, 10);
       buckets[key] = (buckets[key] || 0) + (o.total || 0);
     });
@@ -241,7 +241,7 @@ export function registerAdminDashboardRoutes(app: Express) {
 
   app.get("/api/dashboard/orders-by-status", requireAuth(ADMIN_ROLES), async (_req, res) => {
     const counts: Record<string, number> = {};
-    (await storage.getOrders()).forEach(async o => { counts[o.status] = (counts[o.status] || 0) + 1; });
+    (await storage.getOrders()).forEach(o => { counts[o.status] = (counts[o.status] || 0) + 1; });
     res.json(Object.entries(counts).map(([status, count]) => ({ status, count })));
   });
 
@@ -330,7 +330,7 @@ export function registerAdminDashboardRoutes(app: Express) {
     const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const dayRevenue: Record<number, number> = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
     const dayOrderCount: Record<number, number> = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
-    deliveredOrders.forEach(async o => {
+    deliveredOrders.forEach(o => {
       if (o.createdAt) {
         const dow = new Date(o.createdAt).getDay();
         dayRevenue[dow] = (dayRevenue[dow] || 0) + (o.total || 0);

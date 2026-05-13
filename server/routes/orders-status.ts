@@ -37,7 +37,7 @@ export function registerOrdersStatusRoutes(app: Express) {
     }
     if (["laundromat","vendor"].includes(currentUser.role)) {
       // Vendor can only see orders assigned to their vendor profile
-      const vendorProfile = await (storage as any).getVendorByUserId?.(currentUser.id);
+      const vendorProfile = await storage.getVendorByUserId(currentUser.id);
       if (!vendorProfile || order.vendorId !== vendorProfile.id) {
         return res.status(403).json({ error: "Access denied" });
       }

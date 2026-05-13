@@ -20,6 +20,7 @@ import { Readable } from "stream";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
+import { LRUCache } from "lru-cache";
 
 // ─── OpenAI client ────────────────────────────────────────────
 function getOpenAI(): OpenAI {
@@ -28,12 +29,15 @@ function getOpenAI(): OpenAI {
   return new OpenAI({ apiKey });
 }
 
-// ─── Rate limiter (10 voice requests / min per authenticated user) ─────────
+// P2-053: LRU-based rate limiter (matches lib/auth.ts pattern, auto-evicts stale entries)
 interface RateBucket {
   count: number;
   resetAt: number;
 }
-const rateBuckets = new Map<string, RateBucket>();
+const rateBuckets = new LRUCache<string, RateBucket>({
+  max: 10_000,
+  ttl: 2 * 60_000,
+});
 const RATE_LIMIT = 10;
 const RATE_WINDOW_MS = 60_000;
 
@@ -50,24 +54,17 @@ function checkVoiceRateLimit(userId: number): boolean {
   return true;
 }
 
-// Clean up stale buckets every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  Array.from(rateBuckets.entries()).forEach(([ip, bucket]) => {
-    if (now > bucket.resetAt) rateBuckets.delete(ip);
-  });
-}, 5 * 60_000);
-
 // ─── Multer — memory storage (audio blobs < 25 MB for Whisper) ─
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     // Accept common audio MIME types
+    // P2-052: removed application/octet-stream — only allow explicit audio types
     const ALLOWED_MIME = [
       "audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg",
       "audio/wav", "audio/x-wav", "audio/flac", "audio/m4a",
-      "audio/mp3", "application/octet-stream",
+      "audio/mp3",
     ];
     cb(null, ALLOWED_MIME.includes(file.mimetype) || file.mimetype.startsWith("audio/"));
   },

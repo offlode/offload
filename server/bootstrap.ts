@@ -32,7 +32,8 @@ function resolveBootstrapPassword(envName: string, role: string, email: string):
   const configured = process.env[envName];
   if (configured) return configured;
   const generated = randomBytes(18).toString("base64url").slice(0, 24);
-  console.warn(`[Bootstrap] ${envName} not set; generated one-time ${role} password for ${email}: ${generated}`);
+  // P2-002: never log generated passwords
+  console.warn(`[Bootstrap] ${envName} not set; generated one-time ${role} password for ${email} — set ${envName} env var to use a persistent password`);
   return generated;
 }
 

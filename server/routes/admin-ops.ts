@@ -93,13 +93,14 @@ export function registerAdminOpsRoutes(app: Express) {
 
     if (escalate) {
       const admins = await storage.getUsersByRole("admin");
-      admins.forEach(async admin => {
+      // P2-049: replaced .forEach(async ...) with for...of
+      for (const admin of admins) {
         await notifyUser(admin.id, null, "system",
           "Chat Escalation",
           `Customer chat session requires human attention. Topic: ${intent}`,
           "/admin/support"
         );
-      });
+      }
     }
 
     res.json({

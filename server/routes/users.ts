@@ -291,7 +291,8 @@ export function registerUserRoutes(app: Express) {
       return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
     }
     const temporaryPassword = randomBytes(18).toString("base64url").slice(0, 24);
-    console.warn(`[Driver] Generated one-time temporary password for new driver ${parsed.data.name}: ${temporaryPassword}`);
+    // P2-003: never log generated passwords
+    console.log(`[Driver] Generated one-time temporary password for new driver ${parsed.data.name}`);
     const driverUser = await storage.createUser({
       username: parsed.data.name.toLowerCase().replace(/\s/g, "_") + "_driver",
       password: hashPassword(temporaryPassword),

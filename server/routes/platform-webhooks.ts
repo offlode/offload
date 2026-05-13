@@ -1,58 +1,17 @@
 import type { Express } from "express";
 import { timingSafeEqual } from "crypto";
-import { Resend } from "resend";
 import { eq } from "drizzle-orm";
 import * as schema from "@shared/schema";
 import type { Order } from "@shared/schema";
 import { storage, db, logStripeReconciliation } from "../storage";
 import { getStripe } from "../lib/stripe";
-import { getOrderEmailTemplate } from "../lib/email-templates";
 import { requireAuth } from "../session";
+import { sendOrderEmail } from "../lib/order-email";
 import { now, recordPayoutsForCapturedOrder } from "../engines";
 
 export function registerWebhookRoutes(app: Express) {
 
   const stripe = getStripe();
-
-  // ═══════════════════════════════════════════════════════════════
-  //  EMAIL NOTIFICATION SYSTEM
-  // ═══════════════════════════════════════════════════════════════
-
-  async function sendOrderEmail(order: Order, template: string) {
-    const customer = await storage.getUser(order.customerId);
-    if (!customer?.email) return;
-
-    const tmpl = getOrderEmailTemplate(template, order, customer);
-    if (!tmpl) {
-      console.log(`[Email] No template for '${template}', skipping order#${order.id}`);
-      return;
-    }
-
-    if (process.env.RESEND_API_KEY) {
-      const resend = new Resend(process.env.RESEND_API_KEY);
-      const result = await resend.emails.send({
-        from: "Offload <notifications@offloadusa.com>",
-        to: customer.email,
-        subject: tmpl.subject,
-        html: tmpl.html,
-        text: tmpl.text,
-      });
-      console.log(`[Email] Sent '${template}' to customer#${customer.id} via Resend: ${(result as any)?.data?.id || (result as any)?.id || "accepted"}`);
-    } else if (process.env.SENDGRID_API_KEY) {
-      console.log(`[Email] Would send '${template}' to customer#${customer.id} via SendGrid`);
-    } else {
-      console.log(`[Email] Would send '${template}' to customer#${customer.id}: ${tmpl.subject}`);
-    }
-
-    await storage.createOrderEvent({
-      orderId: order.id,
-      eventType: "email_sent",
-      description: `Email sent: ${tmpl.subject}`,
-      details: JSON.stringify({ template, to: customer.email }),
-      actorRole: "system",
-      timestamp: now(),
-    });
-  }
 
   // ── Send email endpoint for admin/system use ──
   app.post("/api/notifications/send-email", requireAuth(["admin", "manager"]), async (req, res) => {
@@ -315,7 +274,8 @@ export function registerWebhookRoutes(app: Express) {
       // Allow Stripe to retry events whose local processing failed after the
       // dedupe row was inserted.
       if (processedStripeEventId) await storage.deleteStripeEvent(processedStripeEventId);
-      res.status(400).json({ error: `Webhook Error: ${err.message}` });
+      // P2-008: return generic error message, log details server-side only
+      res.status(400).json({ error: "Webhook processing failed" });
     }
   };
 

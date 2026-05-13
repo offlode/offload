@@ -37,7 +37,7 @@ export function registerOrdersFlowRoutes(app: Express) {
       }
     }
     if (["laundromat","vendor"].includes(currentUser.role)) {
-      const vendorProfile = await (storage as any).getVendorByUserId?.(currentUser.id);
+      const vendorProfile = await storage.getVendorByUserId(currentUser.id);
       if (!vendorProfile || order.vendorId !== vendorProfile.id) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -377,7 +377,7 @@ export function registerOrdersFlowRoutes(app: Express) {
 
     const currentUser = (req as any).currentUser;
     if (["laundromat","vendor"].includes(currentUser.role)) {
-      const vendorProfile = await (storage as any).getVendorByUserId?.(currentUser.id);
+      const vendorProfile = await storage.getVendorByUserId(currentUser.id);
       if (!vendorProfile || order.vendorId !== vendorProfile.id) {
         return res.status(403).json({ error: "Access denied" });
       }

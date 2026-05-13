@@ -42,7 +42,7 @@ async function socketCanAccessOrder(orderId: number, userId: number, role: strin
     return !!drv && order.driverId === drv.id;
   }
   if (role === "vendor" || role === "laundromat" || role === "manager") {
-    const v = await (storage as any).getVendorByUserId?.(userId);
+    const v = await storage.getVendorByUserId(userId);
     return !!v && order.vendorId === v.id;
   }
   return false;
@@ -160,26 +160,15 @@ export function log(message: string, source = "express") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
+// P2-001: status-code + path-only logging (no response body — prevents leaking tokens/secrets/PII)
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
 
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-
-      log(logLine);
+      log(`${req.method} ${path} ${res.statusCode} in ${duration}ms`);
     }
   });
 

@@ -47,12 +47,12 @@ export function registerOrdersWeightRoutes(app: Express) {
     const dayVendorSum: Record<string, number> = {};
     const dayVendorCount: Record<string, number> = {};
 
-    DAY_LABELS.forEach(async d => {
+    DAY_LABELS.forEach(d => {
       dayScoreSum[d] = 0; dayScoreCount[d] = 0;
       dayVendorSum[d] = 0; dayVendorCount[d] = 0;
     });
 
-    scoredOrders.forEach(async o => {
+    scoredOrders.forEach(o => {
       if (o.createdAt) {
         const raw = new Date(o.createdAt).getDay(); // 0=Sun..6=Sat
         // Map to Mon-Sun labels
@@ -61,7 +61,7 @@ export function registerOrdersWeightRoutes(app: Express) {
         dayScoreCount[label]++;
       }
     });
-    allVendorOrders.forEach(async o => {
+    allVendorOrders.forEach(o => {
       if (o.createdAt) {
         const raw = new Date(o.createdAt).getDay();
         const label = DAY_LABELS[(raw + 6) % 7];
@@ -222,7 +222,8 @@ export function registerOrdersWeightRoutes(app: Express) {
       return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedDirtyWeight.error.issues });
     }
     const { weight } = parsedDirtyWeight.data;
-    const actorId = req.body.actorId;
+    // P2-010: use authenticated user ID, not body-supplied actorId
+    const actorId = (req as any).currentUser.id;
     if (!weight || weight <= 0) return res.status(400).json({ error: "Valid weight is required" });
 
     await storage.updateOrder(order.id, { dirtyWeight: weight });
@@ -258,7 +259,8 @@ export function registerOrdersWeightRoutes(app: Express) {
       return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedCleanWeight.error.issues });
     }
     const { weight } = parsedCleanWeight.data;
-    const actorId = req.body.actorId;
+    // P2-010: use authenticated user ID, not body-supplied actorId
+    const actorId = (req as any).currentUser.id;
     if (!weight || weight <= 0) return res.status(400).json({ error: "Valid weight is required" });
 
     const updateData: any = { cleanWeight: weight };

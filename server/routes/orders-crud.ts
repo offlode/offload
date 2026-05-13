@@ -1,20 +1,15 @@
 import type { Express } from "express";
 import { z } from "zod";
-import { Resend } from "resend";
 import { eq } from "drizzle-orm";
 import * as schema from "@shared/schema";
 import { PRICING_TIERS } from "@shared/schema";
 import type { Order } from "@shared/schema";
-import { storage, db, logStripeReconciliation, addOrderCents } from "../storage";
+import { storage, db, addOrderCents } from "../storage";
 import { pricingConfig } from "../pricing-config-service";
 import {
   calculatePricing,
   getSurgePricingTierAsync, getDemandMultiplier,
 } from "../lib/pricing";
-import {
-  getStripe, hasStripe as hasStripeKey, dollarsToCents, centsToDollars,
-} from "../lib/stripe";
-import { getOrderEmailTemplate } from "../lib/email-templates";
 import { requireAuth } from "../session";
 import { isNJZip } from "../lib/nj-zip";
 import {
@@ -46,198 +41,11 @@ export async function enrichAdminOrder(order: Order) {
   };
 }
 
-export async function sendOrderEmail(order: Order, template: string) {
-  const customer = await storage.getUser(order.customerId);
-  if (!customer?.email) return;
+// P2-048: sendOrderEmail extracted to server/lib/order-email.ts
+export { sendOrderEmail } from "../lib/order-email";
 
-  const tmpl = getOrderEmailTemplate(template, order, customer);
-  if (!tmpl) {
-    console.log(`[Email] No template for '${template}', skipping order#${order.id}`);
-    return;
-  }
-
-  if (process.env.RESEND_API_KEY) {
-    const resend = new Resend(process.env.RESEND_API_KEY);
-    const result = await resend.emails.send({
-      from: "Offload <notifications@offloadusa.com>",
-      to: customer.email,
-      subject: tmpl.subject,
-      html: tmpl.html,
-      text: tmpl.text,
-    });
-    console.log(`[Email] Sent '${template}' to customer#${customer.id} via Resend: ${(result as any)?.data?.id || (result as any)?.id || "accepted"}`);
-  } else if (process.env.SENDGRID_API_KEY) {
-    console.log(`[Email] Would send '${template}' to customer#${customer.id} via SendGrid`);
-  } else {
-    console.log(`[Email] Would send '${template}' to customer#${customer.id}: ${tmpl.subject}`);
-  }
-
-  await storage.createOrderEvent({
-    orderId: order.id,
-    eventType: "email_sent",
-    description: `Email sent: ${tmpl.subject}`,
-    details: JSON.stringify({ template, to: customer.email }),
-    actorRole: "system",
-    timestamp: now(),
-  });
-}
-
-export async function getCapturedChargeForOrder(orderId: number) {
-  const transactions = await storage.getPaymentTransactionsByOrder(orderId);
-  const chargeTxn = transactions.find(t =>
-    t.type === "charge" &&
-    ["completed", "paid", "captured"].includes(String(t.status || "")) &&
-    !!t.stripePaymentIntentId
-  ) || transactions.find(t =>
-    t.type === "charge" &&
-    !!t.stripePaymentIntentId &&
-    !String(t.stripePaymentIntentId).startsWith("pi_demo_")
-  );
-  const alreadyRefundedCents = transactions
-    .filter(t => t.type === "refund" && t.status === "completed")
-    .reduce((sum, t) => sum + Number(t.amountCents ?? dollarsToCents(t.amount || 0)), 0);
-  return { transactions, chargeTxn, alreadyRefundedCents };
-}
-
-export async function issueStripeRefundForOrder(order: Order, amountCents: number, reason: string | undefined, idempotencyKey: string) {
-  const hasStripe = hasStripeKey();
-  const stripe = getStripe();
-
-  if (!["paid", "captured"].includes(String(order.paymentStatus || ""))) {
-    return { errorStatus: 400, error: "Order payment must be paid or captured before refunding" };
-  }
-
-  const { chargeTxn, alreadyRefundedCents } = await getCapturedChargeForOrder(order.id);
-  if (!chargeTxn) {
-    return { errorStatus: 400, error: "Captured payment transaction not found" };
-  }
-  if (stripe && (!chargeTxn.stripePaymentIntentId || String(chargeTxn.stripePaymentIntentId).startsWith("pi_demo_"))) {
-    return { errorStatus: 400, error: "Captured Stripe payment intent not found" };
-  }
-
-  const capturedAmountCents = Number(chargeTxn.amountCents ?? dollarsToCents(chargeTxn.amount || (order.finalPrice ?? order.total ?? 0)));
-  const remainingRefundableCents = capturedAmountCents - alreadyRefundedCents;
-  if (!Number.isInteger(amountCents) || amountCents <= 0) {
-    return { errorStatus: 400, error: "Refund amount must be a positive integer number of cents" };
-  }
-  if (amountCents > remainingRefundableCents) {
-    return {
-      errorStatus: 400,
-      error: "Refund amount exceeds remaining refundable amount",
-      maxRefundable: remainingRefundableCents,
-      totalAlreadyRefunded: alreadyRefundedCents,
-    };
-  }
-
-  let stripeRefundId: string | null = null;
-  if (stripe) {
-    try {
-      // Verify with Stripe that the PaymentIntent is in a state where a
-      // refund of this size is actually possible. This catches edge cases
-      // where local state is out of sync with Stripe (e.g. dispute, prior
-      // out-of-band refund, uncaptured intent).
-      const pi = await stripe.paymentIntents.retrieve(chargeTxn.stripePaymentIntentId!, {
-        expand: ["latest_charge"],
-      });
-      if (pi.status !== "succeeded") {
-        return { errorStatus: 400, error: `Cannot refund: PaymentIntent status is ${pi.status}` };
-      }
-      const latestCharge: any = (pi as any).latest_charge;
-      if (!latestCharge || typeof latestCharge === "string") {
-        return { errorStatus: 400, error: "Cannot refund: PaymentIntent has no expanded charge" };
-      }
-      if (latestCharge.refunded === true) {
-        return { errorStatus: 400, error: "Cannot refund: charge is already fully refunded on Stripe" };
-      }
-      if (latestCharge.disputed === true) {
-        return { errorStatus: 400, error: "Cannot refund: charge has an active dispute" };
-      }
-      const stripeRemainingCents = Number(latestCharge.amount_captured || latestCharge.amount || 0) - Number(latestCharge.amount_refunded || 0);
-      if (amountCents > stripeRemainingCents) {
-        return {
-          errorStatus: 400,
-          error: "Refund amount exceeds Stripe-side remaining refundable amount",
-          stripeRemainingCents,
-        };
-      }
-      const refund = await stripe.refunds.create({
-        payment_intent: chargeTxn.stripePaymentIntentId!,
-        amount: amountCents,
-        reason: (reason === "duplicate" || reason === "fraudulent" || reason === "requested_by_customer") ? reason : "requested_by_customer",
-      }, { idempotencyKey });
-      stripeRefundId = refund.id;
-    } catch (err: any) {
-      console.error("[Stripe] Refund failed:", err.message);
-      return { errorStatus: 502, error: "Refund processing failed" };
-    }
-  }
-
-  const ts_ = now();
-  const amountDollars = centsToDollars(amountCents);
-  const newTotalRefundedCents = alreadyRefundedCents + amountCents;
-  const newPaymentStatus = newTotalRefundedCents >= capturedAmountCents ? "refunded" : "partially_refunded";
-
-  // Stripe refund already succeeded above — DB writes must be atomic.
-  // If the transaction fails, log to reconciliation table so admins can fix.
-  let txn: any;
-  try {
-    await db.transaction(async (tx) => {
-      const [inserted] = await tx.insert(schema.paymentTransactions).values({
-        orderId: order.id,
-        type: "refund",
-        amount: amountDollars,
-        amountCents,
-        currency: "usd",
-        status: "completed",
-        recipientType: "platform",
-        metadata: JSON.stringify({ reason, stripeRefundId, amountCents, idempotencyKey, demo: !hasStripe }),
-        createdAt: ts_,
-        completedAt: ts_,
-      } as any).returning();
-      txn = inserted;
-      await tx.update(schema.orders).set({
-        paymentStatus: newPaymentStatus,
-        updatedAt: ts_,
-      } as any).where(eq(schema.orders.id, order.id));
-      await tx.insert(schema.orderEvents).values({
-        orderId: order.id,
-        eventType: "refund_issued",
-        description: `Refund of $${amountDollars.toFixed(2)} issued. Reason: ${reason || "not specified"}`,
-        timestamp: ts_,
-      } as any);
-    });
-  } catch (txErr: any) {
-    console.error("[refund] DB transaction failed after Stripe refund succeeded:", txErr.message);
-    await logStripeReconciliation({
-      stripeResourceId: stripeRefundId || undefined,
-      action: "refund_db_write",
-      dbState: JSON.stringify({ orderId: order.id, amountCents, stripeRefundId }),
-      errorMessage: txErr.message,
-      notes: "Stripe refund succeeded but DB write failed — refund exists on Stripe but not in DB",
-    });
-    // Return a partial success so the caller knows Stripe worked but DB didn't
-    return {
-      txn: null,
-      stripeRefundId,
-      amountCents,
-      amount: amountDollars,
-      remainingRefundable: remainingRefundableCents - amountCents,
-      totalRefunded: newTotalRefundedCents,
-      paymentStatus: newPaymentStatus,
-      warning: "Refund issued on Stripe but database update failed — logged for reconciliation",
-    };
-  }
-
-  return {
-    txn,
-    stripeRefundId,
-    amountCents,
-    amount: amountDollars,
-    remainingRefundable: remainingRefundableCents - amountCents,
-    totalRefunded: newTotalRefundedCents,
-    paymentStatus: newPaymentStatus,
-  };
-}
+// P2-047: refund helpers extracted to server/lib/refund.ts
+export { getCapturedChargeForOrder, issueStripeRefundForOrder } from "../lib/refund";
 
 // ── Route registration ─────────────────────────────────────────────────────────
 
@@ -291,17 +99,28 @@ export function registerOrdersCrudRoutes(app: Express) {
     const order = await storage.getOrder(Number(String(req.params.id)));
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    // BOLA check: enforce ownership based on role
+    // P2-004 + P2-013: centralized ownership check for ALL roles
     const user = (req as any).currentUser;
     const userRole = user?.role || "customer";
-    if (userRole === "customer" && order.customerId !== user.id) {
-      return res.status(403).json({ error: "Access denied" });
-    }
-    if (userRole === "driver" && order.driverId !== user.id) {
+    if (["admin", "manager", "support"].includes(userRole)) {
+      // Admin/manager/support can access all orders
+    } else if (userRole === "customer") {
+      if (order.customerId !== user.id) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+    } else if (userRole === "driver") {
+      // P2-013: always resolve via getDriverByUserId, never trust order.driverId === user.id directly
       const driverProfile = await storage.getDriverByUserId(user.id);
       if (!driverProfile || (order.driverId !== driverProfile.id && order.returnDriverId !== driverProfile.id)) {
         return res.status(403).json({ error: "Access denied" });
       }
+    } else if (["laundromat", "vendor"].includes(userRole)) {
+      const vendorProfile = await storage.getVendorByUserId(user.id);
+      if (!vendorProfile || order.vendorId !== vendorProfile.id) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+    } else {
+      return res.status(403).json({ error: "Access denied" });
     }
 
     // Enrich with related data
@@ -502,57 +321,73 @@ export function registerOrdersCrudRoutes(app: Express) {
         surgeTotal = Math.round((surgeSubtotal + surgeTax + deliveryFee) * 100) / 100;
       }
 
-      let discount = 0;
-      let loyaltyPointsRedeemed = 0;
-
-      // Validate promo code (reads only — writes deferred to txn)
-      let appliedPromoId: number | null = null;
-      let promoUsedCountBefore: number | null = null;
+      // P2-006 + P2-007: promo + loyalty validation moved INSIDE transaction to prevent TOCTOU
+      // Pre-flight checks (can reject early before txn)
       if (promoCode) {
-        const promo = await storage.getPromoCode(promoCode);
-        if (promo && promo.isActive && (!promo.expiresAt || new Date(promo.expiresAt) > new Date())) {
-          const userUsageCount = await storage.getPromoUsageByUser(promo.id, customerId);
+        const promoPreCheck = await storage.getPromoCode(promoCode);
+        if (!promoPreCheck || !promoPreCheck.isActive || (promoPreCheck.expiresAt && new Date(promoPreCheck.expiresAt) <= new Date())) {
+          // silently skip invalid promo (matches prior behavior)
+        } else {
+          const userUsageCount = await storage.getPromoUsageByUser(promoPreCheck.id, customerId);
           if (userUsageCount > 0) {
             return res.status(400).json({ error: "You've already used this promo code" });
           }
-          if (!promo.minOrderAmount || surgeTotal >= promo.minOrderAmount) {
-            if (!promo.maxUses || promo.usedCount! < promo.maxUses) {
-              if (promo.type === "percentage") {
-                discount = Math.round(surgeTotal * (promo.value / 100) * 100) / 100;
-              } else if (promo.type === "fixed") {
-                discount = Math.min(promo.value, surgeTotal);
-              } else if (promo.type === "free_delivery") {
-                discount = deliveryFee;
-              }
-              appliedPromoId = promo.id;
-              promoUsedCountBefore = promo.usedCount || 0;
-            }
-          }
         }
       }
-
-      // Validate loyalty points (reads only — deduction deferred to txn)
-      let loyaltyPointsBefore: number | null = null;
-      if (loyaltyPointsToRedeem && loyaltyPointsToRedeem > 0) {
-        const user = await storage.getUser(customerId);
-        if (user && user.loyaltyPoints && user.loyaltyPoints >= loyaltyPointsToRedeem) {
-          const maxRedeemable = Math.floor(user.loyaltyPoints / 100) * 100;
-          const toRedeem = Math.min(loyaltyPointsToRedeem, maxRedeemable);
-          const dollarValue = toRedeem / 100;
-          discount += dollarValue;
-          loyaltyPointsRedeemed = toRedeem;
-          loyaltyPointsBefore = user.loyaltyPoints;
-        }
-      }
-
-      const finalTotal = Math.max(0, Math.round((surgeTotal - discount) * 100) / 100);
 
       const ts_ = now();
       const slaDeadline = calculateSLADeadline(speed, ts_);
       const generatedOrderNumber = generateOrderNumber();
 
       // ── Atomic txn: order create + promo increment + loyalty deduction + add-ons + event ──
-      const order = await db.transaction(async (tx) => {
+      const txnResult = await db.transaction(async (tx) => {
+        // P2-006: re-read promo inside txn with FOR UPDATE semantics
+        let discount = 0;
+        let loyaltyPointsRedeemed = 0;
+        let appliedPromoId: number | null = null;
+
+        if (promoCode) {
+          const [promoRow] = await tx.select().from(schema.promoCodes)
+            .where(eq(schema.promoCodes.code, promoCode))
+            .for("update");
+          if (promoRow && promoRow.isActive && (!promoRow.expiresAt || new Date(promoRow.expiresAt) > new Date())) {
+            if (!promoRow.minOrderAmount || surgeTotal >= promoRow.minOrderAmount) {
+              if (!promoRow.maxUses || (promoRow.usedCount ?? 0) < promoRow.maxUses) {
+                if (promoRow.type === "percentage") {
+                  discount = Math.round(surgeTotal * (promoRow.value / 100) * 100) / 100;
+                } else if (promoRow.type === "fixed") {
+                  discount = Math.min(promoRow.value, surgeTotal);
+                } else if (promoRow.type === "free_delivery") {
+                  discount = deliveryFee;
+                }
+                appliedPromoId = promoRow.id;
+                await tx.update(schema.promoCodes).set({
+                  usedCount: (promoRow.usedCount ?? 0) + 1,
+                } as any).where(eq(schema.promoCodes.id, promoRow.id));
+              }
+            }
+          }
+        }
+
+        // P2-007: re-read loyalty points inside txn with FOR UPDATE
+        if (loyaltyPointsToRedeem && loyaltyPointsToRedeem > 0) {
+          const [userRow] = await tx.select().from(schema.users)
+            .where(eq(schema.users.id, customerId))
+            .for("update");
+          if (userRow && userRow.loyaltyPoints && userRow.loyaltyPoints >= loyaltyPointsToRedeem) {
+            const maxRedeemable = Math.floor(userRow.loyaltyPoints / 100) * 100;
+            const toRedeem = Math.min(loyaltyPointsToRedeem, maxRedeemable);
+            const dollarValue = toRedeem / 100;
+            discount += dollarValue;
+            loyaltyPointsRedeemed = toRedeem;
+            await tx.update(schema.users).set({
+              loyaltyPoints: userRow.loyaltyPoints - toRedeem,
+            } as any).where(eq(schema.users.id, customerId));
+          }
+        }
+
+        const finalTotal = Math.max(0, Math.round((surgeTotal - discount) * 100) / 100);
+
         // Create order
         const orderData = addOrderCents({
           orderNumber: generatedOrderNumber,
@@ -594,19 +429,7 @@ export function registerOrdersCrudRoutes(app: Express) {
         });
         const [ord] = await tx.insert(schema.orders).values(orderData as any).returning();
 
-        // Increment promo usage count (was outside txn before)
-        if (appliedPromoId && promoUsedCountBefore != null) {
-          await tx.update(schema.promoCodes).set({
-            usedCount: promoUsedCountBefore + 1,
-          } as any).where(eq(schema.promoCodes.id, appliedPromoId));
-        }
-
-        // Deduct loyalty points (was outside txn before)
-        if (loyaltyPointsRedeemed > 0 && loyaltyPointsBefore != null) {
-          await tx.update(schema.users).set({
-            loyaltyPoints: loyaltyPointsBefore - loyaltyPointsRedeemed,
-          } as any).where(eq(schema.users.id, customerId));
-        }
+        // P2-006/007: promo increment + loyalty deduction already done above with FOR UPDATE
 
         // Create order add-on records
         for (const addon of parsedAddOns) {
@@ -652,8 +475,10 @@ export function registerOrdersCrudRoutes(app: Express) {
           timestamp: ts_,
         } as any);
 
-        return ord;
+        return { ord, finalTotal };
       });
+      const finalTotal: number = txnResult.finalTotal;
+      const order = txnResult.ord;
 
       // ── STEP 1: Payment status ──
       // Wave 2 (S4 follow-up): Only genuine zero-dollar orders auto-authorize.
@@ -766,13 +591,14 @@ export function registerOrdersCrudRoutes(app: Express) {
           timestamp: now(),
         });
         const admins = await storage.getUsersByRole("admin");
-        admins.forEach(async admin => {
+        // P2-049: replaced .forEach(async ...) with for...of
+        for (const admin of admins) {
           await notifyUser(admin.id, order.id, "fraud_alert",
             "Fraud Alert",
             `Order ${order.orderNumber} flagged with risk score ${fraud.riskScore}/100`,
             "/admin/orders"
           );
-        });
+        }
       }
 
       res.status(201).json(await storage.getOrder(order.id));

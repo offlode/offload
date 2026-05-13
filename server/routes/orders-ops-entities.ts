@@ -11,6 +11,7 @@ import { storage, db, logStripeReconciliation } from "../storage";
 import { pricingConfig } from "../pricing-config-service";
 import { applyVendorCertification } from "../certified";
 import { getStripe, hasStripe as hasStripeKey, dollarsToCents, centsToDollars } from "../lib/stripe";
+import { issueStripeRefundForOrder } from "../lib/refund";
 import { logAdminAction } from "../audit-helpers";
 import { pick } from "../lib/util";
 import { DISPUTE_ADMIN_UPDATE_FIELDS, PAYMENT_METHOD_UPDATE_FIELDS } from "../lib/patch-allowlists";
@@ -187,7 +188,7 @@ export function registerOrdersOpsEntitiesRoutes(app: Express) {
     const cu = (req as any).currentUser;
     const drC = cu.role === "driver" ? await storage.getDriverByUserId(cu.id) : null;
     const vnC = ["laundromat","vendor","manager"].includes(cu.role)
-      ? await (storage as any).getVendorByUserId?.(cu.id)
+      ? await storage.getVendorByUserId(cu.id)
       : null;
     if (!getOrderOwnershipAllowed(orderC, cu, drC, vnC)) {
       return res.status(403).json({ error: "Access denied" });
@@ -202,7 +203,7 @@ export function registerOrdersOpsEntitiesRoutes(app: Express) {
     const cu = (req as any).currentUser;
     // Vendors must own this order; admins are exempt.
     if (cu.role !== "admin") {
-      const vn = await (storage as any).getVendorByUserId?.(cu.id);
+      const vn = await storage.getVendorByUserId(cu.id);
       if (!vn || orderC.vendorId !== vn.id) {
         return res.status(403).json({ error: "Access denied" });
       }
@@ -383,13 +384,14 @@ export function registerOrdersOpsEntitiesRoutes(app: Express) {
 
       // Notify admins
       const admins = await storage.getUsersByRole("admin");
-      admins.forEach(async admin => {
+      // P2-049: replaced .forEach(async ...) with for...of
+      for (const admin of admins) {
         await notifyUser(admin.id, order.id, "system",
           "New Dispute",
           `Dispute on order ${order.orderNumber}: ${dispute.reason}`,
           `/admin/disputes`
         );
-      });
+      }
     }
 
     res.status(201).json(dispute);
@@ -646,163 +648,5 @@ export function registerOrdersOpsEntitiesRoutes(app: Express) {
     res.json(await storage.getCustomerStats(Number(String(req.params.id))));
   });
 
-  // ── Internal helpers ──────────────────────────────────────
-
-  const hasStripe = hasStripeKey();
-  const stripe = getStripe();
-
-  async function getCapturedChargeForOrder(orderId: number) {
-    const transactions = await storage.getPaymentTransactionsByOrder(orderId);
-    const chargeTxn = transactions.find(t =>
-      t.type === "charge" &&
-      ["completed", "paid", "captured"].includes(String(t.status || "")) &&
-      !!t.stripePaymentIntentId
-    ) || transactions.find(t =>
-      t.type === "charge" &&
-      !!t.stripePaymentIntentId &&
-      !String(t.stripePaymentIntentId).startsWith("pi_demo_")
-    );
-    const alreadyRefundedCents = transactions
-      .filter(t => t.type === "refund" && t.status === "completed")
-      .reduce((sum, t) => sum + Number(t.amountCents ?? dollarsToCents(t.amount || 0)), 0);
-    return { transactions, chargeTxn, alreadyRefundedCents };
-  }
-
-  async function issueStripeRefundForOrder(order: Order, amountCents: number, reason: string | undefined, idempotencyKey: string) {
-    if (!["paid", "captured"].includes(String(order.paymentStatus || ""))) {
-      return { errorStatus: 400, error: "Order payment must be paid or captured before refunding" };
-    }
-
-    const { chargeTxn, alreadyRefundedCents } = await getCapturedChargeForOrder(order.id);
-    if (!chargeTxn) {
-      return { errorStatus: 400, error: "Captured payment transaction not found" };
-    }
-    if (stripe && (!chargeTxn.stripePaymentIntentId || String(chargeTxn.stripePaymentIntentId).startsWith("pi_demo_"))) {
-      return { errorStatus: 400, error: "Captured Stripe payment intent not found" };
-    }
-
-    const capturedAmountCents = Number(chargeTxn.amountCents ?? dollarsToCents(chargeTxn.amount || (order.finalPrice ?? order.total ?? 0)));
-    const remainingRefundableCents = capturedAmountCents - alreadyRefundedCents;
-    if (!Number.isInteger(amountCents) || amountCents <= 0) {
-      return { errorStatus: 400, error: "Refund amount must be a positive integer number of cents" };
-    }
-    if (amountCents > remainingRefundableCents) {
-      return {
-        errorStatus: 400,
-        error: "Refund amount exceeds remaining refundable amount",
-        maxRefundable: remainingRefundableCents,
-        totalAlreadyRefunded: alreadyRefundedCents,
-      };
-    }
-
-    let stripeRefundId: string | null = null;
-    if (stripe) {
-      try {
-        // Verify with Stripe that the PaymentIntent is in a state where a
-        // refund of this size is actually possible. This catches edge cases
-        // where local state is out of sync with Stripe (e.g. dispute, prior
-        // out-of-band refund, uncaptured intent).
-        const pi = await stripe.paymentIntents.retrieve(chargeTxn.stripePaymentIntentId!, {
-          expand: ["latest_charge"],
-        });
-        if (pi.status !== "succeeded") {
-          return { errorStatus: 400, error: `Cannot refund: PaymentIntent status is ${pi.status}` };
-        }
-        const latestCharge: any = (pi as any).latest_charge;
-        if (!latestCharge || typeof latestCharge === "string") {
-          return { errorStatus: 400, error: "Cannot refund: PaymentIntent has no expanded charge" };
-        }
-        if (latestCharge.refunded === true) {
-          return { errorStatus: 400, error: "Cannot refund: charge is already fully refunded on Stripe" };
-        }
-        if (latestCharge.disputed === true) {
-          return { errorStatus: 400, error: "Cannot refund: charge has an active dispute" };
-        }
-        const stripeRemainingCents = Number(latestCharge.amount_captured || latestCharge.amount || 0) - Number(latestCharge.amount_refunded || 0);
-        if (amountCents > stripeRemainingCents) {
-          return {
-            errorStatus: 400,
-            error: "Refund amount exceeds Stripe-side remaining refundable amount",
-            stripeRemainingCents,
-          };
-        }
-        const refund = await stripe.refunds.create({
-          payment_intent: chargeTxn.stripePaymentIntentId!,
-          amount: amountCents,
-          reason: (reason === "duplicate" || reason === "fraudulent" || reason === "requested_by_customer") ? reason : "requested_by_customer",
-        }, { idempotencyKey });
-        stripeRefundId = refund.id;
-      } catch (err: any) {
-        console.error("[Stripe] Refund failed:", err.message);
-        return { errorStatus: 502, error: "Refund processing failed" };
-      }
-    }
-
-    const ts_ = now();
-    const amountDollars = centsToDollars(amountCents);
-    const newTotalRefundedCents = alreadyRefundedCents + amountCents;
-    const capturedAmountCentsTotal = capturedAmountCents;
-    const newPaymentStatus = newTotalRefundedCents >= capturedAmountCentsTotal ? "refunded" : "partially_refunded";
-
-    // Stripe refund already succeeded above — DB writes must be atomic.
-    // If the transaction fails, log to reconciliation table so admins can fix.
-    let txn: any;
-    try {
-      await db.transaction(async (tx) => {
-        const [inserted] = await tx.insert(schema.paymentTransactions).values({
-          orderId: order.id,
-          type: "refund",
-          amount: amountDollars,
-          amountCents,
-          currency: "usd",
-          status: "completed",
-          recipientType: "platform",
-          metadata: JSON.stringify({ reason, stripeRefundId, amountCents, idempotencyKey, demo: !hasStripe }),
-          createdAt: ts_,
-          completedAt: ts_,
-        } as any).returning();
-        txn = inserted;
-        await tx.update(schema.orders).set({
-          paymentStatus: newPaymentStatus,
-          updatedAt: ts_,
-        } as any).where(eq(schema.orders.id, order.id));
-        await tx.insert(schema.orderEvents).values({
-          orderId: order.id,
-          eventType: "refund_issued",
-          description: `Refund of $${amountDollars.toFixed(2)} issued. Reason: ${reason || "not specified"}`,
-          timestamp: ts_,
-        } as any);
-      });
-    } catch (txErr: any) {
-      console.error("[refund] DB transaction failed after Stripe refund succeeded:", txErr.message);
-      await logStripeReconciliation({
-        stripeResourceId: stripeRefundId || undefined,
-        action: "refund_db_write",
-        dbState: JSON.stringify({ orderId: order.id, amountCents, stripeRefundId }),
-        errorMessage: txErr.message,
-        notes: "Stripe refund succeeded but DB write failed — refund exists on Stripe but not in DB",
-      });
-      // Return a partial success so the caller knows Stripe worked but DB didn't
-      return {
-        txn: null,
-        stripeRefundId,
-        amountCents,
-        amount: amountDollars,
-        remainingRefundable: remainingRefundableCents - amountCents,
-        totalRefunded: newTotalRefundedCents,
-        paymentStatus: newPaymentStatus,
-        warning: "Refund issued on Stripe but database update failed — logged for reconciliation",
-      };
-    }
-
-    return {
-      txn,
-      stripeRefundId,
-      amountCents,
-      amount: amountDollars,
-      remainingRefundable: remainingRefundableCents - amountCents,
-      totalRefunded: newTotalRefundedCents,
-      paymentStatus: newPaymentStatus,
-    };
-  }
+  // P2-047: refund helpers imported from server/lib/refund.ts
 }

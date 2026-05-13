@@ -3,11 +3,10 @@ import { z } from "zod";
 import { randomBytes } from "crypto";
 import rateLimit from "express-rate-limit";
 import {
-  PRICING_TIERS, DELIVERY_FEES, QUOTE_VALIDITY_MINUTES, insertServiceTypeSchema,
+  PRICING_TIERS, DELIVERY_FEES, QUOTE_VALIDITY_MINUTES,
 } from "@shared/schema";
 import { storage } from "../storage";
 import { pricingConfig } from "../pricing-config-service";
-import { logAdminAction } from "../audit-helpers";
 import { checkCoverage } from "../service-area";
 import {
   distanceMiles, TAX_RATE, calculateQuotePrice,
@@ -29,23 +28,7 @@ export function registerQuotesPricingRoutes(app: Express) {
   const quoteDynamicLimiter = makeRouteLimiter(20);
   const quotesLimiter = makeRouteLimiter(20);
 
-  // ─────────────────────────────────────────────────────────
-  //  SERVICE TYPES
-  // ─────────────────────────────────────────────────────────
-
-  app.get("/api/service-types", async (_req, res) => {
-    res.json(await storage.getServiceTypes());
-  });
-
-  app.post("/api/service-types", requireAuth(["admin"]), async (req, res) => {
-    const parsed = insertServiceTypeSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
-    }
-    const st = await storage.createServiceType(parsed.data);
-    logAdminAction(req, { action: "service_type.create", entityType: "service_type", entityId: st.id, newValue: { name: st.name } });
-    res.status(201).json(st);
-  });
+  // P2-051: /api/service-types routes live in users.ts — removed duplicate registration here
 
   // ─────────────────────────────────────────────────────────
   //  QUOTES — REAL PRICING API
@@ -623,7 +606,8 @@ export function registerQuotesPricingRoutes(app: Express) {
     const quote = await storage.getQuote(Number(String(req.params.id)));
     if (!quote) return res.status(404).json({ error: "Quote not found" });
     const authUser = (req as any).currentUser;
-    if (authUser.role === "customer" && quote.customerId && quote.customerId !== authUser.id) {
+    // P2-012: customer-role users can only access their own quotes; deny null-customerId quotes
+    if (authUser.role === "customer" && (!quote.customerId || quote.customerId !== authUser.id)) {
       return res.status(403).json({ error: "Access denied" });
     }
     return sendQuoteResponse(quote, res);

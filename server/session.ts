@@ -93,6 +93,11 @@ export async function createSession(userId: number, role: string): Promise<strin
 export async function getSession(token: string): Promise<SessionData | null> {
   const session = await storage.getSession(token);
   if (!session) return null;
+  // P2-005: check session expiry
+  if (session.expiresAt && new Date(session.expiresAt) < new Date()) {
+    await storage.deleteSession(token);
+    return null;
+  }
   return { userId: session.userId, role: session.role };
 }
 

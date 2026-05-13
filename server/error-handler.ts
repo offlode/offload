@@ -52,11 +52,10 @@ export function errorHandler(err: any, req: Request, res: Response, _next: NextF
   console.error(`[Error ${status}] ${req.method} ${req.originalUrl}:`, err?.message || err);
 
   if (process.env.NODE_ENV !== "production") {
-    // Dev: include error message for debugging
+    // P2-009: never return stack traces in API responses, even in dev
     res.status(status).json({
       error: err?.message || "Internal server error",
       code: "INTERNAL_ERROR",
-      stack: err?.stack,
     });
     return;
   }

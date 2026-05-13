@@ -340,10 +340,10 @@ export function registerAuthRoutes(app: Express) {
     let driverProfile: any = null;
     try {
       if (["vendor", "laundromat", "manager", "staff"].includes(user.role)) {
-        vendorProfile = await (storage as any).getVendorByUserId?.(user.id) ?? null;
+        vendorProfile = await storage.getVendorByUserId(user.id) ?? null;
       }
       if (user.role === "driver") {
-        driverProfile = await (storage as any).getDriverByUserId?.(user.id) ?? null;
+        driverProfile = await storage.getDriverByUserId(user.id) ?? null;
       }
     } catch (_err) {
       // swallow — the client must handle null profile.
