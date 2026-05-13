@@ -2,7 +2,8 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { registerVoiceRoutes } from "./voice";
 import { z } from "zod";
 import { createServer, type Server } from "http";
-import { createHash, randomBytes } from "crypto";
+import { createHash, randomBytes, timingSafeEqual } from "crypto";
+import rateLimit from "express-rate-limit";
 import { Resend } from "resend";
 import Stripe from "stripe";
 import { createRemoteJWKSet, jwtVerify } from "jose";
@@ -12,14 +13,15 @@ import * as schema from "@shared/schema";
 import { storage, db, pool, logStripeReconciliation, addOrderCents, addQuoteCents } from "./storage";
 import { isR2Enabled, uploadToR2, getPresignedDownloadUrl, getPresignedUploadUrl } from "./r2";
 import { sendPushToUser } from "./push";
-import { sendSMS } from "./sms";
+// TODO(sms-launch): re-enable when SMS provider integration ships
+// import { sendSMS } from "./sms";
 import { distanceMatrix, isGoogleMapsConfigured } from "./maps";
 import { SLA_CONFIGS, WEIGHT_TOLERANCE, CONSENT_TIMEOUT_HOURS, LOYALTY_TIERS, SUBSCRIPTION_TIERS, PRICING_TIERS, DELIVERY_FEES, TAX_RATE as SCHEMA_TAX_RATE, QUOTE_VALIDITY_MINUTES, SERVICE_TYPE_MULTIPLIERS, insertNotificationRuleSchema, insertAddOnSchema, insertAddressSchema, insertPaymentMethodSchema, insertVendorSchema, insertDriverSchema, insertServiceTypeSchema, insertDisputeSchema, insertReviewSchema, insertMessageSchema, insertVendorPayoutSchema, insertPromoCodeSchema, insertUserSchema } from "@shared/schema";
 import { pricingConfig } from "./pricing-config-service";
 import { logAdminAction } from "./audit-helpers";
 import { applyVendorCertification, getCertifiedRules, evaluateVendorCertification } from "./certified";
 import { checkCoverage } from "./service-area";
-import { hashPassword, verifyPassword, checkLoginRateLimit, recordLoginAttempt } from "./lib/auth";
+import { hashPassword, verifyPassword, isLegacyPasswordHash, checkLoginRateLimit, recordLoginAttempt } from "./lib/auth";
 import {
   distanceMiles, TAX_RATE, TIER_NAME_MAP, calculateQuotePrice, calculatePricing,
   WAIT_FEE_CONFIG, calculateWaitFee, calculateWaitFeeAsync, getSurgePricingTier, getSurgePricingTierAsync, DYNAMIC_PRICING_CONFIG,
@@ -31,7 +33,14 @@ import {
   getStripe, hasStripe as hasStripeKey, dollarsToCents, centsToDollars,
   getIdempotentResponse, setIdempotentResponse,
 } from "./lib/stripe";
+import { getOrderEmailTemplate } from "./lib/email-templates";
 import { sanitizeInput, checkRateLimit } from "./lib/errors";
+import { pick } from "./lib/util";
+import {
+  VENDOR_SELF_UPDATE_FIELDS, VENDOR_ADMIN_UPDATE_FIELDS,
+  DRIVER_SELF_UPDATE_FIELDS, DRIVER_ADMIN_UPDATE_FIELDS,
+  ORDER_UPDATE_FIELDS, DISPUTE_ADMIN_UPDATE_FIELDS, PAYMENT_METHOD_UPDATE_FIELDS,
+} from "./lib/patch-allowlists";
 import type { Order, Vendor, Driver, Quote } from "@shared/schema";
 import {
   VALID_TRANSITIONS as FSM_TRANSITIONS,
@@ -71,6 +80,15 @@ function isAdminOrManager(user: any): boolean {
   return !!user && ADMIN_ROLES.includes(user.role);
 }
 
+function formatCents(cents: number): string {
+  const safe = Number.isFinite(cents) ? cents : 0;
+  return `$${(safe / 100).toFixed(2)}`;
+}
+
+function dollarsToCreditCents(dollars: number): number {
+  return Math.round((Number.isFinite(dollars) ? dollars : 0) * 100);
+}
+
 function getCookieValue(req: Request, name: string): string | null {
   const cookieHeader = req.headers.cookie || "";
   const pair = cookieHeader.split(";").map(part => part.trim()).find(part => part.startsWith(`${name}=`));
@@ -78,10 +96,30 @@ function getCookieValue(req: Request, name: string): string | null {
   return decodeURIComponent(pair.slice(name.length + 1));
 }
 
-function getSessionTokenFromRequest(req: Request): string | null {
+function getBearerTokenFromRequest(req: Request): string | null {
   const authHeader = req.headers.authorization;
-  const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  return bearerToken || getCookieValue(req, SESSION_COOKIE);
+  return authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+}
+
+function getSessionTokenFromRequest(req: Request): string | null {
+  return getBearerTokenFromRequest(req) || getCookieValue(req, SESSION_COOKIE);
+}
+
+function isStateChangingMethod(method: string): boolean {
+  return method === "POST" || method === "PATCH" || method === "DELETE" || method === "PUT";
+}
+
+function requireBearerToken(req: Request, res: Response, next: NextFunction) {
+  // CSRF hardening: production cookies are SameSite=None for cross-origin admin SPA
+  // support, so state-changing API calls must authenticate with an Authorization:
+  // Bearer token. Cookie-only auth remains accepted for GET/read-only requests.
+  if (!isStateChangingMethod(req.method)) return next();
+  const bearer = getBearerTokenFromRequest(req);
+  const cookieToken = getCookieValue(req, SESSION_COOKIE);
+  if (!bearer && cookieToken) {
+    return res.status(403).json({ error: "Bearer token required for state-changing requests", code: "BEARER_TOKEN_REQUIRED" });
+  }
+  next();
 }
 
 function setSessionCookie(res: Response, token: string): void {
@@ -200,8 +238,8 @@ function nextOpenAt(vendor: any, fromDate: Date): string | null {
  * - fallback            → true (back-compat for vendors without hours configured)
  */
 function isVendorOpenNow(vendor: any, atDate: Date): boolean {
-  if (vendor.adminOverrideOpen === 1) return true;
-  if (vendor.pauseOrderIntake === 1) return false;
+  if (vendor.adminOverrideOpen === true) return true;
+  if (vendor.pauseOrderIntake === true) return false;
   if (!vendor.operatingHoursJson) return true; // no hours set → default open
   let hours: OperatingHoursJson;
   try { hours = JSON.parse(vendor.operatingHoursJson); } catch { return true; }
@@ -310,7 +348,7 @@ async function findBestVendor(order: Order, pickupLat: number, pickupLng: number
     })
     .filter(v => {
       // Skip vendors that have paused order intake
-      return (v as any).pauseOrderIntake !== 1;
+      return (v as any).pauseOrderIntake !== true;
     })
     .filter(v => {
       // D8: operating-hours gate — skip vendors closed at scheduled dispatch time
@@ -318,7 +356,7 @@ async function findBestVendor(order: Order, pickupLat: number, pickupLng: number
     })
     .filter(v => {
       // If certified-only required, filter
-      if (order.certifiedOnly) return v.certified === 1;
+      if (order.certifiedOnly) return v.certified === true;
       return true;
     })
     .filter(v => {
@@ -329,10 +367,10 @@ async function findBestVendor(order: Order, pickupLat: number, pickupLng: number
       try { caps = v.capabilities ? JSON.parse(v.capabilities) : []; } catch { caps = []; }
       if (caps.includes("custom") || caps.includes(requiredWashType)) return true;
       // Backward-compat: derive from offers_* flags
-      if (requiredWashType === "dry_cleaning" && v.offersDryCleaning === 1) return true;
-      if (requiredWashType === "comforters" && v.offersComforters === 1) return true;
-      if (requiredWashType === "alterations" && v.offersAlterations === 1) return true;
-      if (requiredWashType === "commercial" && v.offersCommercial === 1) return true;
+      if (requiredWashType === "dry_cleaning" && v.offersDryCleaning === true) return true;
+      if (requiredWashType === "comforters" && v.offersComforters === true) return true;
+      if (requiredWashType === "alterations" && v.offersAlterations === true) return true;
+      if (requiredWashType === "commercial" && v.offersCommercial === true) return true;
       if (requiredWashType === "wash_fold" && caps.length === 0) return true; // default capability
       return false;
     })
@@ -409,11 +447,35 @@ async function notifyOrderUpdate(order: Order, title: string, body: string) {
   void sendPushToUser(order.customerId, title, body, { orderId: order.id, type: "order_update" });
 }
 
-async function sendOrderStatusSMS(order: Order, status: string): Promise<void> {
-  const user = await storage.getUser(order.customerId);
-  if (!user?.phone) return;
-  const orderNumber = (order as any).orderNumber || order.id;
-  void sendSMS(user.phone, `Your Offload order #${orderNumber} is now ${status.replace(/_/g, " ")}`);
+async function sendOrderStatusSMS(_order: Order, _status: string): Promise<void> {
+  // TODO(sms-launch): re-enable when SMS provider integration ships
+  return;
+}
+
+async function sendClaimAccountEmail(user: schema.User): Promise<void> {
+  const resetToken = randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + 3600000).toISOString();
+  await storage.createPasswordResetToken(user.id, resetToken, expiresAt);
+  const resetUrl = `https://offloadusa.com/#/reset-password?token=${resetToken}`;
+  if (!process.env.RESEND_API_KEY) {
+    console.log(`[Email] Would send claim-account email to user#${user.id} (no RESEND_API_KEY)`);
+    return;
+  }
+  const resend = new Resend(process.env.RESEND_API_KEY);
+  const result = await resend.emails.send({
+    from: "Offload <notifications@offloadusa.com>",
+    to: user.email,
+    subject: "Welcome to Offload — claim your account",
+    html: `<div style="font-family:Inter,Arial,sans-serif;max-width:500px;margin:0 auto;padding:32px;">
+      <div style="text-align:center;margin-bottom:24px;"><h1 style="color:#5B4BC4;font-size:24px;margin:0;">Offload</h1></div>
+      <h2 style="color:#1A1A1A;font-size:18px;">Claim your account</h2>
+      <p style="color:#555;font-size:14px;line-height:1.6;">Hi ${user.name || "there"},</p>
+      <p style="color:#555;font-size:14px;line-height:1.6;">We created an Offload account for your checkout. Set your password to track orders and manage preferences.</p>
+      <div style="text-align:center;margin:28px 0;"><a href="${resetUrl}" style="background:#5B4BC4;color:#fff;padding:12px 32px;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">Claim Account</a></div>
+      <p style="color:#888;font-size:12px;">This link expires in 1 hour.</p>
+    </div>`,
+  });
+  console.log(`[Email] Claim-account email sent to user#${user.id}: ${(result as any)?.data?.id || (result as any)?.id || "accepted"}`);
 }
 
 // Socket.io emit helper — safe no-op when io is not available
@@ -569,7 +631,7 @@ async function recordPayoutsForCapturedOrder(order: Order): Promise<void> {
     await tx.update(schema.orders).set({
       vendorPayout,
       driverPayout,
-      payoutRecorded: 1,
+      payoutRecorded: true,
     } as any).where(eq(schema.orders.id, order.id));
 
     if (order.vendorId) {
@@ -1045,14 +1107,13 @@ const validTransitions: Record<string, string[]> = {
   wash_complete: ["packing", "drying"],
   packing: ["ready_for_delivery", "folding"],
   out_for_delivery: ["delivered", "arrived_delivery"],
-  disputed: [],
 };
 
 // ════════════════════════════════════════════════════════════════
 //  MIDDLEWARE
 // ════════════════════════════════════════════════════════════════
 
-function requireAuth(allowedRoles?: string[]) {
+export function requireAuth(allowedRoles?: string[]) {
   return async (req: Request, res: Response, next: NextFunction) => {
     // Accept bearer tokens for native clients and HTTP-only cookies for browser sessions
     const token = getSessionTokenFromRequest(req);
@@ -1075,8 +1136,15 @@ function requireAuth(allowedRoles?: string[]) {
     if (!user) {
       return res.status(401).json({ error: "Invalid user" });
     }
-    if (allowedRoles && user.role !== "admin" && !allowedRoles.includes(user.role)) {
-      return res.status(403).json({ error: "Insufficient permissions" });
+    if (allowedRoles) {
+      if (allowedRoles.length === 0) {
+        return res.status(403).json({ error: "Insufficient permissions" });
+      }
+      // Admin is no longer an unconditional bypass. Endpoints that allow admin
+      // access must list "admin" explicitly in allowedRoles.
+      if (!allowedRoles.includes(user.role)) {
+        return res.status(403).json({ error: "Insufficient permissions" });
+      }
     }
     (req as any).currentUser = user;
     next();
@@ -1153,25 +1221,26 @@ async function startBackgroundTasks() {
             // Auto-issue SLA breach credit to customer
             // Credit = delivery fee paid for this order (refund the speed premium)
             const deliveryFee = order.deliveryFee || 0;
-            if (deliveryFee > 0 && !(order.customerNotes || "").includes("SLA_CREDIT_ISSUED")) {
+            const creditCents = dollarsToCreditCents(deliveryFee);
+            if (creditCents > 0 && !(order.customerNotes || "").includes("SLA_CREDIT_ISSUED")) {
               const customer = await storage.getUser(order.customerId);
               if (customer) {
                 const currentCredits = customer.credits || 0;
-                await storage.updateUser(order.customerId, { credits: currentCredits + deliveryFee });
+                await storage.updateUser(order.customerId, { credits: currentCredits + creditCents });
                 await storage.createOrderEvent({
                   orderId: order.id,
                   eventType: "sla_credit_issued",
-                  description: `SLA breach credit of $${(deliveryFee / 100).toFixed(2)} issued to customer account`,
+                  description: `SLA breach credit of ${formatCents(creditCents)} issued to customer account`,
                   actorRole: "system",
                   timestamp: now(),
                 });
                 await notifyUser(order.customerId, order.id, "sla_credit",
                   "Delivery Credit Issued",
-                  `We're sorry your order was delayed. A $${(deliveryFee / 100).toFixed(2)} credit has been applied to your account.`,
+                  `We're sorry your order was delayed. A ${formatCents(creditCents)} credit has been applied to your account.`,
                   `/orders/${order.id}`
                 );
                 // Mark credit issued to prevent duplicates
-                await storage.updateOrder(order.id, { customerNotes: `${order.customerNotes || ""}\n[SLA_CREDIT_ISSUED:${deliveryFee}]` } as any);
+                await storage.updateOrder(order.id, { customerNotes: `${order.customerNotes || ""}\n[SLA_CREDIT_ISSUED:${creditCents}]` } as any);
               }
             }
           }
@@ -1247,7 +1316,7 @@ export async function registerRoutes(
       value: 20,
       maxUses: 10000,
       usedCount: 0,
-      isActive: 1,
+      isActive: true,
       minOrderAmount: 0,
       expiresAt: null,
       createdAt: now(),
@@ -1287,15 +1356,15 @@ export async function registerRoutes(
     if (origin && allowedOrigins.includes(origin)) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Allow-Credentials", "true");
-    } else if (!origin) {
-      // Native fetches may omit Origin — allow non-browser callers (no credentials needed; auth via Bearer)
-      res.setHeader("Access-Control-Allow-Origin", "*");
     }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key");
     if (req.method === "OPTIONS") return res.status(204).end();
     next();
   });
+
+  // CSRF hardening: reject cookie-only auth on state-changing API requests.
+  app.use("/api/", requireBearerToken);
 
   // Start background tasks
   startBackgroundTasks();
@@ -1346,9 +1415,12 @@ export async function registerRoutes(
   // The key is referrer-restricted at the GCP level so exposing it from a public
   // origin is acceptable. Returns an empty string when unset so the site cleanly
   // falls back to manual address entry.
-  app.get("/api/public/maps-key", (_req, res) => {
+  app.get("/api/public/maps-key", (req, res) => {
     const k = process.env.GOOGLE_MAPS_API_KEY || "";
-    res.set("Access-Control-Allow-Origin", "*");
+    const origin = req.headers.origin;
+    if (origin && ["https://offloadusa.com", "https://www.offloadusa.com", "http://localhost:3000", "http://127.0.0.1:3000"].includes(origin)) {
+      res.set("Access-Control-Allow-Origin", origin);
+    }
     res.json({
       mapsKey: k,
       configured: !!k,
@@ -1359,7 +1431,7 @@ export async function registerRoutes(
   // ── REQUEST BODY SIZE LIMIT ──
   app.use("/api/", (req, res, next) => {
     const contentLength = parseInt(req.headers["content-length"] || "0", 10);
-    if (contentLength > 1048576) { // 1MB limit
+    if (contentLength > 5 * 1024 * 1024) { // 5MB limit; photoData is capped separately below
       return res.status(413).json({ error: "Request body too large" });
     }
     next();
@@ -1375,6 +1447,22 @@ export async function registerRoutes(
     }
     next();
   });
+
+
+  const makeRouteLimiter = (max: number) => rateLimit({
+    windowMs: 60 * 1000,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many requests. Please try again later." },
+    keyGenerator: (req) => req.ip || req.socket.remoteAddress || "unknown",
+  });
+  const quoteDynamicLimiter = makeRouteLimiter(20);
+  const quotesLimiter = makeRouteLimiter(20);
+  const publicCheckoutLimiter = makeRouteLimiter(10);
+  const authLoginLimiter = makeRouteLimiter(5);
+  const authRegisterLimiter = makeRouteLimiter(3);
+  const forgotPasswordLimiter = makeRouteLimiter(3);
 
   // ── IDEMPOTENCY MIDDLEWARE ──
   app.use("/api/", async (req, res, next) => {
@@ -1406,7 +1494,7 @@ export async function registerRoutes(
   //  AUTH
   // ─────────────────────────────────────────────────────────
 
-  app.post("/api/auth/register", async (req, res) => {
+  app.post("/api/auth/register", authRegisterLimiter, async (req, res) => {
     const RegisterBody = z.object({
       name: z.string().min(1),
       email: z.string().email(),
@@ -1478,7 +1566,7 @@ export async function registerRoutes(
     res.status(201).json({ user: { ...user, password: undefined }, token });
   });
 
-  app.post("/api/auth/login", async (req, res) => {
+  app.post("/api/auth/login", authLoginLimiter, async (req, res) => {
     const ip = req.ip || req.socket.remoteAddress || "unknown";
     if (!checkLoginRateLimit(ip)) {
       return res.status(429).json({ error: "Too many login attempts. Try again in 15 minutes." });
@@ -1495,9 +1583,13 @@ export async function registerRoutes(
       recordLoginAttempt(ip);
       return res.status(401).json({ error: "Invalid credentials" });
     }
+    const loginUpdates: any = { lastActiveAt: now() };
+    if (isLegacyPasswordHash(user.password)) {
+      loginUpdates.password = hashPassword(password);
+    }
     // Create server-side session and return token
     const token = await createSession(user.id, user.role);
-    await storage.updateUser(user.id, { lastActiveAt: now() });
+    await storage.updateUser(user.id, loginUpdates);
     setSessionCookie(res, token);
     res.json({ user: { ...user, password: undefined }, token });
   });
@@ -1607,7 +1699,7 @@ export async function registerRoutes(
   });
 
   // ── Forgot Password ──
-  app.post("/api/auth/forgot-password", async (req, res) => {
+  app.post("/api/auth/forgot-password", forgotPasswordLimiter, async (req, res) => {
     const ForgotBody = z.object({ email: z.string().email() });
     const parsed = ForgotBody.safeParse(req.body);
     if (!parsed.success) {
@@ -1633,29 +1725,31 @@ export async function registerRoutes(
     if (process.env.RESEND_API_KEY) {
       const resend = new Resend(process.env.RESEND_API_KEY);
       const resetUrl = `https://offloadusa.com/#/reset-password?token=${resetToken}`;
-      resend.emails.send({
-        from: "Offload <notifications@offloadusa.com>",
-        to: user.email,
-        subject: "Reset your Offload password",
-        html: `<div style="font-family:Inter,Arial,sans-serif;max-width:500px;margin:0 auto;padding:32px;">
-          <div style="text-align:center;margin-bottom:24px;">
-            <h1 style="color:#5B4BC4;font-size:24px;margin:0;">Offload</h1>
-          </div>
-          <h2 style="color:#1A1A1A;font-size:18px;">Reset your password</h2>
-          <p style="color:#555;font-size:14px;line-height:1.6;">Hi ${user.name || "there"},</p>
-          <p style="color:#555;font-size:14px;line-height:1.6;">We received a request to reset your password. Click the button below to choose a new password:</p>
-          <div style="text-align:center;margin:28px 0;">
-            <a href="${resetUrl}" style="background:#5B4BC4;color:#fff;padding:12px 32px;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">Reset Password</a>
-          </div>
-          <p style="color:#888;font-size:12px;">This link expires in 1 hour. If you didn't request this, you can safely ignore this email.</p>
-          <hr style="border:none;border-top:1px solid #eee;margin:24px 0;" />
-          <p style="color:#aaa;font-size:11px;text-align:center;">&copy; ${new Date().getFullYear()} Offload USA &mdash; Fresh clothes, zero hassle.</p>
-        </div>`,
-      }).then(() => {
-        console.log(`[Email] Password reset sent to user#${user.id}`);
-      }).catch((err: any) => {
+      try {
+        const result = await resend.emails.send({
+          from: "Offload <notifications@offloadusa.com>",
+          to: user.email,
+          subject: "Reset your Offload password",
+          html: `<div style="font-family:Inter,Arial,sans-serif;max-width:500px;margin:0 auto;padding:32px;">
+            <div style="text-align:center;margin-bottom:24px;">
+              <h1 style="color:#5B4BC4;font-size:24px;margin:0;">Offload</h1>
+            </div>
+            <h2 style="color:#1A1A1A;font-size:18px;">Reset your password</h2>
+            <p style="color:#555;font-size:14px;line-height:1.6;">Hi ${user.name || "there"},</p>
+            <p style="color:#555;font-size:14px;line-height:1.6;">We received a request to reset your password. Click the button below to choose a new password:</p>
+            <div style="text-align:center;margin:28px 0;">
+              <a href="${resetUrl}" style="background:#5B4BC4;color:#fff;padding:12px 32px;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">Reset Password</a>
+            </div>
+            <p style="color:#888;font-size:12px;">This link expires in 1 hour. If you didn't request this, you can safely ignore this email.</p>
+            <hr style="border:none;border-top:1px solid #eee;margin:24px 0;" />
+            <p style="color:#aaa;font-size:11px;text-align:center;">&copy; ${new Date().getFullYear()} Offload USA &mdash; Fresh clothes, zero hassle.</p>
+          </div>`,
+        });
+        console.log(`[Email] Password reset sent to user#${user.id}: ${(result as any)?.data?.id || (result as any)?.id || "accepted"}`);
+      } catch (err: any) {
         console.error(`[Email] Failed to send password reset to user#${user.id}:`, err);
-      });
+        return res.status(500).json({ error: "Failed to send password reset email" });
+      }
     } else {
       console.log(`[Email] Would send password reset to user#${user.id} (no RESEND_API_KEY)`);
     }
@@ -1746,7 +1840,6 @@ export async function registerRoutes(
       notificationPreferences: z.any().optional(),
       preferredDetergent: z.string().optional().nullable(),
       preferences: z.any().optional(),
-      role: z.enum(["customer","driver","laundromat","vendor","staff","manager","admin"]).optional(),
     }).strip();
     const parsed = UserPatch.safeParse(req.body);
     if (!parsed.success) {
@@ -1756,16 +1849,23 @@ export async function registerRoutes(
     const SELF_FIELDS = ["name","email","phone","profileImage","notificationPreferences","preferredDetergent","preferences"] as const;
     const updateData: any = {};
     for (const k of SELF_FIELDS) { if ((body as any)[k] !== undefined) updateData[k] = (body as any)[k]; }
-    if (["admin","manager"].includes(currentUserU.role)) {
-      if (body.role) {
-        if (currentUserU.role === "manager" && (body.role === "admin" || body.role === "manager")) {
-          return res.status(403).json({ error: "Managers cannot assign admin or manager roles" });
-        }
-        updateData.role = body.role;
-      }
-    }
     const updated = await storage.updateUser(targetId, updateData);
     if (!updated) return res.status(404).json({ error: "User not found" });
+    res.json({ ...updated, password: undefined });
+  });
+
+
+  app.post("/api/users/:id/role", requireAuth(["admin"]), async (req, res) => {
+    const targetId = Number(String(req.params.id));
+    const RoleBody = z.object({ role: z.enum(["customer","driver","laundromat","vendor","staff","manager","admin"]) }).strip();
+    const parsed = RoleBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
+    }
+    const before = await storage.getUser(targetId);
+    const updated = await storage.updateUser(targetId, { role: parsed.data.role });
+    if (!updated) return res.status(404).json({ error: "User not found" });
+    logAdminAction(req, { action: "user.role.update", entityType: "user", entityId: targetId, oldValue: { role: before?.role }, newValue: { role: parsed.data.role } });
     res.json({ ...updated, password: undefined });
   });
 
@@ -1883,8 +1983,10 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Access denied" });
       }
     }
+    const allowedVendorFields = isAdminOrManager(currentUser) ? VENDOR_ADMIN_UPDATE_FIELDS : VENDOR_SELF_UPDATE_FIELDS;
+    const vendorUpdates = pick(req.body, allowedVendorFields);
     const VendorPatch = insertVendorSchema.partial();
-    const parsed = VendorPatch.safeParse(req.body);
+    const parsed = VendorPatch.safeParse(vendorUpdates);
     if (!parsed.success) {
       return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
     }
@@ -1972,9 +2074,11 @@ export async function registerRoutes(
     if (!parsed.success) {
       return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
     }
+    const temporaryPassword = randomBytes(18).toString("base64url").slice(0, 24);
+    console.warn(`[Driver] Generated one-time temporary password for new driver ${parsed.data.name}: ${temporaryPassword}`);
     const driverUser = await storage.createUser({
       username: parsed.data.name.toLowerCase().replace(/\s/g, "_") + "_driver",
-      password: hashPassword("driver123"),
+      password: hashPassword(temporaryPassword),
       name: parsed.data.name,
       email: req.body.email || `${parsed.data.name.toLowerCase().replace(/\s/g, ".")}@offload.com`,
       phone: parsed.data.phone,
@@ -1997,8 +2101,10 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Access denied" });
       }
     }
-    const DriverPatch = insertDriverSchema.omit({ userId: true }).partial();
-    const parsed = DriverPatch.safeParse(req.body);
+    const allowedDriverFields = isAdminOrManager(currentUser) ? DRIVER_ADMIN_UPDATE_FIELDS : DRIVER_SELF_UPDATE_FIELDS;
+    const driverUpdates = pick(req.body, allowedDriverFields);
+    const DriverPatch = insertDriverSchema.partial();
+    const parsed = DriverPatch.safeParse(driverUpdates);
     if (!parsed.success) {
       return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
     }
@@ -2295,7 +2401,7 @@ export async function registerRoutes(
   // ── Public: Dynamic quote (Uber-style breakdown + cheapest-window recommendation) ──
   // No persistence — just returns the price breakdown for live UI updates as the customer
   // tweaks floor / elevator / handoff / window / scheduled time / laundromat choice.
-  app.post("/api/quote/dynamic", async (req, res) => {
+  app.post("/api/quote/dynamic", quoteDynamicLimiter, async (req, res) => {
     try {
       // OD-P1 / OD-P3: accept `speedTier` as an alias for `deliverySpeed` and
       // accept any tier alias supported by TIER_NAME_MAP (xlarge / xl / xl_bag / extra_large).
@@ -2351,7 +2457,7 @@ export async function registerRoutes(
         addOns: addOns || [],
         promoCode: promoCode || undefined,
         pickupFloor: pickupFloor != null ? Number(pickupFloor) : undefined,
-        pickupHasElevator: pickupHasElevator != null ? (pickupHasElevator ? 1 : 0) : undefined,
+        pickupHasElevator: pickupHasElevator != null ? !!pickupHasElevator : undefined,
         pickupHandoff: pickupHandoff || undefined,
         pickupWindowMinutes: pickupWindowMinutes != null ? Number(pickupWindowMinutes) : undefined,
         scheduledPickup: scheduledPickup || undefined,
@@ -2377,7 +2483,7 @@ export async function registerRoutes(
               vendorLat: pick.lat!,
               vendorLng: pick.lng!,
               pickupFloor: pickupFloor != null ? Number(pickupFloor) : 1,
-              pickupHasElevator: pickupHasElevator != null ? (pickupHasElevator ? 1 : 0) : 1,
+              pickupHasElevator: pickupHasElevator != null ? !!pickupHasElevator : true,
               pickupHandoff: pickupHandoff || "curbside",
               pickupWindowMinutes: pickupWindowMinutes != null ? Number(pickupWindowMinutes) : 30,
             }, 12);
@@ -2464,7 +2570,7 @@ export async function registerRoutes(
   });
 
   // ── Public: Create a quote (no auth required for website) ──
-  app.post("/api/quotes", async (req, res) => {
+  app.post("/api/quotes", quotesLimiter, async (req, res) => {
     try {
       // OD-P1: accept `speedTier` alias for `deliverySpeed`
       const QuoteBody = z.object({
@@ -2530,7 +2636,7 @@ export async function registerRoutes(
         addOns: addOns || [],
         promoCode: promoCode || undefined,
         pickupFloor: pickupFloor != null ? Number(pickupFloor) : undefined,
-        pickupHasElevator: pickupHasElevator != null ? (pickupHasElevator ? 1 : 0) : undefined,
+        pickupHasElevator: pickupHasElevator != null ? !!pickupHasElevator : undefined,
         pickupHandoff: pickupHandoff || undefined,
         pickupWindowMinutes: pickupWindowMinutes != null ? Number(pickupWindowMinutes) : undefined,
         scheduledPickup: scheduledPickup || undefined,
@@ -2553,6 +2659,7 @@ export async function registerRoutes(
         quoteNumber: generateQuoteNumber(),
         customerId,
         sessionId: sessionId || null,
+        publicToken: randomBytes(16).toString("hex"),
         status: "quoted",
         pickupAddress,
         pickupCity: pickupCity || null,
@@ -2569,7 +2676,7 @@ export async function registerRoutes(
         deliverySpeed: breakdown.deliverySpeed,
         vendorId: vendorId ? Number(vendorId) : null,
         vendorName,
-        isPreferredVendor,
+        isPreferredVendor: !!isPreferredVendor,
         laundryServicePrice: breakdown.laundryServicePrice,
         speedSurcharge: breakdown.speedSurcharge,
         deliveryFee: breakdown.deliveryFee,
@@ -2577,7 +2684,7 @@ export async function registerRoutes(
         addOnsTotal: breakdown.addOnsTotal,
         // ── Uber-style dynamic logistics persistence ──
         pickupFloor: pickupFloor != null ? Number(pickupFloor) : null,
-        pickupHasElevator: pickupHasElevator != null ? (pickupHasElevator ? 1 : 0) : 1,
+        pickupHasElevator: pickupHasElevator != null ? !!pickupHasElevator : true,
         pickupHandoff: pickupHandoff || "curbside",
         pickupWindowMinutes: pickupWindowMinutes != null ? Number(pickupWindowMinutes) : 30,
         pickupDistanceMiles: breakdown.pickupDistanceMiles,
@@ -2623,37 +2730,41 @@ export async function registerRoutes(
     }
   });
 
-  // ── Get quote by ID (requires session match or auth) ──
-  app.get("/api/quotes/:id", async (req, res) => {
-    const quote = await storage.getQuote(Number(String(req.params.id)));
-    if (!quote) return res.status(404).json({ error: "Quote not found" });
-
-    // Prevent enumeration: unauthenticated callers must supply matching sessionId
-    const authUser = (req as any).currentUser;
-    if (!authUser) {
-      const sid = req.query.sessionId || req.headers["x-session-id"];
-      if (!sid || !quote.sessionId || sid !== quote.sessionId) {
-        return res.status(404).json({ error: "Quote not found" });
-      }
-    } else if (authUser.role === "customer" && quote.customerId && quote.customerId !== authUser.id) {
-      return res.status(403).json({ error: "Access denied" });
-    }
-
-    // Check expiry
+  async function sendQuoteResponse(quote: Quote, res: Response) {
     if (["draft", "quoted"].includes(quote.status) && new Date(quote.expiresAt) < new Date()) {
-      await storage.updateQuote(quote.id, { status: "expired", updatedAt: now() });
-      return res.json({ ...quote, status: "expired", lineItems: quote.lineItemsJson ? JSON.parse(quote.lineItemsJson) : [] });
+      const expired = await storage.updateQuote(quote.id, { status: "expired", updatedAt: now() });
+      const q = expired || { ...quote, status: "expired" };
+      return res.json({ ...q, lineItems: quote.lineItemsJson ? JSON.parse(quote.lineItemsJson) : [] });
     }
-
-    res.json({
+    return res.json({
       ...quote,
       lineItems: quote.lineItemsJson ? JSON.parse(quote.lineItemsJson) : [],
     });
+  }
+
+  // ── Public quote retrieval by cryptographic token ──
+  app.get("/api/quotes/by-token/:token", async (req, res) => {
+    const token = String(req.params.token || "");
+    if (!/^[a-f0-9]{32}$/i.test(token)) return res.status(404).json({ error: "Quote not found" });
+    const quote = await storage.getQuoteByPublicToken(token);
+    if (!quote) return res.status(404).json({ error: "Quote not found" });
+    return sendQuoteResponse(quote, res);
+  });
+
+  // ── Legacy ID path is auth-only to prevent sequential ID enumeration ──
+  app.get("/api/quotes/:id", requireAuth(), async (req, res) => {
+    const quote = await storage.getQuote(Number(String(req.params.id)));
+    if (!quote) return res.status(404).json({ error: "Quote not found" });
+    const authUser = (req as any).currentUser;
+    if (authUser.role === "customer" && quote.customerId && quote.customerId !== authUser.id) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+    return sendQuoteResponse(quote, res);
   });
 
   // ── PUBLIC: Checkout (no auth needed) ──
   // Website visitors: quote → checkout → Stripe PaymentIntent → order
-  app.post("/api/public/checkout", async (req, res) => {
+  app.post("/api/public/checkout", publicCheckoutLimiter, async (req, res) => {
     try {
       const CheckoutBody = z.object({
         quoteId: z.union([z.number(), z.string()]),
@@ -2685,13 +2796,64 @@ export async function registerRoutes(
         return res.status(409).json({ error: "This quote has already been used for an order" });
       }
 
-      // ── Txn 1: Customer upsert + address + order (atomic) ──
+      // SERVER-AUTHORITATIVE PRICING — do not trust client totals.
+      const rawTotal = Number(quote.total || 0);
+      if (!Number.isFinite(rawTotal)) {
+        throw new Error("pricing_invalid");
+      }
+      const amountCents = Math.round(rawTotal * 100);
+      if (!Number.isFinite(amountCents)) {
+        throw new Error("pricing_invalid");
+      }
+
+      const stripeKey = process.env.STRIPE_SECRET_KEY || "";
+      if (amountCents > 0 && (!stripeKey || stripeKey.startsWith("sk_test_DISABLED"))) {
+        return res.status(503).json({ error: "payments_unavailable" });
+      }
+
+      // Pre-checkout serviceability gate: do not create an order or PaymentIntent
+      // unless at least one eligible laundromat can serve the quote.
+      const serviceabilityOrder = {
+        serviceType: quote.serviceType,
+        certifiedOnly: true,
+        deliverySpeed: quote.deliverySpeed,
+      } as any;
+      const scheduledForService = pickupDate ? new Date(`${pickupDate}T${pickupTime || "09:00"}:00.000Z`) : new Date();
+      const eligibleVendor = quote.vendorId
+        ? await storage.getVendor(quote.vendorId)
+        : await findBestVendor(serviceabilityOrder, quote.pickupLat || 40.7128, quote.pickupLng || -74.0060, scheduledForService);
+      if (!eligibleVendor || (eligibleVendor as any).status !== "active" || (eligibleVendor as any).pauseOrderIntake) {
+        await storage.createServiceAreaRequest({
+          email,
+          phone: digits,
+          address: quote.pickupAddress,
+          city: quote.pickupCity || "",
+          state: quote.pickupState || "NY",
+          zip: quote.pickupZip || "",
+          lat: quote.pickupLat,
+          lng: quote.pickupLng,
+          requestedService: quote.serviceType,
+          requestedSpeed: quote.deliverySpeed,
+          source: "public_checkout",
+          notes: `No eligible vendor during checkout for quote ${quote.id}`,
+        } as any);
+        return res.status(503).json({
+          error: "no_vendor_available",
+          message: "We do not have laundromats available in your area yet.",
+        });
+      }
+
       const ts = now();
       const orderNumber = generateOrderNumber();
       const scheduledPickup = pickupDate ? `${pickupDate}T${pickupTime || '09:00'}:00.000Z` : null;
+      let clientSecret = "";
+      let paymentIntentId = "";
+      let createdNewUser = false;
 
-      const { customer, address, order } = await db.transaction(async (tx) => {
-        // Find or create customer
+      // Customer, address, order, Stripe PaymentIntent, payment txn, quote conversion,
+      // and audit rows are one transaction. Stripe failures throw, causing DB rollback.
+      const checkoutFeeRate = await pricingConfig.getPlatformFeeRate();
+      const { customer, order } = await db.transaction(async (tx) => {
         let cust: typeof schema.users.$inferSelect;
         const [existing] = await tx.select().from(schema.users).where(eq(schema.users.email, email));
         if (!existing) {
@@ -2707,11 +2869,11 @@ export async function registerRoutes(
             memberSince: ts,
           }).returning();
           cust = created;
+          createdNewUser = true;
         } else {
           cust = existing;
         }
 
-        // Create address
         const [addr] = await tx.insert(schema.addresses).values({
           userId: cust.id,
           label: "Pickup",
@@ -2724,8 +2886,7 @@ export async function registerRoutes(
           isDefault: 1,
         } as any).returning();
 
-        // Create order
-        const orderData = addOrderCents({
+        const [ord] = await tx.insert(schema.orders).values(addOrderCents({
           orderNumber,
           customerId: cust.id,
           status: "pending",
@@ -2747,115 +2908,53 @@ export async function registerRoutes(
           tierFlatPrice: quote.tierFlatPrice,
           tierMaxWeight: quote.tierMaxWeight,
           customerNotes: notes || null,
-          paymentStatus: "pending",
-          certifiedOnly: 1,
+          paymentStatus: amountCents === 0 ? "authorized" : "pending",
+          certifiedOnly: true,
+          vendorId: eligibleVendor.id,
+          aiMatchScore: scoreVendor(eligibleVendor, serviceabilityOrder, quote.pickupLat || 40.7128, quote.pickupLng || -74.0060),
           createdAt: ts,
           updatedAt: ts,
-        });
-        const [ord] = await tx.insert(schema.orders).values(orderData as any).returning();
-        return { customer: cust, address: addr, order: ord };
-      });
+        }) as any).returning();
 
-      // ── Stripe PaymentIntent (OUTSIDE txn — network side-effect) ──
-      // SERVER-AUTHORITATIVE PRICING — do not trust client total
-      // amountCents comes from quote.total fetched from DB (server-computed at quote creation time)
-      const amountCents = Math.round((quote.total || 0) * 100);
-      let clientSecret: string;
-      let paymentIntentId: string;
-      const stripeKey = process.env.STRIPE_SECRET_KEY;
-
-      if (stripeKey && amountCents > 0) {
-        try {
+        if (amountCents > 0) {
           const stripeClient = new Stripe(stripeKey, { apiVersion: "2024-12-18.acacia" as any });
           const intent = await stripeClient.paymentIntents.create({
             amount: amountCents,
             currency: "usd",
-            metadata: {
-              orderId: String(order.id),
-              orderNumber,
-              quoteId: String(quote.id),
-              customerEmail: email,
-            },
+            metadata: { orderId: String(ord.id), orderNumber, quoteId: String(quote.id), customerEmail: email },
             receipt_email: email,
-          }, { idempotencyKey: `order-${order.id}-intent` });
+          }, { idempotencyKey: `order-${ord.id}-intent` });
           paymentIntentId = intent.id;
           clientSecret = intent.client_secret!;
-        } catch (err: any) {
-          console.error("[Stripe] PaymentIntent creation failed:", err.message);
-          return res.status(500).json({ error: "Payment processing failed. Please try again." });
+        } else {
+          paymentIntentId = `pi_zero_${Date.now()}_${randomBytes(4).toString("hex")}`;
+          clientSecret = "";
         }
-      } else if (amountCents === 0) {
-        paymentIntentId = `pi_zero_${Date.now()}_${randomBytes(4).toString("hex")}`;
-        clientSecret = "";
-        await storage.updateOrder(order.id, { paymentStatus: "authorized" });
-      } else {
-        console.error(`[Checkout] Stripe not configured, refusing demo authorization for order ${order.id}.`);
-        try {
-          await storage.updateOrder(order.id, {
-            status: "cancelled",
-            cancelledAt: ts,
-            cancellationReason: "payment_unavailable",
-          } as any);
-        } catch (_) { /* best-effort */ }
-        return res.status(503).json({
-          error: "Payment processing is temporarily unavailable. Please try again in a few minutes.",
-          code: "PAYMENT_UNAVAILABLE",
-        });
-      }
 
-      // ── Txn 2: Record PI + payment txn + quote converted + events (atomic) ──
-      const checkoutFeeRate = await pricingConfig.getPlatformFeeRate();
-      try {
-        await db.transaction(async (tx) => {
-          // Update order with Stripe PI id
-          await tx.update(schema.orders).set({
-            stripePaymentIntentId: paymentIntentId,
-            updatedAt: now(),
-          } as any).where(eq(schema.orders.id, order.id));
-          await tx.insert(schema.paymentTransactions).values({
-            orderId: order.id,
-            type: "charge",
-            amount: quote.total || 0,
-            amountCents,
-            currency: "usd",
-            status: "pending",
-            stripePaymentIntentId: paymentIntentId,
-            recipientType: "platform",
-            platformFee: Math.round((quote.total || 0) * checkoutFeeRate * 100) / 100,
-            metadata: JSON.stringify({ quoteId: quote.id, email, phone: digits }),
-            createdAt: ts,
-          } as any);
-          await tx.update(schema.quotes).set({
-            status: "converted",
-            customerId: customer.id,
-            updatedAt: ts,
-          } as any).where(eq(schema.quotes.id, quote.id));
-          await tx.insert(schema.orderEvents).values({
-            orderId: order.id,
-            eventType: "order_created",
-            description: `Order placed via website checkout. Email: ${email}`,
-            timestamp: ts,
-          } as any);
-          await tx.insert(schema.pricingAuditLog).values({
-            action: "public_checkout",
-            details: JSON.stringify({ orderId: order.id, orderNumber, quoteId: quote.id, total: quote.total, email }),
-            actorId: customer.id,
-            actorRole: "customer",
-            timestamp: ts,
-          } as any);
-        });
-      } catch (txErr: any) {
-        // Stripe PI was created but DB write failed — log for reconciliation
-        if (paymentIntentId && paymentIntentId !== clientSecret) {
-          await logStripeReconciliation({
-            stripeResourceId: paymentIntentId,
-            action: "checkout_order_write_failed",
-            dbState: JSON.stringify({ orderId: order.id, orderNumber, quoteId: quote.id, customerId: customer.id, total: quote.total }),
-            errorMessage: txErr?.message || String(txErr),
-            notes: "Stripe PaymentIntent created successfully but Txn 2 (payment record + quote conversion) failed",
-          });
-        }
-        throw txErr;
+        await tx.update(schema.orders).set({ stripePaymentIntentId: paymentIntentId, updatedAt: now() } as any).where(eq(schema.orders.id, ord.id));
+        await tx.insert(schema.paymentTransactions).values({
+          orderId: ord.id,
+          type: "charge",
+          amount: quote.total || 0,
+          amountCents,
+          currency: "usd",
+          status: amountCents === 0 ? "completed" : "pending",
+          stripePaymentIntentId: paymentIntentId,
+          recipientType: "platform",
+          platformFee: Math.round((quote.total || 0) * checkoutFeeRate * 100) / 100,
+          metadata: JSON.stringify({ quoteId: quote.id, email, phone: digits }),
+          createdAt: ts,
+        } as any);
+        await tx.update(schema.quotes).set({ status: "converted", customerId: cust.id, updatedAt: ts } as any).where(eq(schema.quotes.id, quote.id));
+        await tx.insert(schema.orderEvents).values({ orderId: ord.id, eventType: "order_created", description: `Order placed via website checkout. Email: ${email}`, timestamp: ts } as any);
+        await tx.insert(schema.orderEvents).values({ orderId: ord.id, eventType: "vendor_assigned", description: `Assigned to ${eligibleVendor.name} (pre-checkout serviceability match)`, details: JSON.stringify({ vendorId: eligibleVendor.id, vendorName: eligibleVendor.name }), actorRole: "system", timestamp: ts } as any);
+        await tx.update(schema.vendors).set({ currentLoad: ((eligibleVendor as any).currentLoad || 0) + 1 } as any).where(eq(schema.vendors.id, eligibleVendor.id));
+        await tx.insert(schema.pricingAuditLog).values({ action: "public_checkout", details: JSON.stringify({ orderId: ord.id, orderNumber, quoteId: quote.id, total: quote.total, email }), actorId: cust.id, actorRole: "customer", timestamp: ts } as any);
+        return { customer: cust, order: ord };
+      });
+
+      if (createdNewUser) {
+        await sendClaimAccountEmail(customer as any);
       }
 
       res.status(201).json({
@@ -2985,7 +3084,7 @@ export async function registerRoutes(
         tierFlatPrice: quote.tierFlatPrice,
         tierMaxWeight: quote.tierMaxWeight,
         finalPrice: quote.total,
-        certifiedOnly: 1,
+        certifiedOnly: true,
         customerNotes: customerNotes || null,
         // Wave 2: quote conversion no longer auto-authorizes. The order stays
         // "pending" until the customer completes payment via
@@ -3524,7 +3623,7 @@ export async function registerRoutes(
           tierFlatPrice: tierInfo?.flatPrice || null,
           tierMaxWeight: tierInfo?.maxWeight || null,
           finalPrice: tierInfo ? finalTotal : null,
-          certifiedOnly: certifiedOnly ?? 1,
+          certifiedOnly: certifiedOnly ?? true,
           customerNotes,
           paymentStatus: "pending",
           paymentMethodId: paymentMethodId || null,
@@ -3938,10 +4037,7 @@ export async function registerRoutes(
       if (status === "delivered") updateData.deliveryPhotoUrl = photoUrl;
     }
 
-    await storage.updateOrder(order.id, updateData);
-
-    await storage.createOrderEvent({
-      orderId: order.id,
+    await storage.transitionOrderStatus(order.id, order.status, status, {
       eventType: status,
       description: description || `Order status: ${status.replace(/_/g, " ")}`,
       details: details ? (typeof details === "string" ? details : JSON.stringify(details)) : undefined,
@@ -3950,6 +4046,17 @@ export async function registerRoutes(
       photoUrl,
       lat,
       lng,
+      timestamp: ts_,
+      orderUpdate: updateData,
+    } as any);
+    if (currentUser.role === "admin" || currentUser.role === "manager") {
+      await logAdminAction(req, { action: "order_status_override", entityType: "order", entityId: order.id, oldValue: { status: order.status }, newValue: { status } });
+    }
+    emitToOrder(order.id, "order_status_changed", {
+      orderId: order.id,
+      status,
+      fromStatus: order.status,
+      toStatus: status,
       timestamp: ts_,
     });
 
@@ -3982,7 +4089,7 @@ export async function registerRoutes(
       };
       const label = STATUS_LABELS[status] || status;
       const msg = STATUS_MESSAGES[status] || `Your order status has been updated to: ${status}`;
-      sendOrderEmail(order, status);
+      await sendOrderEmail(order, status);
     }
 
 
@@ -4047,7 +4154,7 @@ export async function registerRoutes(
             try { await sendOrderEmail(order, status); } catch (err) { console.error("[notif-rule email]", err); }
           }
         }
-        // SMS is best-effort (Twilio not yet configured); skip silently
+        // TODO(sms-launch): re-enable when SMS provider integration ships
       }
     } catch (ruleErr) {
       console.error("[notif-rules] Error processing custom notification rules:", ruleErr);
@@ -4182,7 +4289,8 @@ export async function registerRoutes(
       vendorId: z.number().optional().nullable(),
       driverId: z.number().optional().nullable(),
     }).strip();
-    const parsedPatch = OrderPatch.safeParse(req.body);
+    const orderUpdates = pick(req.body, ORDER_UPDATE_FIELDS);
+    const parsedPatch = OrderPatch.safeParse(orderUpdates);
     if (!parsedPatch.success) {
       return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedPatch.error.issues });
     }
@@ -4214,20 +4322,22 @@ export async function registerRoutes(
       effectivePatch.status = "confirmed";
     }
 
-    const updated = await storage.updateOrder(order.id, effectivePatch);
+    let updated: any;
     if (effectivePatch.status && effectivePatch.status !== order.status) {
-      try {
-        await storage.createOrderEvent({
-          orderId: order.id,
-          eventType: "status_change",
-          fromStatus: order.status,
-          toStatus: effectivePatch.status,
-          description: `Order ${effectivePatch.status} (admin assignment)`,
-          actorId: currentUser.id,
-          actorRole: currentUser.role,
-          timestamp: now(),
-        } as any);
-      } catch (_) { /* best-effort */ }
+      updated = await storage.transitionOrderStatus(order.id, order.status, effectivePatch.status, {
+        eventType: "status_change",
+        description: `Order ${effectivePatch.status} (admin assignment)`,
+        actorId: currentUser.id,
+        actorRole: currentUser.role,
+        timestamp: now(),
+        orderUpdate: effectivePatch,
+      } as any);
+      if (currentUser.role === "admin" || currentUser.role === "manager") {
+        await logAdminAction(req, { action: "order_status_override", entityType: "order", entityId: order.id, oldValue: { status: order.status }, newValue: { status: effectivePatch.status } });
+      }
+      emitToOrder(order.id, "order_status_changed", { orderId: order.id, status: effectivePatch.status, fromStatus: order.status, toStatus: effectivePatch.status, order: updated });
+    } else {
+      updated = await storage.updateOrder(order.id, effectivePatch);
     }
     res.json(updated);
   });
@@ -5120,7 +5230,7 @@ export async function registerRoutes(
     if (data.isDefault) {
       const existing = await storage.getAddressesByUser(currentUser.id);
       for (const a of existing) {
-        if (a.isDefault) await storage.updateAddress(a.id, { isDefault: 0 });
+        if (a.isDefault) await storage.updateAddress(a.id, { isDefault: false });
       }
     }
     const address = await storage.createAddress(data);
@@ -5141,7 +5251,7 @@ export async function registerRoutes(
     }
     if (parsed.data.isDefault) {
       const allAddr = await storage.getAddressesByUser(addr.userId);
-      for (const a of allAddr) { await storage.updateAddress(a.id, { isDefault: 0 }); }
+      for (const a of allAddr) { await storage.updateAddress(a.id, { isDefault: false }); }
     }
     const updated = await storage.updateAddress(Number(String(req.params.id)), parsed.data);
     res.json(updated);
@@ -5181,21 +5291,22 @@ export async function registerRoutes(
   app.patch("/api/payment-methods/:id", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     const id = Number(String(req.params.id));
-    const allMethods = await storage.getPaymentMethodsByUser(currentUser.id);
-    const method = allMethods.find(m => m.id === id);
-    if (!method && !["admin", "manager"].includes(currentUser.role)) {
+    const method = await storage.getPaymentMethod(id);
+    if (!method) return res.status(404).json({ error: "Payment method not found" });
+    if (method.userId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
+    const pmUpdates = pick(req.body, PAYMENT_METHOD_UPDATE_FIELDS);
     const PMPatch = insertPaymentMethodSchema.omit({ userId: true }).partial();
-    const parsed = PMPatch.safeParse(req.body);
+    const parsed = PMPatch.safeParse(pmUpdates);
     if (!parsed.success) {
       return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
     }
     if (parsed.data.isDefault) {
-      const existing = await storage.getPaymentMethodsByUser(method?.userId || currentUser.id);
+      const existing = await storage.getPaymentMethodsByUser(method.userId);
       for (const pm of existing) {
         if (pm.id !== id && pm.isDefault) {
-          await storage.updatePaymentMethod(pm.id, { isDefault: 0 });
+          await storage.updatePaymentMethod(pm.id, { isDefault: false });
         }
       }
     }
@@ -5207,9 +5318,9 @@ export async function registerRoutes(
   app.delete("/api/payment-methods/:id", requireAuth(), async (req, res) => {
     const currentUser = (req as any).currentUser;
     const id = Number(String(req.params.id));
-    const allMethods = await storage.getPaymentMethodsByUser(currentUser.id);
-    const method = allMethods.find(m => m.id === id);
-    if (!method && !["admin", "manager"].includes(currentUser.role)) {
+    const method = await storage.getPaymentMethod(id);
+    if (!method) return res.status(404).json({ error: "Payment method not found" });
+    if (method.userId !== currentUser.id && !["admin", "manager"].includes(currentUser.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
     await storage.deletePaymentMethod(id);
@@ -5411,17 +5522,15 @@ export async function registerRoutes(
       createdAt: ts_,
     });
 
-    // Update order status
+    // Update order status atomically with dispute event
     if (order) {
-      await storage.updateOrder(order.id, { status: "disputed" });
-      await storage.createOrderEvent({
-        orderId: order.id,
+      await storage.transitionOrderStatus(order.id, order.status, "disputed", {
         eventType: "disputed",
         description: `Dispute filed: ${dispute.reason}`,
         actorId: dispute.customerId,
         actorRole: "customer",
         timestamp: ts_,
-      });
+      } as any);
 
       // Notify admins
       const admins = await storage.getUsersByRole("admin");
@@ -5439,8 +5548,9 @@ export async function registerRoutes(
 
   app.patch("/api/disputes/:id", requireAuth(["admin", "manager"]), async (req, res) => {
     const disputeId = Number(String(req.params.id));
+    const disputeUpdates = pick(req.body, DISPUTE_ADMIN_UPDATE_FIELDS);
     const DisputePatch = insertDisputeSchema.partial();
-    const parsed = DisputePatch.safeParse(req.body);
+    const parsed = DisputePatch.safeParse(disputeUpdates);
     if (!parsed.success) {
       return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
     }
@@ -5486,6 +5596,21 @@ export async function registerRoutes(
             // If payment was never captured, do NOT mark as refunded (semantically wrong; nothing to refund).
           }
         }
+      }
+    }
+
+    if ((parsed.data.status === "resolved" || parsed.data.status === "closed") && updated.orderId) {
+      const orderForResolution = await storage.getOrder(updated.orderId);
+      if (orderForResolution?.status === "disputed") {
+        const refundAmount = Number(parsed.data.refundAmount ?? parsed.data.creditAmount ?? 0);
+        const targetStatus = refundAmount > 0 ? "refunded" : "delivered";
+        await storage.transitionOrderStatus(orderForResolution.id, "disputed", targetStatus, {
+          eventType: targetStatus,
+          description: `Dispute resolved: ${parsed.data.resolution || targetStatus}`,
+          actorId: (req as any).currentUser?.id,
+          actorRole: (req as any).currentUser?.role || "admin",
+          timestamp: now(),
+        } as any);
       }
     }
 
@@ -6052,7 +6177,7 @@ export async function registerRoutes(
       minOrderAmount: minOrderAmount || 0,
       maxUses: maxUses || 0,
       usedCount: 0,
-      isActive: 1,
+      isActive: true,
       expiresAt: expiresAt || null,
       createdAt: now(),
     });
@@ -6068,7 +6193,7 @@ export async function registerRoutes(
       value: z.number().optional(),
       minOrderAmount: z.number().optional(),
       maxUses: z.number().optional(),
-      isActive: z.number().optional(),
+      isActive: z.preprocess((v) => typeof v === "number" ? v === 1 : v, z.boolean().optional()),
       expiresAt: z.string().optional().nullable(),
     }).strip();
     const parsed = PromoPatch.safeParse(req.body);
@@ -6084,7 +6209,7 @@ export async function registerRoutes(
 
   app.delete("/api/admin/promos/:id", requireAuth(["admin"]), async (req, res) => {
     const promoId = Number(String(req.params.id));
-    const updated = await storage.updatePromoCode(promoId, { isActive: 0 });
+    const updated = await storage.updatePromoCode(promoId, { isActive: false });
     if (!updated) return res.status(404).json({ error: "Promo code not found" });
     logAdminAction(req, { action: "promo.deactivate", entityType: "promo", entityId: promoId });
     res.json({ success: true, message: "Promo code deactivated" });
@@ -6131,7 +6256,7 @@ export async function registerRoutes(
         userId,
         status: resolved ? "resolved" : escalate ? "escalated" : "active",
         topic: intent,
-        aiResolved: resolved ? 1 : 0,
+        aiResolved: !!resolved,
         messagesJson: JSON.stringify(newMessages),
         createdAt: ts_,
         resolvedAt: resolved ? ts_ : undefined,
@@ -6145,7 +6270,7 @@ export async function registerRoutes(
 
       session = await storage.updateChatSession(session.id, {
         status: resolved ? "resolved" : escalate ? "escalated" : "active",
-        aiResolved: resolved ? 1 : 0,
+        aiResolved: !!resolved,
         messagesJson: JSON.stringify(existingMessages),
         resolvedAt: resolved ? ts_ : undefined,
       }) || session;
@@ -6166,7 +6291,7 @@ export async function registerRoutes(
       senderRole: "ai",
       content: response,
       messageType: "ai_response",
-      isAiGenerated: 1,
+      isAiGenerated: true,
       timestamp: ts_,
     });
 
@@ -6855,8 +6980,21 @@ export async function registerRoutes(
 
   app.get("/api/admin/orders", requireAuth(ADMIN_ROLES), async (req, res) => {
     const pg = getPagination(req);
-    const enriched = await Promise.all((await storage.getOrders()).map(enrichAdminOrder));
-    res.json(paginatedResponse(enriched, pg));
+    // Expected query count: 1. Keep this endpoint join-based; do not reintroduce per-order lookups.
+    const { rows } = await pool.query(`
+      SELECT o.*,
+        u.name AS "customerName", u.email AS "customerEmail", u.phone AS "customerPhone",
+        v.name AS "vendorName",
+        d.name AS "driverName",
+        rd.name AS "returnDriverName"
+      FROM orders o
+      LEFT JOIN users u ON u.id = o.customer_id
+      LEFT JOIN vendors v ON v.id = o.vendor_id
+      LEFT JOIN drivers d ON d.id = o.driver_id
+      LEFT JOIN drivers rd ON rd.id = o.return_driver_id
+      ORDER BY o.created_at DESC
+    `);
+    res.json(paginatedResponse(rows, pg));
   });
 
   app.get("/api/admin/orders/:id", requireAuth(ADMIN_ROLES), async (req, res) => {
@@ -6888,18 +7026,14 @@ export async function registerRoutes(
 
   app.get("/api/admin/payments", requireAuth(ADMIN_ROLES), async (req, res) => {
     const pg = getPagination(req);
-    const orders2 = await storage.getOrders();
-    const paymentArrays = await Promise.all(orders2.map(async order => {
-      const txns = await storage.getPaymentTransactionsByOrder(order.id);
-      return txns.map(txn => ({
-        ...txn,
-        orderNumber: order.orderNumber,
-        customerId: order.customerId,
-        orderTotal: order.total,
-      }));
-    }));
-    const payments = paymentArrays.flat();
-    res.json(paginatedResponse(payments, pg));
+    // Expected query count: 1. JOIN payment_transactions to orders instead of N+1 order lookups.
+    const { rows } = await pool.query(`
+      SELECT pt.*, o.order_number AS "orderNumber", o.customer_id AS "customerId", o.total AS "orderTotal"
+      FROM payment_transactions pt
+      JOIN orders o ON o.id = pt.order_id
+      ORDER BY pt.created_at DESC
+    `);
+    res.json(paginatedResponse(rows, pg));
   });
 
   app.get("/api/admin/drivers", requireAuth(ADMIN_ROLES), async (_req, res) => {
@@ -6911,20 +7045,26 @@ export async function registerRoutes(
   });
 
   app.get("/api/admin/financial-summary", requireAuth(ADMIN_ROLES), async (_req, res) => {
-    const orders = await storage.getOrders();
-    const delivered = orders.filter(o => o.status === "delivered");
-    const revenue = delivered.reduce((sum, o) => sum + (o.total || 0), 0);
-    const allTxnArrays = await Promise.all(orders.map(o => storage.getPaymentTransactionsByOrder(o.id)));
-    const refunds = allTxnArrays.flat()
-      .filter(t => t.type === "refund" && t.status === "completed")
-      .reduce((sum, t) => sum + Math.abs(t.amount || 0), 0);
-    const aov = delivered.length ? revenue / delivered.length : 0;
+    // Expected query count: 1 aggregate query.
+    const { rows } = await pool.query(`
+      SELECT
+        COALESCE(SUM(CASE WHEN o.status = 'delivered' THEN o.total ELSE 0 END), 0) AS revenue,
+        COUNT(*)::int AS "totalOrders",
+        COALESCE(SUM(CASE WHEN o.status = 'delivered' THEN 1 ELSE 0 END), 0)::int AS "deliveredOrders",
+        COALESCE(SUM(CASE WHEN pt.type = 'refund' AND pt.status = 'completed' THEN ABS(pt.amount) ELSE 0 END), 0) AS refunds
+      FROM orders o
+      LEFT JOIN payment_transactions pt ON pt.order_id = o.id
+    `);
+    const row = rows[0] || {};
+    const revenue = Number(row.revenue || 0);
+    const deliveredOrders = Number(row.deliveredOrders || 0);
+    const refunds = Number(row.refunds || 0);
     res.json({
       revenue: Math.round(revenue * 100) / 100,
       refunds: Math.round(refunds * 100) / 100,
-      averageOrderValue: Math.round(aov * 100) / 100,
-      deliveredOrders: delivered.length,
-      totalOrders: orders.length,
+      averageOrderValue: deliveredOrders ? Math.round((revenue / deliveredOrders) * 100) / 100 : 0,
+      deliveredOrders,
+      totalOrders: Number(row.totalOrders || 0),
     });
   });
 
@@ -7013,7 +7153,7 @@ export async function registerRoutes(
     }
     // Coerce isActive boolean → integer (DB column is integer, 1=active/0=inactive)
     const body: any = { ...parsed.data };
-    if (typeof body.isActive === "boolean") body.isActive = body.isActive ? 1 : 0;
+    
     const created = await storage.createPromoCode({ ...body, createdAt: now() });
     logAdminAction(req, { action: "promo_code.create", entityType: "promo_code", entityId: created.id, newValue: body });
     res.status(201).json(created);
@@ -7026,7 +7166,7 @@ export async function registerRoutes(
       return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
     }
     const body: any = { ...parsed.data };
-    if (typeof body.isActive === "boolean") body.isActive = body.isActive ? 1 : 0;
+    
     const promoId = Number(String(req.params.id));
     const updated = await storage.updatePromoCode(promoId, body);
     if (!updated) return res.status(404).json({ error: "Promo code not found" });
@@ -7226,10 +7366,10 @@ export async function registerRoutes(
         pricing: { tiers, deliveryFees: { "48h": fee48h, "24h": fee24h, same_day: feeSameDay }, taxRate },
         health: { api: true, db: dbOk, stripe: hasStripe, stripeMode, webhookSecretConfigured: hasWhsec },
         testAccounts: [
-          { role: "customer", email: "appreview@offloadusa.com", passwordHint: "AppReview2026… (masked)", url: "/login" },
-          { role: "admin", email: "admin@offloadusa.com", passwordHint: "OffloadAdmin2026… (masked)", url: "/login" },
-          { role: "vendor", email: "vendor@offloadusa.com", passwordHint: "OffloadVendor2026… (masked)", url: "/login" },
-          { role: "driver", email: "driver@offloadusa.com", passwordHint: "OffloadDriver2026… (masked)", url: "/login" },
+          { role: "customer", email: "appreview@offloadusa.com", passwordHint: "Use configured sandbox credential", url: "/login" },
+          { role: "admin", email: process.env.BOOTSTRAP_ADMIN_EMAIL || "admin@offloadusa.com", passwordHint: "Use BOOTSTRAP_ADMIN_PASSWORD or generated one-time credential", url: "/login" },
+          { role: "vendor", email: process.env.BOOTSTRAP_VENDOR_EMAIL || "vendor@offloadusa.com", passwordHint: "Use BOOTSTRAP_VENDOR_PASSWORD or generated one-time credential", url: "/login" },
+          { role: "driver", email: process.env.BOOTSTRAP_DRIVER_EMAIL || "driver@offloadusa.com", passwordHint: "Use BOOTSTRAP_DRIVER_PASSWORD or generated one-time credential", url: "/login" },
         ],
         screens: [
           // Customer
@@ -7565,7 +7705,7 @@ export async function registerRoutes(
       session = await storage.createChatSession({
         userId, orderId: orderId || undefined,
         status: resolved ? "resolved" : escalate ? "escalated" : "active",
-        topic: intent, aiResolved: resolved ? 1 : 0,
+        topic: intent, aiResolved: !!resolved,
         messagesJson: JSON.stringify(newMessages), createdAt: ts_,
         resolvedAt: resolved ? ts_ : undefined,
       });
@@ -7576,7 +7716,7 @@ export async function registerRoutes(
       existingMessages.push({ role: "assistant", content: response, timestamp: ts_, intent });
       session = await storage.updateChatSession(session.id, {
         status: resolved ? "resolved" : escalate ? "escalated" : "active",
-        aiResolved: resolved ? 1 : 0,
+        aiResolved: !!resolved,
         messagesJson: JSON.stringify(existingMessages),
         resolvedAt: resolved ? ts_ : undefined,
       }) || session;
@@ -8251,6 +8391,9 @@ export async function registerRoutes(
       return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsedPhoto.error.issues });
     }
     const { type, photoData, lat, lng, notes } = parsedPhoto.data;
+    if (photoData.length > 4 * 1024 * 1024) {
+      return res.status(413).json({ error: "photoData too large; max 4 MB" });
+    }
     if (currentUser.role === "customer" && ["pickup_proof", "delivery_proof"].includes(type)) {
       return res.status(403).json({ error: "Customers cannot upload proof photos" });
     }
@@ -9153,7 +9296,7 @@ export async function registerRoutes(
         type: templateName,
         title: subject || templateName,
         body,
-        read: 0,
+        read: false,
         category: channel,
         createdAt: now(),
       });
@@ -9227,7 +9370,7 @@ export async function registerRoutes(
 
     let paymentIntentId: string;
     let clientSecret: string | null = null;
-    if (stripe) {
+    if (stripe && !(process.env.STRIPE_SECRET_KEY || "").startsWith("sk_test_DISABLED")) {
       try {
         const intent = await stripe.paymentIntents.create({
           amount: amountCents,
@@ -9241,8 +9384,7 @@ export async function registerRoutes(
         return res.status(500).json({ error: "Payment processing failed" });
       }
     } else {
-      paymentIntentId = `pi_quote_${quote.id}_${Date.now()}`;
-      clientSecret = `demo_secret_${paymentIntentId}`;
+      return res.status(503).json({ error: "payments_unavailable" });
     }
 
     // Update quote status to indicate payment initiated
@@ -9426,7 +9568,15 @@ export async function registerRoutes(
         }
         const signedPayload = `${timestamp}.${rawBody}`;
         const computedSig = crypto.createHmac("sha256", webhookSecret).update(signedPayload).digest("hex");
-        if (computedSig !== expectedSig) {
+        let signatureMatches = false;
+        try {
+          const computedBuf = Buffer.from(computedSig, "hex");
+          const expectedBuf = Buffer.from(expectedSig, "hex");
+          signatureMatches = computedBuf.length === expectedBuf.length && timingSafeEqual(computedBuf, expectedBuf);
+        } catch {
+          signatureMatches = false;
+        }
+        if (!signatureMatches) {
           console.warn("[Stripe Webhook] REJECTED — signature mismatch");
           return res.status(400).json({ error: "Webhook signature verification failed" });
         }
@@ -9491,7 +9641,7 @@ export async function registerRoutes(
               const freshOrder = await storage.getOrder(orderId);
               if (freshOrder) await recordPayoutsForCapturedOrder(freshOrder);
               // Trigger email notification
-              sendOrderEmail(order, "payment_confirmed");
+              await sendOrderEmail(order, "payment_confirmed");
             }
           }
           break;
@@ -9600,62 +9750,34 @@ export async function registerRoutes(
     const customer = await storage.getUser(order.customerId);
     if (!customer?.email) return;
 
-    const templates: Record<string, { subject: string; body: (o: Order, c: any) => string }> = {
-      order_confirmation: {
-        subject: "Your Offload order is confirmed",
-        body: (o, c) => `Hi ${c.name},\n\nYour order ${o.orderNumber} has been confirmed. Total: $${o.total?.toFixed(2)}.\n\nTrack your order in the app.\n\n— The Offload Team`,
-      },
-      payment_confirmed: {
-        subject: "Payment received — Offload",
-        body: (o, c) => `Hi ${c.name},\n\nPayment of $${o.total?.toFixed(2)} for order ${o.orderNumber} has been confirmed.\n\n— The Offload Team`,
-      },
-      driver_assigned: {
-        subject: "Your driver is on the way — Offload",
-        body: (o, c) => `Hi ${c.name},\n\nA driver has been assigned to your order ${o.orderNumber} and is heading your way.\n\nTrack in real-time in the app.\n\n— The Offload Team`,
-      },
-      delivered: {
-        subject: "Your laundry has been delivered — Offload",
-        body: (o, c) => `Hi ${c.name},\n\nYour order ${o.orderNumber} has been delivered. We hope everything looks great!\n\nLeave a review in the app.\n\n— The Offload Team`,
-      },
-      cancelled: {
-        subject: "Order cancelled — Offload",
-        body: (o, c) => `Hi ${c.name},\n\nYour order ${o.orderNumber} has been cancelled. Any charges have been refunded.\n\n— The Offload Team`,
-      },
-    };
-
-    const tmpl = templates[template];
-    if (!tmpl) return;
-
-    const emailBody = tmpl.body(order, customer);
-    const emailSubject = tmpl.subject;
-
-    // Send email via Resend (or log in dev)
-    if (process.env.RESEND_API_KEY) {
-      const resend = new Resend(process.env.RESEND_API_KEY);
-      resend.emails.send({
-        from: "Offload <notifications@offloadusa.com>",
-        to: customer.email,
-        subject: emailSubject,
-        text: emailBody,
-      }).then(() => {
-        console.log(`[Email] Sent '${template}' to customer#${customer.id} via Resend`);
-      }).catch((err: any) => {
-        console.error(`[Email] Failed to send '${template}' to customer#${customer.id}:`, err);
-      });
-    } else if (process.env.SENDGRID_API_KEY) {
-      // Fallback: SendGrid
-      console.log(`[Email] Sending '${template}' to customer#${customer.id} via SendGrid`);
-    } else {
-      // Log email in development
-      console.log(`[Email] Would send '${template}' to customer#${customer.id}: ${emailSubject}`);
+    const tmpl = getOrderEmailTemplate(template, order, customer);
+    if (!tmpl) {
+      console.log(`[Email] No template for '${template}', skipping order#${order.id}`);
+      return;
     }
 
-    // Always log the communication
+    if (process.env.RESEND_API_KEY) {
+      const resend = new Resend(process.env.RESEND_API_KEY);
+      const result = await resend.emails.send({
+        from: "Offload <notifications@offloadusa.com>",
+        to: customer.email,
+        subject: tmpl.subject,
+        html: tmpl.html,
+        text: tmpl.text,
+      });
+      console.log(`[Email] Sent '${template}' to customer#${customer.id} via Resend: ${(result as any)?.data?.id || (result as any)?.id || "accepted"}`);
+    } else if (process.env.SENDGRID_API_KEY) {
+      console.log(`[Email] Would send '${template}' to customer#${customer.id} via SendGrid`);
+    } else {
+      console.log(`[Email] Would send '${template}' to customer#${customer.id}: ${tmpl.subject}`);
+    }
+
     await storage.createOrderEvent({
       orderId: order.id,
       eventType: "email_sent",
-      description: `Email: ${emailSubject}`,
-      details: JSON.stringify({ to: customer.email, template, subject: emailSubject }),
+      description: `Email sent: ${tmpl.subject}`,
+      details: JSON.stringify({ template, to: customer.email }),
+      actorRole: "system",
       timestamp: now(),
     });
   }
@@ -9673,7 +9795,7 @@ export async function registerRoutes(
     if (orderId) {
       const order = await storage.getOrder(Number(orderId));
       if (!order) return res.status(404).json({ error: "Order not found" });
-      sendOrderEmail(order, template || "order_confirmation");
+      await sendOrderEmail(order, template || "order_confirmation");
       return res.json({ sent: true, orderId, template });
     }
 
@@ -9716,7 +9838,7 @@ export async function registerRoutes(
         channels: z.string().optional(),
         titleTemplate: z.string().optional(),
         bodyTemplate: z.string().optional(),
-        isActive: z.number().optional(),
+        isActive: z.preprocess((v) => typeof v === "number" ? v === 1 : v, z.boolean().optional()),
       }).strip();
       const parsed = RulePatch.safeParse(req.body);
       if (!parsed.success) {
@@ -9800,7 +9922,7 @@ export async function registerRoutes(
         price: z.number().optional(),
         description: z.string().optional().nullable(),
         category: z.string().optional(),
-        isActive: z.number().optional(),
+        isActive: z.preprocess((v) => typeof v === "number" ? v === 1 : v, z.boolean().optional()),
         // D10: priceMode controls per_order vs per_item billing
         priceMode: z.enum(["per_order", "per_item"]).optional(),
       }).strip();
@@ -9835,7 +9957,7 @@ export async function registerRoutes(
       // Soft delete: deactivate instead of hard delete (preserves order history)
       const before = await storage.getAddOn(id);
       if (!before) return res.status(404).json({ error: "Add-on not found" });
-      const item = await storage.updateAddOn(id, { isActive: 0 });
+      const item = await storage.updateAddOn(id, { isActive: false });
       try {
         await storage.createPricingAuditEntry({
           action: "deactivate_addon",
@@ -10365,8 +10487,6 @@ export async function registerRoutes(
         ok: true,
         applicationId: created.id,
         status: created.status,
-        autoScreenScore: screen.score,
-        autoScreenRecommendation: screen.recommendation,
       });
     } catch (err: any) {
       console.error("[PartnerApp] create error:", err);
@@ -10585,7 +10705,7 @@ export async function registerRoutes(
   });
 
   // ── Voice Order endpoints (STT + extraction) ──
-  registerVoiceRoutes(app);
+  registerVoiceRoutes(app, requireAuth);
 
   return httpServer;
 }

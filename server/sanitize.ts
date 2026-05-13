@@ -37,5 +37,21 @@ export function sanitizeMiddleware(req: Request, _res: Response, next: NextFunct
     req.body = sanitized;
   }
 
+  if (req.query && typeof req.query === "object") {
+    const sanitized: Record<string, any> = {};
+    for (const [k, v] of Object.entries(req.query)) {
+      sanitized[k] = sanitizeValue(k, v);
+    }
+    req.query = sanitized as any;
+  }
+
+  if (req.params && typeof req.params === "object") {
+    const sanitized: Record<string, string> = {};
+    for (const [k, v] of Object.entries(req.params)) {
+      sanitized[k] = sanitizeValue(k, v);
+    }
+    req.params = sanitized;
+  }
+
   next();
 }

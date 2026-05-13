@@ -4,11 +4,10 @@
  * The production database is Postgres on Render. This script makes sure the
  * Apple reviewer demo account and the admin account always exist after a deploy.
  *
- * Read from env so credentials can be rotated without code changes:
- *   BOOTSTRAP_REVIEWER_EMAIL    (default: reviewer@offloadusa.com)
- *   BOOTSTRAP_REVIEWER_PASSWORD (default: OffloadReview2026!)
- *   BOOTSTRAP_ADMIN_EMAIL       (default: admin@offloadusa.com)
- *   BOOTSTRAP_ADMIN_PASSWORD    (default: OffloadAdmin2026!)
+ * Read from env so credentials can be rotated without code changes.
+ * Existing sandbox passwords stay valid: accounts with a password hash are never
+ * force-reset here. New bootstrap accounts use BOOTSTRAP_*_PASSWORD when set;
+ * otherwise a one-time random password is generated and logged for the operator.
  */
 import { storage } from "./storage";
 import { scryptSync, randomBytes } from "crypto";
@@ -22,24 +21,30 @@ function hashPassword(pw: string): string {
 
 interface BootstrapAccount {
   email: string;
-  password: string;
+  password?: string;
   name: string;
   phone: string;
   role: "customer" | "admin" | "manager" | "laundromat" | "driver";
   vendorId?: number;
 }
 
-async function ensureAccount(account: BootstrapAccount) {
+function resolveBootstrapPassword(envName: string, role: string, email: string): string {
+  const configured = process.env[envName];
+  if (configured) return configured;
+  const generated = randomBytes(18).toString("base64url").slice(0, 24);
+  console.warn(`[Bootstrap] ${envName} not set; generated one-time ${role} password for ${email}: ${generated}`);
+  return generated;
+}
+
+async function ensureAccount(account: BootstrapAccount, passwordEnvName: string) {
   try {
     const existing = await storage.getUserByEmail(account.email);
     if (existing) {
-      // Always re-hash the bootstrap password and force role correctness so
-      // these admin/reviewer accounts are guaranteed usable after every deploy.
+      // Do not force-reset passwords on deploy. Existing sandbox passwords stay valid;
+      // only missing hashes are initialized from env/generated one-time credentials.
       const updates: any = {};
-      const newHash = hashPassword(account.password);
-      if (existing.password !== newHash) {
-        // (hashes always differ due to random salt — always reset)
-        updates.password = newHash;
+      if (!existing.password) {
+        updates.password = hashPassword(account.password || resolveBootstrapPassword(passwordEnvName, account.role, account.email));
       }
       if (existing.role !== account.role) {
         updates.role = account.role;
@@ -55,7 +60,8 @@ async function ensureAccount(account: BootstrapAccount) {
       }
       return;
     }
-    const passwordHash = hashPassword(account.password);
+    const password = account.password || resolveBootstrapPassword(passwordEnvName, account.role, account.email);
+    const passwordHash = hashPassword(password);
     const username = account.email.split("@")[0] + "_bootstrap_" + Date.now();
     const payload: any = {
       username,
@@ -114,11 +120,11 @@ async function ensureServiceTypes() {
       return;
     }
     const seeds = [
-      { name: "wash_fold",     displayName: "Wash & Fold",   description: "Standard laundry — washed, dried, folded.",       basePrice: 1.99, unit: "lb",   icon: "Shirt",       isActive: 1, sortOrder: 1 },
-      { name: "dry_cleaning",  displayName: "Dry Cleaning",  description: "Professional dry cleaning for delicate garments.", basePrice: 6.99, unit: "item", icon: "Sparkles",    isActive: 1, sortOrder: 2 },
-      { name: "comforters",    displayName: "Comforters & Bedding", description: "Large items — comforters, duvets, blankets.", basePrice: 24.99, unit: "item", icon: "BedDouble", isActive: 1, sortOrder: 3 },
-      { name: "alterations",   displayName: "Alterations",   description: "Hemming, repairs, and tailoring.",                  basePrice: 12.99, unit: "item", icon: "Scissors", isActive: 1, sortOrder: 4 },
-      { name: "commercial",    displayName: "Commercial",    description: "Bulk laundry for restaurants, gyms, and offices.", basePrice: 1.49, unit: "lb", icon: "Building2", isActive: 1, sortOrder: 5 },
+      { name: "wash_fold",     displayName: "Wash & Fold",   description: "Standard laundry — washed, dried, folded.",       basePrice: 1.99, unit: "lb",   icon: "Shirt",       isActive: true, sortOrder: 1 },
+      { name: "dry_cleaning",  displayName: "Dry Cleaning",  description: "Professional dry cleaning for delicate garments.", basePrice: 6.99, unit: "item", icon: "Sparkles",    isActive: true, sortOrder: 2 },
+      { name: "comforters",    displayName: "Comforters & Bedding", description: "Large items — comforters, duvets, blankets.", basePrice: 24.99, unit: "item", icon: "BedDouble", isActive: true, sortOrder: 3 },
+      { name: "alterations",   displayName: "Alterations",   description: "Hemming, repairs, and tailoring.",                  basePrice: 12.99, unit: "item", icon: "Scissors", isActive: true, sortOrder: 4 },
+      { name: "commercial",    displayName: "Commercial",    description: "Bulk laundry for restaurants, gyms, and offices.", basePrice: 1.49, unit: "lb", icon: "Building2", isActive: true, sortOrder: 5 },
     ];
     for (const st of seeds) {
       await storage.createServiceType(st as any);
@@ -135,10 +141,10 @@ async function ensureAddOns() {
     if (existing && existing.length > 0) {
       // One-time cleanup: deactivate legacy same_day add-on to prevent double-charging
       // alongside DELIVERY_FEES.same_day ($12.99). Idempotent.
-      const legacy = existing.find((a: any) => a.name === "same_day" && a.isActive === 1);
+      const legacy = existing.find((a: any) => a.name === "same_day" && a.isActive === true);
       if (legacy) {
         try {
-          await storage.updateAddOn(legacy.id, { isActive: 0 } as any);
+          await storage.updateAddOn(legacy.id, { isActive: false } as any);
           console.log(`[Bootstrap] Deactivated legacy same_day add-on (id=${legacy.id})`);
         } catch (e: any) {
           console.warn(`[Bootstrap] could not deactivate legacy same_day add-on:`, e?.message || e);
@@ -151,12 +157,12 @@ async function ensureAddOns() {
       // D10: priceMode set per business rules
       // per_order: detergents + folded + hangered — charged once regardless of item count
       // per_item:  stain_treatment — charged per garment treated
-      { name: "hypoallergenic_detergent", displayName: "Hypoallergenic Detergent", price: 2.50, description: "Free of dyes and fragrances — safe for sensitive skin.", category: "detergent", isActive: 1, priceMode: "per_order" },
-      { name: "eco_detergent",            displayName: "Eco-Friendly Detergent",   price: 2.00, description: "Plant-based, biodegradable formula.",               category: "detergent", isActive: 1, priceMode: "per_order" },
-      { name: "fragrance_free_detergent", displayName: "Fragrance-Free Detergent", price: 2.00, description: "No added fragrances.",                              category: "detergent", isActive: 1, priceMode: "per_order" },
-      { name: "stain_treatment",          displayName: "Stain Pre-Treatment",       price: 4.99, description: "Professional pre-treatment for tough stains.",     category: "treatment", isActive: 1, priceMode: "per_item" },
-      { name: "folded_separately",        displayName: "Folded Separately",         price: 3.00, description: "Items folded by family member.",                   category: "service",   isActive: 1, priceMode: "per_order" },
-      { name: "hangered_delivery",        displayName: "Hangered Delivery",          price: 5.99, description: "Delivered on hangers instead of folded.",          category: "service",   isActive: 1, priceMode: "per_order" },
+      { name: "hypoallergenic_detergent", displayName: "Hypoallergenic Detergent", price: 2.50, description: "Free of dyes and fragrances — safe for sensitive skin.", category: "detergent", isActive: true, priceMode: "per_order" },
+      { name: "eco_detergent",            displayName: "Eco-Friendly Detergent",   price: 2.00, description: "Plant-based, biodegradable formula.",               category: "detergent", isActive: true, priceMode: "per_order" },
+      { name: "fragrance_free_detergent", displayName: "Fragrance-Free Detergent", price: 2.00, description: "No added fragrances.",                              category: "detergent", isActive: true, priceMode: "per_order" },
+      { name: "stain_treatment",          displayName: "Stain Pre-Treatment",       price: 4.99, description: "Professional pre-treatment for tough stains.",     category: "treatment", isActive: true, priceMode: "per_item" },
+      { name: "folded_separately",        displayName: "Folded Separately",         price: 3.00, description: "Items folded by family member.",                   category: "service",   isActive: true, priceMode: "per_order" },
+      { name: "hangered_delivery",        displayName: "Hangered Delivery",          price: 5.99, description: "Delivered on hangers instead of folded.",          category: "service",   isActive: true, priceMode: "per_order" },
       // Legacy same_day add-on REMOVED 2026-05-12: would double-charge alongside DELIVERY_FEES.same_day ($12.99).
       // Same-day is now a delivery-speed concept only, priced via pricing_config / DELIVERY_FEES.
       // { name: "same_day", ... } // DO NOT RESTORE without removing the delivery-fee path.
@@ -178,10 +184,10 @@ async function ensurePricingTiers() {
       return;
     }
     const seeds = [
-      { name: "small_bag",  displayName: "Small Bag",     maxWeight: 10,  flatPrice: 24.99, overageRate: 2.50, description: "Perfect for 1-2 people, single load.",            icon: "ShoppingBag", isActive: 1, sortOrder: 1 },
-      { name: "medium_bag", displayName: "Medium Bag",    maxWeight: 20,  flatPrice: 44.99, overageRate: 2.50, description: "Family load — up to 20 lbs.",                     icon: "ShoppingBag", isActive: 1, sortOrder: 2 },
-      { name: "large_bag",  displayName: "Large Bag",     maxWeight: 30,  flatPrice: 59.99, overageRate: 2.50, description: "Large load — perfect for sheets, towels, and a big week's wash.",  icon: "ShoppingBag", isActive: 1, sortOrder: 3 },
-      { name: "xl_bag",     displayName: "Extra Large",   maxWeight: 50,  flatPrice: 89.99, overageRate: 2.50, description: "Comforters, sheets, and more — up to 50 lbs.",     icon: "ShoppingBag", isActive: 1, sortOrder: 4 },
+      { name: "small_bag",  displayName: "Small Bag",     maxWeight: 10,  flatPrice: 24.99, overageRate: 2.50, description: "Perfect for 1-2 people, single load.",            icon: "ShoppingBag", isActive: true, sortOrder: 1 },
+      { name: "medium_bag", displayName: "Medium Bag",    maxWeight: 20,  flatPrice: 44.99, overageRate: 2.50, description: "Family load — up to 20 lbs.",                     icon: "ShoppingBag", isActive: true, sortOrder: 2 },
+      { name: "large_bag",  displayName: "Large Bag",     maxWeight: 30,  flatPrice: 59.99, overageRate: 2.50, description: "Large load — perfect for sheets, towels, and a big week's wash.",  icon: "ShoppingBag", isActive: true, sortOrder: 3 },
+      { name: "xl_bag",     displayName: "Extra Large",   maxWeight: 50,  flatPrice: 89.99, overageRate: 2.50, description: "Comforters, sheets, and more — up to 50 lbs.",     icon: "ShoppingBag", isActive: true, sortOrder: 4 },
     ];
     for (const pt of seeds) {
       await storage.createPricingTier(pt as any);
@@ -208,7 +214,7 @@ async function ensureDemoVendor() {
       email: "vendor@offloadusa.com",
       rating: 4.8,
       reviewCount: 127,
-      certified: 1,
+      certified: true,
       capacity: 200,
       currentLoad: 30,
       status: "active",
@@ -303,18 +309,18 @@ export async function bootstrapAccounts() {
   checkStripeMode();
   await ensureAccount({
     email: process.env.BOOTSTRAP_REVIEWER_EMAIL || "reviewer@offloadusa.com",
-    password: process.env.BOOTSTRAP_REVIEWER_PASSWORD || "OffloadReview2026!",
+    password: process.env.BOOTSTRAP_REVIEWER_PASSWORD,
     name: "Apple Reviewer",
     phone: "5551234567",
     role: "customer",
-  });
+  }, "BOOTSTRAP_REVIEWER_PASSWORD");
   await ensureAccount({
     email: process.env.BOOTSTRAP_ADMIN_EMAIL || "admin@offloadusa.com",
-    password: process.env.BOOTSTRAP_ADMIN_PASSWORD || "OffloadAdmin2026!",
+    password: process.env.BOOTSTRAP_ADMIN_PASSWORD,
     name: "Offload Admin",
     phone: "5550000000",
     role: "admin",
-  });
+  }, "BOOTSTRAP_ADMIN_PASSWORD");
   // Operational baseline
   await ensureServiceTypes();
   await ensureAddOns();
@@ -323,19 +329,19 @@ export async function bootstrapAccounts() {
   // Demo vendor (laundromat) login + driver login — must run AFTER ensureDemoVendor so vendorId=1 exists
   await ensureAccount({
     email: process.env.BOOTSTRAP_VENDOR_EMAIL || "vendor@offloadusa.com",
-    password: process.env.BOOTSTRAP_VENDOR_PASSWORD || "OffloadVendor2026!",
+    password: process.env.BOOTSTRAP_VENDOR_PASSWORD,
     name: "Offload Demo Laundromat",
     phone: "5550000001",
     role: "laundromat",
     vendorId: 1,
-  });
+  }, "BOOTSTRAP_VENDOR_PASSWORD");
   await ensureAccount({
     email: process.env.BOOTSTRAP_DRIVER_EMAIL || "driver@offloadusa.com",
-    password: process.env.BOOTSTRAP_DRIVER_PASSWORD || "OffloadDriver2026!",
+    password: process.env.BOOTSTRAP_DRIVER_PASSWORD,
     name: "Offload Demo Driver",
     phone: "5550000002",
     role: "driver",
-  });
+  }, "BOOTSTRAP_DRIVER_PASSWORD");
   await ensurePricingConfig();
   console.log("[Bootstrap] Done");
 }

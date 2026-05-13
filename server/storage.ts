@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { eq, desc, and, or, sql, like } from "drizzle-orm";
 import * as schema from "@shared/schema";
+import { addMoneyCents, dollarsToCents as moneyDollarsToCents } from "./lib/money";
 
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL not set");
@@ -209,6 +210,7 @@ async function ensureExtraTables() {
     ["quotes", "traffic_multiplier DOUBLE PRECISION DEFAULT 1.0"],
     ["quotes", "window_discount DOUBLE PRECISION DEFAULT 0"],
     ["quotes", "vendor_choice_mode TEXT DEFAULT 'auto'"],
+    ["quotes", "public_token TEXT"],
     // Vendor service-area + capability + intake controls (master pass)
     ["vendors", "service_zips TEXT"],
     ["vendors", "service_radius_miles DOUBLE PRECISION"],
@@ -529,11 +531,13 @@ export interface IStorage {
   getOrdersByStatus(status: string): Promise<schema.Order[]>;
   createOrder(data: schema.InsertOrder): Promise<schema.Order>;
   updateOrder(id: number, data: Partial<schema.InsertOrder>): Promise<schema.Order | undefined>;
+  transitionOrderStatus(orderId: number, fromStatus: string, toStatus: string, eventData: schema.InsertOrderEvent & { orderUpdate?: Partial<schema.InsertOrder>; vendorUpdate?: { id: number; data: Partial<schema.InsertVendor> }; driverUpdate?: { id: number; data: Partial<schema.InsertDriver> } }): Promise<schema.Order>;
   // Order Events
   getOrderEvents(orderId: number): Promise<schema.OrderEvent[]>;
   createOrderEvent(data: schema.InsertOrderEvent): Promise<schema.OrderEvent>;
   // Payment Methods
   getPaymentMethodsByUser(userId: number): Promise<schema.PaymentMethod[]>;
+  getPaymentMethod(id: number): Promise<schema.PaymentMethod | undefined>;
   createPaymentMethod(data: schema.InsertPaymentMethod): Promise<schema.PaymentMethod>;
   updatePaymentMethod(id: number, data: Partial<schema.InsertPaymentMethod>): Promise<schema.PaymentMethod | undefined>;
   deletePaymentMethod(id: number): Promise<void>;
@@ -643,6 +647,7 @@ export interface IStorage {
   // Quotes
   getQuote(id: number): Promise<schema.Quote | undefined>;
   getQuoteByNumber(quoteNumber: string): Promise<schema.Quote | undefined>;
+  getQuoteByPublicToken(token: string): Promise<schema.Quote | undefined>;
   getQuoteByIdempotencyKey(key: string): Promise<schema.Quote | undefined>;
   getQuotesByCustomer(customerId: number): Promise<schema.Quote[]>;
   getQuotesBySession(sessionId: string): Promise<schema.Quote[]>;
@@ -696,30 +701,24 @@ export interface IStorage {
 
 // ── Dual-write helpers: add shadow _cents columns from dollar values ──
 function dollarToCents(v: number | null | undefined): number | null {
-  return v != null ? Math.round(v * 100) : null;
+  return v != null ? moneyDollarsToCents(v) : null;
 }
+const ORDER_MONEY_FIELDS = [
+  "subtotal", "tax", "deliveryFee", "discount", "tip", "total",
+  "tierFlatPrice", "overageCharge", "finalPrice", "vendorPayout", "driverPayout",
+  "platformFee", "pickupDistanceFee", "floorFee", "handoffFee", "windowDiscount",
+  "pickupWaitFee",
+];
+const QUOTE_MONEY_FIELDS = [
+  "laundryServicePrice", "speedSurcharge", "deliveryFee", "preferredVendorSurcharge",
+  "addOnsTotal", "subtotal", "taxAmount", "discount", "total", "tierFlatPrice",
+  "pickupDistanceFee", "floorFee", "handoffFee", "windowDiscount", "promoDiscount",
+];
 export function addOrderCents<T extends Record<string, any>>(data: T): T {
-  const d = { ...data } as any;
-  if (d.subtotal != null && d.subtotalCents == null) d.subtotalCents = dollarToCents(d.subtotal);
-  if (d.tax != null && d.taxCents == null) d.taxCents = dollarToCents(d.tax);
-  if (d.deliveryFee != null && d.deliveryFeeCents == null) d.deliveryFeeCents = dollarToCents(d.deliveryFee);
-  if (d.discount != null && d.discountCents == null) d.discountCents = dollarToCents(d.discount);
-  if (d.total != null && d.totalCents == null) d.totalCents = dollarToCents(d.total);
-  if (d.finalPrice != null && d.finalPriceCents == null) d.finalPriceCents = dollarToCents(d.finalPrice);
-  if (d.vendorPayout != null && d.vendorPayoutCents == null) d.vendorPayoutCents = dollarToCents(d.vendorPayout);
-  if (d.driverPayout != null && d.driverPayoutCents == null) d.driverPayoutCents = dollarToCents(d.driverPayout);
-  if (d.tierFlatPrice != null && d.tierFlatPriceCents == null) d.tierFlatPriceCents = dollarToCents(d.tierFlatPrice);
-  return d;
+  return addMoneyCents(data, ORDER_MONEY_FIELDS);
 }
 export function addQuoteCents<T extends Record<string, any>>(data: T): T {
-  const d = { ...data } as any;
-  if (d.subtotal != null && d.subtotalCents == null) d.subtotalCents = dollarToCents(d.subtotal);
-  if (d.taxAmount != null && d.taxAmountCents == null) d.taxAmountCents = dollarToCents(d.taxAmount);
-  if (d.deliveryFee != null && d.deliveryFeeCents == null) d.deliveryFeeCents = dollarToCents(d.deliveryFee);
-  if (d.discount != null && d.discountCents == null) d.discountCents = dollarToCents(d.discount);
-  if (d.total != null && d.totalCents == null) d.totalCents = dollarToCents(d.total);
-  if (d.tierFlatPrice != null && d.tierFlatPriceCents == null) d.tierFlatPriceCents = dollarToCents(d.tierFlatPrice);
-  return d;
+  return addMoneyCents(data, QUOTE_MONEY_FIELDS);
 }
 function addVendorCents<T extends Record<string, any>>(data: T): T {
   const d = { ...data } as any;
@@ -972,6 +971,54 @@ class DatabaseStorage implements IStorage {
     return row;
   }
 
+  /**
+   * Atomically transition an order and write its audit event.
+   * Uses optimistic concurrency so callers cannot overwrite a status that changed
+   * between read and write. Optional vendor/driver updates are committed in the
+   * same transaction.
+   */
+  async transitionOrderStatus(
+    orderId: number,
+    fromStatus: string,
+    toStatus: string,
+    eventData: schema.InsertOrderEvent & {
+      orderUpdate?: Partial<schema.InsertOrder>;
+      vendorUpdate?: { id: number; data: Partial<schema.InsertVendor> };
+      driverUpdate?: { id: number; data: Partial<schema.InsertDriver> };
+    },
+  ) {
+    return db.transaction(async (tx) => {
+      const { orderUpdate, vendorUpdate, driverUpdate, ...rawEvent } = eventData as any;
+      const updatePayload = addOrderCents({
+        ...(orderUpdate || {}),
+        status: toStatus,
+        updatedAt: (orderUpdate as any)?.updatedAt || new Date().toISOString(),
+      });
+      const [updated] = await tx.update(schema.orders)
+        .set(updatePayload as any)
+        .where(and(eq(schema.orders.id, orderId), eq(schema.orders.status, fromStatus)))
+        .returning();
+      if (!updated) {
+        throw new Error(`order_status_conflict:${orderId}:${fromStatus}->${toStatus}`);
+      }
+      await tx.insert(schema.orderEvents).values({
+        ...rawEvent,
+        orderId,
+        eventType: rawEvent.eventType || toStatus,
+        fromStatus,
+        toStatus,
+        timestamp: rawEvent.timestamp || new Date().toISOString(),
+      } as any);
+      if (vendorUpdate) {
+        await tx.update(schema.vendors).set(addVendorCents(vendorUpdate.data) as any).where(eq(schema.vendors.id, vendorUpdate.id));
+      }
+      if (driverUpdate) {
+        await tx.update(schema.drivers).set(addDriverCents(driverUpdate.data) as any).where(eq(schema.drivers.id, driverUpdate.id));
+      }
+      return updated;
+    });
+  }
+
   // ─── Order Events ───
   async getOrderEvents(orderId: number) {
     return db.select().from(schema.orderEvents).where(eq(schema.orderEvents.orderId, orderId)).orderBy(schema.orderEvents.timestamp);
@@ -983,6 +1030,10 @@ class DatabaseStorage implements IStorage {
 
   // ─── Payment Methods ───
   async getPaymentMethodsByUser(userId: number) { return db.select().from(schema.paymentMethods).where(eq(schema.paymentMethods.userId, userId)); }
+  async getPaymentMethod(id: number) {
+    const [row] = await db.select().from(schema.paymentMethods).where(eq(schema.paymentMethods.id, id));
+    return row;
+  }
   async createPaymentMethod(data: schema.InsertPaymentMethod) {
     const [row] = await db.insert(schema.paymentMethods).values(data).returning();
     return row;
@@ -1078,7 +1129,7 @@ class DatabaseStorage implements IStorage {
   }
   async getUnreadCount(userId: number) {
     const [result] = await db.select({ count: sql<number>`count(*)` }).from(schema.notifications)
-      .where(and(eq(schema.notifications.userId, userId), eq(schema.notifications.read, 0)));
+      .where(and(eq(schema.notifications.userId, userId), eq(schema.notifications.read, false)));
     return Number(result?.count) || 0;
   }
   async getNotification(id: number) {
@@ -1108,11 +1159,11 @@ class DatabaseStorage implements IStorage {
     return db.select().from(schema.pushTokens).where(eq(schema.pushTokens.userId, userId));
   }
   async markNotificationRead(id: number) {
-    const [row] = await db.update(schema.notifications).set({ read: 1 }).where(eq(schema.notifications.id, id)).returning();
+    const [row] = await db.update(schema.notifications).set({ read: true }).where(eq(schema.notifications.id, id)).returning();
     return row;
   }
   async markAllRead(userId: number) {
-    await db.update(schema.notifications).set({ read: 1 }).where(eq(schema.notifications.userId, userId));
+    await db.update(schema.notifications).set({ read: true }).where(eq(schema.notifications.userId, userId));
   }
 
   // ─── Promo Codes ───
@@ -1204,7 +1255,7 @@ class DatabaseStorage implements IStorage {
   }
 
   // ─── Pricing Tiers ───
-  async getPricingTiers() { return db.select().from(schema.pricingTiers).where(eq(schema.pricingTiers.isActive, 1)).orderBy(schema.pricingTiers.sortOrder); }
+  async getPricingTiers() { return db.select().from(schema.pricingTiers).where(eq(schema.pricingTiers.isActive, true)).orderBy(schema.pricingTiers.sortOrder); }
   async getPricingTier(id: number) {
     const [row] = await db.select().from(schema.pricingTiers).where(eq(schema.pricingTiers.id, id));
     return row;
@@ -1219,7 +1270,7 @@ class DatabaseStorage implements IStorage {
   }
 
   // ─── Add-Ons ───
-  async getAddOns() { return db.select().from(schema.addOns).where(eq(schema.addOns.isActive, 1)); }
+  async getAddOns() { return db.select().from(schema.addOns).where(eq(schema.addOns.isActive, true)); }
   async getAllAddOns() { return db.select().from(schema.addOns).orderBy(schema.addOns.id); }
   async getAddOn(id: number) {
     const [row] = await db.select().from(schema.addOns).where(eq(schema.addOns.id, id));
@@ -1354,6 +1405,10 @@ class DatabaseStorage implements IStorage {
   }
   async getQuoteByNumber(quoteNumber: string) {
     const [row] = await db.select().from(schema.quotes).where(eq(schema.quotes.quoteNumber, quoteNumber));
+    return row;
+  }
+  async getQuoteByPublicToken(token: string) {
+    const [row] = await db.select().from(schema.quotes).where(eq(schema.quotes.publicToken, token));
     return row;
   }
   async getQuoteByIdempotencyKey(key: string) {
@@ -1641,7 +1696,7 @@ class DatabaseStorage implements IStorage {
   }
   async getNotificationRulesByTrigger(trigger: string): Promise<schema.NotificationRule[]> {
     return db.select().from(schema.notificationRules).where(
-      and(eq(schema.notificationRules.trigger, trigger), eq(schema.notificationRules.isActive, 1))
+      and(eq(schema.notificationRules.trigger, trigger), eq(schema.notificationRules.isActive, true))
     );
   }
   async createNotificationRule(input: schema.InsertNotificationRule): Promise<schema.NotificationRule> {

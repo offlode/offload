@@ -10,10 +10,10 @@
  *  - NEVER invent prices, fees, service-area claims. Fields go to existing quote endpoint on client.
  *  - Does NOT call findBestVendor / calculateQuotePrice from here.
  *  - Language other than "en" / "es" returns warning: "language_unsupported".
- *  - Per-IP rate limit: 5 transcribes/min (in-memory, acceptable for v1).
+ *  - Authenticated users are limited to 10 voice requests/minute.
  */
 
-import { type Express, type Request, type Response } from "express";
+import { type Express, type Request, type Response, type RequestHandler } from "express";
 import multer from "multer";
 import OpenAI from "openai";
 import { Readable } from "stream";
@@ -28,20 +28,21 @@ function getOpenAI(): OpenAI {
   return new OpenAI({ apiKey });
 }
 
-// ─── Rate limiter (5 transcribes / min per IP) ────────────────
+// ─── Rate limiter (10 voice requests / min per authenticated user) ─────────
 interface RateBucket {
   count: number;
   resetAt: number;
 }
 const rateBuckets = new Map<string, RateBucket>();
-const RATE_LIMIT = 5;
+const RATE_LIMIT = 10;
 const RATE_WINDOW_MS = 60_000;
 
-function checkVoiceRateLimit(ip: string): boolean {
+function checkVoiceRateLimit(userId: number): boolean {
   const now = Date.now();
-  const bucket = rateBuckets.get(ip);
+  const key = String(userId);
+  const bucket = rateBuckets.get(key);
   if (!bucket || now > bucket.resetAt) {
-    rateBuckets.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    rateBuckets.set(key, { count: 1, resetAt: now + RATE_WINDOW_MS });
     return true;
   }
   if (bucket.count >= RATE_LIMIT) return false;
@@ -152,7 +153,7 @@ For language, output "en" if the transcript is English, "es" if Spanish.
 Respond ONLY with valid JSON matching the schema — no prose, no markdown fences.`;
 
 // ─── Route registration ────────────────────────────────────────
-export function registerVoiceRoutes(app: Express): void {
+export function registerVoiceRoutes(app: Express, requireAuth: () => RequestHandler): void {
 
   // ── GET /api/voice/health ───────────────────────────────────
   app.get("/api/voice/health", (_req, res) => {
@@ -165,12 +166,12 @@ export function registerVoiceRoutes(app: Express): void {
   // ── POST /api/voice/transcribe ──────────────────────────────
   app.post(
     "/api/voice/transcribe",
+    requireAuth(),
     upload.single("audio"),
     async (req: Request, res: Response): Promise<void> => {
-      // Rate limit check
-      const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
-      if (!checkVoiceRateLimit(ip)) {
-        res.status(429).json({ error: "Rate limit exceeded. Max 5 transcriptions per minute.", retryHint: "Wait 60 seconds and try again." });
+      const currentUser = (req as any).currentUser;
+      if (!checkVoiceRateLimit(currentUser.id)) {
+        res.status(429).json({ error: "Rate limit exceeded. Max 10 voice requests per minute.", retryHint: "Wait 60 seconds and try again." });
         return;
       }
 
@@ -227,7 +228,12 @@ export function registerVoiceRoutes(app: Express): void {
   );
 
   // ── POST /api/voice/extract ─────────────────────────────────
-  app.post("/api/voice/extract", async (req: Request, res: Response): Promise<void> => {
+  app.post("/api/voice/extract", requireAuth(), async (req: Request, res: Response): Promise<void> => {
+    const currentUser = (req as any).currentUser;
+    if (!checkVoiceRateLimit(currentUser.id)) {
+      res.status(429).json({ error: "Rate limit exceeded. Max 10 voice requests per minute.", retryHint: "Wait 60 seconds and try again." });
+      return;
+    }
     const { transcript, language } = req.body as { transcript?: string; language?: string };
 
     if (!transcript || typeof transcript !== "string" || transcript.trim().length === 0) {

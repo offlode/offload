@@ -1,3 +1,5 @@
+import { LRUCache } from "lru-cache";
+
 // ════════════════════════════════════════════════════════════════
 //  INPUT SANITIZATION
 // ════════════════════════════════════════════════════════════════
@@ -15,7 +17,10 @@ export function sanitizeInput(input: string, maxLength = 5000): string {
 //  ROUTE RATE LIMITING
 // ════════════════════════════════════════════════════════════════
 
-const rateLimitBuckets: Record<string, { count: number; resetAt: number }> = {};
+const rateLimitBuckets = new LRUCache<string, { count: number; resetAt: number }>({
+  max: 10_000,
+  ttl: 60 * 60 * 1000,
+});
 
 export const RATE_LIMITS: Record<string, { maxRequests: number; windowMs: number }> = {
   "POST:/api/auth/register": { maxRequests: 5, windowMs: 60000 },
@@ -34,22 +39,14 @@ export function checkRateLimit(method: string, path: string, ip: string): boolea
 
   const bucketKey = `${routeKey}:${ip}`;
   const now = Date.now();
-  const bucket = rateLimitBuckets[bucketKey];
+  const bucket = rateLimitBuckets.get(bucketKey);
 
   if (!bucket || now > bucket.resetAt) {
-    rateLimitBuckets[bucketKey] = { count: 1, resetAt: now + limit.windowMs };
+    rateLimitBuckets.set(bucketKey, { count: 1, resetAt: now + limit.windowMs });
     return true;
   }
 
   if (bucket.count >= limit.maxRequests) return false;
-  bucket.count++;
+  rateLimitBuckets.set(bucketKey, { ...bucket, count: bucket.count + 1 });
   return true;
 }
-
-// Clean up expired buckets every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const key of Object.keys(rateLimitBuckets)) {
-    if (rateLimitBuckets[key].resetAt < now) delete rateLimitBuckets[key];
-  }
-}, 300000);
