@@ -9,3 +9,6 @@ data.db-wal
 
 # Local utility scripts
 *.cjs
+
+# Research / internal PDFs (may contain PII)
+research/

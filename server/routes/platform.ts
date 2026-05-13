@@ -12,10 +12,4 @@ export function registerPlatformRoutes(app: Express) {
   registerWebhookRoutes(app);
   registerAdminRoutes(app);
 
-  // ── API versioning header ──
-  app.use((_req, res, next) => {
-    res.setHeader("X-API-Version", "1.0.0");
-    res.setHeader("X-Powered-By", "Offload");
-    next();
-  });
 }

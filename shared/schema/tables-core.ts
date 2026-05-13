@@ -92,15 +92,20 @@ export const vendors = pgTable("vendors", {
   payoutRateCents: integer("payout_rate_cents").notNull().default(0),
   totalEarningsCents: integer("total_earnings_cents").notNull().default(0),
   pendingPayoutCents: integer("pending_payout_cents").notNull().default(0),
+  // Cross-app compat columns (offload-admin references these names)
+  healthScore: doublePrecision("health_score").default(85),
+  totalOrders: integer("total_orders").default(0),
+  totalPayout: doublePrecision("total_payout").default(0),
+  joinedAt: text("joined_at"),
   // AI Scoring
   aiHealthScore: doublePrecision("ai_health_score").default(85), // 0-100
   avgProcessingTime: doublePrecision("avg_processing_time").default(180), // minutes
   onTimeRate: doublePrecision("on_time_rate").default(0.95), // 0-1
   qualityScore: doublePrecision("quality_score").default(4.5), // 1-5
   disputeRate: doublePrecision("dispute_rate").default(0.02), // 0-1
-  // Operating hours (JSON: {mon: {open: "7:00", close: "22:00"}, ...})
+  // DEPRECATED: consolidated into operatingHoursJson by wave_h_01 migration. Kept for type compat.
   operatingHours: text("operating_hours"),
-  // Normalized operating hours JSON: {mon:{open:"08:00",close:"20:00",closed:false}, tue:..., ...}
+  // Operating hours JSON: {mon:{open:"08:00",close:"20:00",closed:false}, tue:..., ...}
   operatingHoursJson: text("operating_hours_json"),
   // Business details
   businessName: text("business_name"),

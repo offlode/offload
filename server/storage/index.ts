@@ -30,13 +30,13 @@ async function ensureExtraTables() {
       user_id INTEGER NOT NULL,
       token TEXT NOT NULL UNIQUE,
       platform TEXT NOT NULL,
-      created_at TEXT NOT NULL
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
     CREATE TABLE IF NOT EXISTS stripe_processed_events (
       event_id TEXT PRIMARY KEY,
       type TEXT NOT NULL,
-      processed_at TEXT NOT NULL
+      processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
     CREATE TABLE IF NOT EXISTS notification_rules (
@@ -47,9 +47,9 @@ async function ensureExtraTables() {
       channels TEXT NOT NULL,
       title_template TEXT NOT NULL,
       body_template TEXT NOT NULL,
-      is_active INTEGER DEFAULT 1,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
     CREATE TABLE IF NOT EXISTS partner_applications (
@@ -72,12 +72,12 @@ async function ensureExtraTables() {
       insurance_carrier TEXT,
       insurance_policy_number TEXT,
       insurance_expiry TEXT,
-      has_clean_driving_record INTEGER,
+      has_clean_driving_record BOOLEAN DEFAULT false,
       years_driving INTEGER,
       availability_json TEXT,
       hours_per_week INTEGER,
-      owns_smartphone INTEGER,
-      consent_background_check INTEGER,
+      owns_smartphone BOOLEAN DEFAULT false,
+      consent_background_check BOOLEAN DEFAULT false,
       business_name TEXT,
       business_legal_entity TEXT,
       ein TEXT,
@@ -88,30 +88,30 @@ async function ensureExtraTables() {
       daily_capacity_lbs INTEGER,
       operating_hours_json TEXT,
       services_offered_json TEXT,
-      accepts_commercial INTEGER,
-      accepts_rush_same_day INTEGER,
-      has_dry_cleaning_on_site INTEGER,
-      accepts_hypoallergenic INTEGER,
-      has_insurance INTEGER,
+      accepts_commercial BOOLEAN DEFAULT false,
+      accepts_rush_same_day BOOLEAN DEFAULT false,
+      has_dry_cleaning_on_site BOOLEAN DEFAULT false,
+      accepts_hypoallergenic BOOLEAN DEFAULT false,
+      has_insurance BOOLEAN DEFAULT false,
       insurance_carrier_biz TEXT,
-      agrees_to_quality_standards INTEGER NOT NULL DEFAULT 0,
-      agrees_to_pricing INTEGER NOT NULL DEFAULT 0,
-      agrees_to_terms_of_service INTEGER NOT NULL DEFAULT 0,
-      agrees_to_background_check INTEGER NOT NULL DEFAULT 0,
+      agrees_to_quality_standards BOOLEAN NOT NULL DEFAULT false,
+      agrees_to_pricing BOOLEAN NOT NULL DEFAULT false,
+      agrees_to_terms_of_service BOOLEAN NOT NULL DEFAULT false,
+      agrees_to_background_check BOOLEAN NOT NULL DEFAULT false,
       why_join TEXT,
       "references" TEXT,
       auto_screen_score INTEGER,
       auto_screen_flags TEXT,
       auto_screen_recommendation TEXT,
       reviewed_by_user_id INTEGER,
-      reviewed_at TEXT,
+      reviewed_at TIMESTAMPTZ,
       decline_reason TEXT,
       result_user_id INTEGER,
       result_driver_id INTEGER,
       result_vendor_id INTEGER,
       ip_address TEXT,
       user_agent TEXT,
-      created_at TEXT NOT NULL
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_partner_apps_status ON partner_applications(status);
     CREATE INDEX IF NOT EXISTS idx_partner_apps_type ON partner_applications(applicant_type);
@@ -128,7 +128,7 @@ async function ensureExtraTables() {
       ip TEXT,
       user_agent TEXT,
       notes TEXT,
-      timestamp TEXT NOT NULL
+      timestamp TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_admin_audit_log_entity ON admin_audit_log(entity_type, entity_id);
     CREATE INDEX IF NOT EXISTS idx_admin_audit_log_actor ON admin_audit_log(actor_id);
@@ -141,8 +141,8 @@ async function ensureExtraTables() {
       action TEXT NOT NULL,
       db_state TEXT NOT NULL,
       error_message TEXT,
-      recorded_at TEXT NOT NULL,
-      resolved_at TEXT,
+      recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      resolved_at TIMESTAMPTZ,
       notes TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_stripe_recon_action ON stripe_reconciliation_log(action);
@@ -165,8 +165,8 @@ async function ensureExtraTables() {
       source TEXT,
       status TEXT NOT NULL DEFAULT 'new',
       notes TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_sar_status ON service_area_requests(status);
     CREATE INDEX IF NOT EXISTS idx_sar_zip ON service_area_requests(zip);
@@ -254,7 +254,7 @@ async function ensureExtraTables() {
     ["vendors", "avg_daily_orders DOUBLE PRECISION DEFAULT 10"],
     ["vendors", "peak_day_of_week TEXT DEFAULT 'Monday'"],
     ["vendors", "performance_tier TEXT DEFAULT 'standard'"],
-    ["vendors", "operating_hours TEXT"],
+    // operating_hours consolidated into operating_hours_json by wave_h_01 migration
     ["vendors", "offers_dry_cleaning INTEGER DEFAULT 0"],
     ["vendors", "offers_alterations INTEGER DEFAULT 0"],
     ["vendors", "offers_comforters INTEGER DEFAULT 0"],
@@ -355,6 +355,32 @@ async function ensureIntegrityConstraints() {
     ["promo_usage", "ADD CONSTRAINT fk_promo_usage_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"],
   ];
   for (const [table, clause] of fks) {
+    // Extract the FK column from the clause (e.g. "FOREIGN KEY (customer_id)" → "customer_id")
+    const colMatch = clause.match(/FOREIGN KEY \((\w+)\)/i);
+    const fkCol = colMatch ? colMatch[1] : null;
+    const refMatch = clause.match(/REFERENCES (\w+)\((\w+)\)/i);
+    const refTable = refMatch ? refMatch[1] : null;
+    const refCol = refMatch ? refMatch[2] : null;
+
+    // Skip if a FK already exists on this column pair (regardless of constraint name)
+    if (fkCol && refTable && refCol) {
+      try {
+        const { rows } = await pool.query(`
+          SELECT 1 FROM information_schema.referential_constraints rc
+          JOIN information_schema.key_column_usage kcu
+            ON kcu.constraint_name = rc.constraint_name
+            AND kcu.constraint_schema = rc.constraint_schema
+          JOIN information_schema.constraint_column_usage ccu
+            ON ccu.constraint_name = rc.unique_constraint_name
+            AND ccu.constraint_schema = rc.unique_constraint_schema
+          WHERE kcu.table_name = $1 AND kcu.column_name = $2
+            AND ccu.table_name = $3 AND ccu.column_name = $4
+          LIMIT 1
+        `, [table, fkCol, refTable, refCol]);
+        if (rows.length > 0) continue; // FK already exists on this column pair
+      } catch { /* fall through to attempt add */ }
+    }
+
     try {
       await pool.query(`ALTER TABLE ${table} ${clause}`);
     } catch (e: any) {
@@ -367,44 +393,44 @@ async function ensureIntegrityConstraints() {
 
   // Shadow _cents columns for dual-write migration (Phase 1)
   const centsCols: Array<[string, string]> = [
-    ["orders", "subtotal_cents INTEGER"],
-    ["orders", "tax_cents INTEGER"],
-    ["orders", "delivery_fee_cents INTEGER"],
-    ["orders", "discount_cents INTEGER"],
-    ["orders", "total_cents INTEGER"],
-    ["orders", "final_price_cents INTEGER"],
-    ["orders", "vendor_payout_cents INTEGER"],
-    ["orders", "driver_payout_cents INTEGER"],
-    ["orders", "tier_flat_price_cents INTEGER"],
-    ["quotes", "subtotal_cents INTEGER"],
-    ["quotes", "tax_amount_cents INTEGER"],
-    ["quotes", "delivery_fee_cents INTEGER"],
-    ["quotes", "discount_cents INTEGER"],
-    ["quotes", "total_cents INTEGER"],
-    ["quotes", "tier_flat_price_cents INTEGER"],
-    ["vendor_payouts", "amount_cents INTEGER"],
+    ["orders", "subtotal_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["orders", "tax_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["orders", "delivery_fee_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["orders", "discount_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["orders", "total_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["orders", "final_price_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["orders", "vendor_payout_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["orders", "driver_payout_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["orders", "tier_flat_price_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["quotes", "subtotal_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["quotes", "tax_amount_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["quotes", "delivery_fee_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["quotes", "discount_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["quotes", "total_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["quotes", "tier_flat_price_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["vendor_payouts", "amount_cents INTEGER DEFAULT 0 NOT NULL"],
     // Part 6: remaining money fields
-    ["vendors", "payout_rate_cents INTEGER"],
-    ["vendors", "total_earnings_cents INTEGER"],
-    ["vendors", "pending_payout_cents INTEGER"],
-    ["drivers", "payout_per_trip_cents INTEGER"],
-    ["drivers", "total_earnings_cents INTEGER"],
-    ["drivers", "pending_payout_cents INTEGER"],
-    ["users", "total_spent_cents INTEGER"],
-    ["service_types", "base_price_cents INTEGER"],
-    ["consent_records", "additional_charge_cents INTEGER"],
-    ["disputes", "credit_amount_cents INTEGER"],
-    ["disputes", "refund_amount_cents INTEGER"],
-    ["promo_codes", "value_cents INTEGER"],
-    ["promo_codes", "min_order_amount_cents INTEGER"],
-    ["referrals", "referrer_reward_cents INTEGER"],
-    ["referrals", "referee_reward_cents INTEGER"],
-    ["pricing_tiers", "flat_price_cents INTEGER"],
-    ["pricing_tiers", "overage_rate_cents INTEGER"],
-    ["add_ons", "price_cents INTEGER"],
-    ["order_add_ons", "unit_price_cents INTEGER"],
-    ["order_add_ons", "total_cents INTEGER"],
-    ["payment_transactions", "platform_fee_cents INTEGER"],
+    ["vendors", "payout_rate_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["vendors", "total_earnings_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["vendors", "pending_payout_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["drivers", "payout_per_trip_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["drivers", "total_earnings_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["drivers", "pending_payout_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["users", "total_spent_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["service_types", "base_price_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["consent_records", "additional_charge_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["disputes", "credit_amount_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["disputes", "refund_amount_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["promo_codes", "value_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["promo_codes", "min_order_amount_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["referrals", "referrer_reward_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["referrals", "referee_reward_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["pricing_tiers", "flat_price_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["pricing_tiers", "overage_rate_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["add_ons", "price_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["order_add_ons", "unit_price_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["order_add_ons", "total_cents INTEGER DEFAULT 0 NOT NULL"],
+    ["payment_transactions", "platform_fee_cents INTEGER DEFAULT 0 NOT NULL"],
   ];
   for (const [table, colDef] of centsCols) {
     // D10: idempotent add of price_mode column to add_ons (below this loop, see migration below)

@@ -211,4 +211,10 @@ export interface IStorage {
   createNotificationRule(input: schema.InsertNotificationRule): Promise<schema.NotificationRule>;
   updateNotificationRule(id: number, patch: Partial<schema.InsertNotificationRule>): Promise<schema.NotificationRule | undefined>;
   deleteNotificationRule(id: number): Promise<boolean>;
+  // Service Area Requests
+  createServiceAreaRequest(data: schema.InsertServiceAreaRequest & { notes?: string }): Promise<schema.ServiceAreaRequest>;
+  getServiceAreaRequests(opts?: { status?: string; zip?: string; state?: string; limit?: number; offset?: number }): Promise<schema.ServiceAreaRequest[]>;
+  getServiceAreaRequest(id: number): Promise<schema.ServiceAreaRequest | undefined>;
+  updateServiceAreaRequest(id: number, patch: { status?: string; notes?: string }): Promise<schema.ServiceAreaRequest | undefined>;
+  getServiceAreaDemandByZip(): Promise<Array<{ zip: string; count: number }>>;
 }

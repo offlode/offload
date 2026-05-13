@@ -162,7 +162,7 @@ def cover_page(canvas_obj, doc_obj):
     canvas_obj.setFont("Inter", 8)
     canvas_obj.setFillColor(HexColor("#7DB8BD"))
     canvas_obj.drawString(54, 40, "Prepared by Perplexity Computer  \u00b7  April 2026  \u00b7  Confidential")
-    canvas_obj.drawRightString(w-54, 40, "chaim.fischer@tudelu.com")
+    canvas_obj.drawRightString(w-54, 40, "team@offloadusa.com")
 
 # ─── COVER ─────────────────────────────────────────────────────────────
 story.append(Spacer(1, 2.2*inch))

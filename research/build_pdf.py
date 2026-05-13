@@ -317,7 +317,7 @@ story.append(TealLine())
 story.append(Spacer(1, 0.25 * inch))
 story.append(Paragraph("April 14, 2026", cover_meta))
 story.append(Spacer(1, 0.06 * inch))
-story.append(Paragraph("Prepared for: <b>Chaim Fischer</b>  |  chaim.fischer@tudelu.com", cover_meta))
+story.append(Paragraph("Prepared for: <b>Offload USA</b>  |  team@offloadusa.com", cover_meta))
 story.append(Spacer(1, 0.06 * inch))
 story.append(Paragraph("Confidential  |  Internal Use Only", ParagraphStyle(
     "CoverConf", fontName="Inter-Medium", fontSize=9, textColor=TEXT_FAINT

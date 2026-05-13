@@ -169,7 +169,7 @@ export function registerQuotesCheckoutRoutes(app: Express) {
           zip: quote.pickupZip || "",
           lat: quote.pickupLat,
           lng: quote.pickupLng,
-          isDefault: 1,
+          isDefault: true,
         } as any).returning();
 
         const [ord] = await tx.insert(schema.orders).values(addOrderCents({
