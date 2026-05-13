@@ -146,6 +146,7 @@ export default function RegisterPage() {
             <input
               data-testid="input-fullname"
               id="fullName"
+              name="fullName"
               type="text"
               placeholder="Full Name"
               value={fullName}
@@ -162,6 +163,7 @@ export default function RegisterPage() {
             <input
               data-testid="input-email"
               id="reg-email"
+              name="email"
               type="email"
               placeholder="Email"
               value={email}
@@ -183,11 +185,13 @@ export default function RegisterPage() {
               <input
                 data-testid="input-phone"
                 id="reg-phone"
+                name="phone"
                 type="tel"
+                inputMode="tel"
                 placeholder="Phone Number"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
-                autoComplete="tel"
+                autoComplete="tel-national"
                 className="flex-1 h-full px-3 bg-transparent text-foreground placeholder:text-muted-foreground focus:outline-none"
               />
             </div>
@@ -199,6 +203,7 @@ export default function RegisterPage() {
             <input
               data-testid="input-password"
               id="reg-password"
+              name="password"
               type={showPassword ? "text" : "password"}
               placeholder="Password"
               value={password}
@@ -223,6 +228,7 @@ export default function RegisterPage() {
             <input
               data-testid="input-confirm-password"
               id="confirm-password"
+              name="confirmPassword"
               type={showConfirmPassword ? "text" : "password"}
               placeholder="Confirm Password"
               value={confirmPassword}

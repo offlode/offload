@@ -52,11 +52,30 @@ function isStateChangingMethod(method: string): boolean {
   return method === "POST" || method === "PATCH" || method === "DELETE" || method === "PUT";
 }
 
+// Public endpoints that accept anonymous POST requests (no session exists yet).
+// These are exempt from the bearer-token CSRF gate but still subject to CORS origin
+// checks and any per-route rate limits.
+const BEARER_EXEMPT_PATHS: string[] = [
+  "/api/auth/register",
+  "/api/auth/login",
+  "/api/auth/forgot-password",
+  "/api/auth/reset-password",
+  "/api/auth/apple",
+  "/api/auth/logout",
+  "/api/webhooks/stripe",
+  "/api/stripe/webhook",
+];
+
 export function requireBearerToken(req: Request, res: Response, next: NextFunction) {
   // CSRF hardening: production cookies are SameSite=None for cross-origin admin SPA
   // support, so state-changing API calls must authenticate with an Authorization:
   // Bearer token. Cookie-only auth remains accepted for GET/read-only requests.
   if (!isStateChangingMethod(req.method)) return next();
+
+  // Public auth + webhook endpoints are exempt — callers have no token yet,
+  // or (webhooks) authenticate via HMAC signature instead.
+  if (BEARER_EXEMPT_PATHS.includes(req.path)) return next();
+
   const bearer = getBearerTokenFromRequest(req);
   const cookieToken = getCookieValue(req, SESSION_COOKIE);
   if (!bearer && cookieToken) {
