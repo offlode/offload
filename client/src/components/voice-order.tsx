@@ -119,10 +119,13 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
   // Spanish low-confidence warning
   const [showSpanishBeta, setShowSpanishBeta] = useState(false);
 
+  // Voice endpoint health state
+  const [voiceAvailable, setVoiceAvailable] = useState<boolean | null>(null); // null = checking
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
-  // Reset on open
+  // Reset on open and check voice endpoint health
   useEffect(() => {
     if (open) {
       setStep("record");
@@ -131,6 +134,12 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
       setExtracted(null);
       setShowSpanishBeta(false);
       chunksRef.current = [];
+      // Check whether the live voice endpoint is available
+      setVoiceAvailable(null);
+      fetch("/api/voice/health", { credentials: "include" })
+        .then((r) => r.json())
+        .then((data) => setVoiceAvailable(!!data.available))
+        .catch(() => setVoiceAvailable(false));
     }
   }, [open]);
 
@@ -313,12 +322,18 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
             <div className="text-center mb-5">
               <div className="flex items-center justify-center gap-2 mb-1">
                 <h3 className="text-lg font-bold">Order by Voice</h3>
+                <Badge
+                  variant="secondary"
+                  className="text-[10px] px-2 py-0.5 bg-red-500/15 text-red-600 border border-red-500/25"
+                >
+                  BETA
+                </Badge>
                 {lang === "es" && (
                   <Badge
                     variant="secondary"
                     className="text-[10px] px-2 py-0.5 bg-amber-500/15 text-amber-600 border border-amber-500/25"
                   >
-                    Beta — English only
+                    EN / ES only
                   </Badge>
                 )}
               </div>
@@ -326,6 +341,18 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
                 Tap the mic, describe your laundry order, then tap again to stop.
               </p>
             </div>
+
+            {/* Endpoint unavailability banner */}
+            {voiceAvailable === false && (
+              <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-300 mb-5">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <p className="text-xs text-amber-800 leading-snug">
+                  <strong>Voice ordering is currently in beta.</strong> The live voice endpoint is
+                  temporarily unavailable while we configure our speech provider. Please use the{" "}
+                  <a href="/schedule" className="underline font-medium">regular order form</a> for now.
+                </p>
+              </div>
+            )}
 
             {/* Language toggle */}
             <div className="flex items-center justify-center gap-2 mb-5">
@@ -360,11 +387,19 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
             {/* Mic button */}
             <div className="flex justify-center mb-5">
               <button
-                onClick={isRecording ? stopRecording : startRecording}
+                onClick={voiceAvailable === false ? () => toast({
+                  title: "Voice endpoint unavailable",
+                  description: "The speech provider is not yet configured. Please use the regular order form.",
+                  variant: "destructive",
+                }) : (isRecording ? stopRecording : startRecording)}
                 data-testid="button-mic"
+                disabled={voiceAvailable === null}
+                aria-disabled={voiceAvailable === false}
                 className={cn(
                   "w-24 h-24 rounded-full flex items-center justify-center transition-all",
-                  isRecording
+                  voiceAvailable === false
+                    ? "bg-muted text-muted-foreground cursor-not-allowed opacity-50"
+                    : isRecording
                     ? "bg-red-500 text-white scale-110 shadow-[0_0_40px_rgba(239,68,68,0.4)]"
                     : "bg-primary text-white hover:bg-primary/85 shadow-lg",
                 )}
@@ -399,9 +434,15 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
               </div>
             )}
 
-            {!isRecording && (
+            {!isRecording && voiceAvailable !== false && (
               <p className="text-center text-xs text-muted-foreground">
                 Example: "I need a medium bag, wash and fold, standard delivery"
+              </p>
+            )}
+            {/* Language note always visible */}
+            {voiceAvailable !== false && (
+              <p className="text-center text-xs text-muted-foreground mt-2">
+                Supported languages: <strong>English (EN)</strong> and <strong>Spanish (ES)</strong> only.
               </p>
             )}
           </>

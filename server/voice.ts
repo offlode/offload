@@ -154,6 +154,14 @@ Respond ONLY with valid JSON matching the schema — no prose, no markdown fence
 // ─── Route registration ────────────────────────────────────────
 export function registerVoiceRoutes(app: Express): void {
 
+  // ── GET /api/voice/health ───────────────────────────────────
+  app.get("/api/voice/health", (_req, res) => {
+    res.json({
+      available: !!process.env.OPENAI_API_KEY,
+      languages: ["en", "es"],
+    });
+  });
+
   // ── POST /api/voice/transcribe ──────────────────────────────
   app.post(
     "/api/voice/transcribe",
