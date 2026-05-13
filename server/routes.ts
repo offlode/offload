@@ -2124,26 +2124,31 @@ export async function registerRoutes(
   // Replaces hardcoded NYC/NJ ZIP range with a check against approved active vendors.
   // Returns matchedVendors so callers can see whether ANY laundromat services the area
   // — not just whether the ZIP looks NYC-ish.
-  app.get("/api/quotes/check-serviceability", async (req, res) => {
+  // Shared handler — supports BOTH GET (query) and POST (body)
+  const checkServiceabilityHandler = async (req: any, res: any) => {
     try {
-      const zip = req.query.zip ? String(req.query.zip) : undefined;
-      const lat = req.query.lat ? Number(req.query.lat) : undefined;
-      const lng = req.query.lng ? Number(req.query.lng) : undefined;
-      const service = req.query.service ? String(req.query.service) : undefined;
-      const addOnsRaw = req.query.addOns ? String(req.query.addOns) : "";
-      const addOns = addOnsRaw ? addOnsRaw.split(",").map(s => s.trim()).filter(Boolean) : undefined;
+      const src = req.method === "POST" ? (req.body || {}) : (req.query || {});
+      const zip = src.zip ? String(src.zip) : undefined;
+      const lat = src.lat != null ? Number(src.lat) : undefined;
+      const lng = src.lng != null ? Number(src.lng) : undefined;
+      const service = (src.service || src.serviceType) ? String(src.service || src.serviceType) : undefined;
+      const addressStr = src.address ? String(src.address) : undefined;
+      // If only address text was provided, try to extract a 5-digit ZIP from it
+      const resolvedZip = zip || (addressStr ? (addressStr.match(/\b(\d{5})(?:-\d{4})?\b/) || [])[1] : undefined);
+      const addOnsRaw = src.addOns ? (Array.isArray(src.addOns) ? src.addOns.join(",") : String(src.addOns)) : "";
+      const addOns = addOnsRaw ? addOnsRaw.split(",").map((s: string) => s.trim()).filter(Boolean) : undefined;
       // D8: optional scheduled time for hours gating
-      const scheduledForRaw = req.query.scheduledFor ? String(req.query.scheduledFor) : undefined;
+      const scheduledForRaw = src.scheduledFor ? String(src.scheduledFor) : undefined;
       let scheduledForDate: Date | undefined;
       if (scheduledForRaw) {
         try { scheduledForDate = new Date(scheduledForRaw); } catch { /* ignore invalid */ }
       }
 
-      if (!zip && (lat == null || lng == null)) {
-        return res.status(400).json({ error: "zip OR (lat,lng) required" });
+      if (!resolvedZip && (lat == null || lng == null)) {
+        return res.status(400).json({ error: "zip OR (lat,lng) required", serviceable: false });
       }
 
-      const coverage = await checkCoverage({ zip, lat, lng, service, addOns });
+      const coverage = await checkCoverage({ zip: resolvedZip, lat, lng, service, addOns });
 
       // D8: if coverage eligible but scheduledFor provided, check operating hours
       if (coverage.eligible && scheduledForDate) {
@@ -2164,7 +2169,8 @@ export async function registerRoutes(
           }
           return res.json({
             serviceable: false,
-            zip: zip || null,
+            servable: false,
+            zip: resolvedZip || null,
             reason: "closed_at_scheduled_time",
             checkoutGated: coverage.checkoutGated || false,
             checkoutGateReason: coverage.checkoutGateReason || null,
@@ -2175,7 +2181,8 @@ export async function registerRoutes(
         }
         return res.json({
           serviceable: true,
-          zip: zip || null,
+          servable: true,
+          zip: resolvedZip || null,
           reason: null,
           checkoutGated: coverage.checkoutGated || false,
           checkoutGateReason: coverage.checkoutGateReason || null,
@@ -2186,7 +2193,8 @@ export async function registerRoutes(
 
       res.json({
         serviceable: coverage.eligible,
-        zip: zip || null,
+        servable: coverage.eligible,
+        zip: resolvedZip || null,
         reason: coverage.eligible ? null : coverage.reason,
         checkoutGated: coverage.checkoutGated || false,
         checkoutGateReason: coverage.checkoutGateReason || null,
@@ -2195,9 +2203,11 @@ export async function registerRoutes(
       });
     } catch (err: any) {
       console.error("[check-serviceability] error:", err);
-      res.status(500).json({ error: "Failed to check serviceability", code: "INTERNAL_ERROR" });
+      res.status(500).json({ error: "Failed to check serviceability", code: "INTERNAL_ERROR", serviceable: false });
     }
-  });
+  };
+  app.get("/api/quotes/check-serviceability", checkServiceabilityHandler);
+  app.post("/api/quotes/check-serviceability", checkServiceabilityHandler);
 
   // ═══════════════════════════════════════════════════════════════
   //  SERVICE AREA REQUESTS — capture unserved-area demand
