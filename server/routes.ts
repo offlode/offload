@@ -2166,6 +2166,8 @@ export async function registerRoutes(
             serviceable: false,
             zip: zip || null,
             reason: "closed_at_scheduled_time",
+            checkoutGated: coverage.checkoutGated || false,
+            checkoutGateReason: coverage.checkoutGateReason || null,
             nextOpenAt: earliestNextOpen,
             matchedVendors: coverage.matchedVendors.length,
             details: coverage,
@@ -2175,6 +2177,8 @@ export async function registerRoutes(
           serviceable: true,
           zip: zip || null,
           reason: null,
+          checkoutGated: coverage.checkoutGated || false,
+          checkoutGateReason: coverage.checkoutGateReason || null,
           matchedVendors: openMatchedIds.length,
           details: { ...coverage, matchedVendors: openMatchedIds },
         });
@@ -2184,6 +2188,8 @@ export async function registerRoutes(
         serviceable: coverage.eligible,
         zip: zip || null,
         reason: coverage.eligible ? null : coverage.reason,
+        checkoutGated: coverage.checkoutGated || false,
+        checkoutGateReason: coverage.checkoutGateReason || null,
         matchedVendors: coverage.matchedVendors.length,
         details: coverage,
       });
@@ -2924,6 +2930,19 @@ export async function registerRoutes(
         return res.status(410).json({ error: "Quote has expired." });
       }
 
+      // D4: NJ checkout-gating — block order placement for NJ addresses
+      const quoteZip = quote.pickupZip || "";
+      const quoteState = quote.pickupState || "";
+      const isNJAddress = quoteState.trim().toUpperCase() === "NJ" ||
+        quoteZip.startsWith("07") || quoteZip.startsWith("08");
+      if (isNJAddress) {
+        return res.status(400).json({
+          error: "NJ checkout not yet available",
+          code: "NJ_CHECKOUT_GATED",
+          message: "NJ checkout not yet available",
+        });
+      }
+
       const userId = (req as any).currentUser?.id;
       const { pickupAddressId, pickupTimeWindow, scheduledPickup, deliveryType, customerNotes, addressNotes, paymentMethodId } = req.body || {};
 
@@ -3325,6 +3344,23 @@ export async function registerRoutes(
         customerNotes, addressNotes, paymentMethodId, serviceType, promoCode,
         loyaltyPointsToRedeem, pricingTierId, tierName, selectedAddOns,
       } = parsed.data;
+
+      // D4: NJ checkout-gating — block order placement for NJ addresses
+      if (pickupAddressId) {
+        const addrForNJCheck = await storage.getAddress(pickupAddressId);
+        if (addrForNJCheck) {
+          const addrState = (addrForNJCheck.state || "").trim().toUpperCase();
+          const addrZip = (addrForNJCheck.zip || "").trim();
+          const isNJAddr = addrState === "NJ" || addrZip.startsWith("07") || addrZip.startsWith("08");
+          if (isNJAddr) {
+            return res.status(400).json({
+              error: "NJ checkout not yet available",
+              code: "NJ_CHECKOUT_GATED",
+              message: "NJ checkout not yet available",
+            });
+          }
+        }
+      }
 
       let parsedBags: any[];
       try {
@@ -10401,9 +10437,18 @@ export async function registerRoutes(
           name: app.businessName || app.fullName,
           phone: app.phone,
           address: [app.addressLine, app.city, app.state, app.zip].filter(Boolean).join(", "),
+          city: app.city || "",
           email: app.email,
           status: "active",
           operatingHours: app.operatingHoursJson || null,
+          operatingHoursJson: app.operatingHoursJson || null,
+          // D7: copy business-detail fields from application to vendor
+          businessName: app.businessName || null,
+          contactEmail: app.email || null,
+          businessAddress: app.addressLine || null,
+          businessCity: app.city || null,
+          businessState: app.state || null,
+          businessZip: app.zip || null,
           offersDryCleaning: app.hasDryCleaningOnSite ? 1 : 0,
           offersComforters: 1,
           offersCommercial: app.acceptsCommercial ? 1 : 0,

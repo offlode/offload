@@ -1,12 +1,12 @@
-import { createHash } from "crypto";
+import { createHash, randomBytes, scryptSync } from "crypto";
 
 // ════════════════════════════════════════════════════════════════
 //  PASSWORD HASHING
 // ════════════════════════════════════════════════════════════════
 
 export function hashPassword(pw: string): string {
-  const salt = require("crypto").randomBytes(16).toString("hex");
-  const hash = require("crypto").scryptSync(pw, salt, 64).toString("hex");
+  const salt = randomBytes(16).toString("hex");
+  const hash = scryptSync(pw, salt, 64).toString("hex");
   return `scrypt:${salt}:${hash}`;
 }
 
@@ -16,7 +16,7 @@ export function verifyPassword(pw: string, stored: string): boolean {
     return createHash("sha256").update(pw).digest("hex") === stored;
   }
   const [, salt, hash] = stored.split(":");
-  const computed = require("crypto").scryptSync(pw, salt, 64).toString("hex");
+  const computed = scryptSync(pw, salt, 64).toString("hex");
   return computed === hash;
 }
 

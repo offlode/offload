@@ -28,6 +28,8 @@ export interface CoverageResult {
   reason: string;                  // human-readable
   matchedVendors: number[];        // vendor ids that pass all filters
   totalActiveVendors: number;
+  checkoutGated: boolean;          // true = serviceable but checkout blocked (e.g. NJ coming soon)
+  checkoutGateReason?: string;     // human-readable reason for the gate
   failures: {
     notInZip: number;
     outsideRadius: number;
@@ -114,6 +116,14 @@ function vendorHasCapability(vendor: Vendor, service?: string, addOns?: string[]
   return true;
 }
 
+// ── NJ ZIP detection ──
+// NJ ZIPs begin with 07xxx or 08xxx.
+function isNJZip(zip?: string): boolean {
+  if (!zip) return false;
+  const z = String(zip).trim();
+  return z.startsWith("07") || z.startsWith("08");
+}
+
 export async function checkCoverage(q: CoverageQuery): Promise<CoverageResult> {
   const vendors = await storage.getVendors();
   const failures = { notInZip: 0, outsideRadius: 0, missingCapability: 0, paused: 0, inactive: 0 };
@@ -138,12 +148,40 @@ export async function checkCoverage(q: CoverageQuery): Promise<CoverageResult> {
     matched.push(v.id);
   }
 
+  // D4: NJ checkout-gating — NJ is serviceable but checkout is blocked until D4 NJ launch
+  const njGated = isNJZip(q.zip);
+
   if (matched.length > 0) {
+    if (njGated) {
+      return {
+        eligible: true,
+        reason: "NJ checkout coming soon — leave us your email",
+        matchedVendors: matched,
+        totalActiveVendors: totalActive,
+        checkoutGated: true,
+        checkoutGateReason: "NJ checkout coming soon — leave us your email",
+        failures,
+      };
+    }
     return {
       eligible: true,
       reason: `${matched.length} laundromat(s) can service your area`,
       matchedVendors: matched,
       totalActiveVendors: totalActive,
+      checkoutGated: false,
+      failures,
+    };
+  }
+
+  // NJ ZIPs that aren’t covered by any vendor yet: still show as serviceable+gated
+  if (njGated) {
+    return {
+      eligible: true,
+      reason: "NJ checkout coming soon — leave us your email",
+      matchedVendors: [],
+      totalActiveVendors: totalActive,
+      checkoutGated: true,
+      checkoutGateReason: "NJ checkout coming soon — leave us your email",
       failures,
     };
   }
@@ -161,6 +199,7 @@ export async function checkCoverage(q: CoverageQuery): Promise<CoverageResult> {
     reason,
     matchedVendors: [],
     totalActiveVendors: totalActive,
+    checkoutGated: false,
     failures,
   };
 }

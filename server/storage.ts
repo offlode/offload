@@ -219,6 +219,9 @@ async function ensureExtraTables() {
     ["vendors", "offers_stain_treatment INTEGER DEFAULT 0"],
     ["vendors", "offers_steam_press INTEGER DEFAULT 0"],
     ["vendors", "offers_hang_dry INTEGER DEFAULT 0"],
+    // wave5b: vendor-owned driver linking columns (added to schema but missing from DB migration)
+    ["drivers", "vendor_id INTEGER"],
+    ["drivers", "driver_ownership TEXT DEFAULT 'platform'"],
     // D7+D8: operating hours JSON + business details
     ["vendors", "operating_hours_json TEXT"],
     ["vendors", "business_name TEXT"],
