@@ -186,7 +186,7 @@ export default function StartWashingPage() {
   const isPacking = order.status === "packing";
 
   // Detect weight discrepancy
-  const hasDiscrepancy = order.weightDiscrepancy === 1;
+  const hasDiscrepancy = order.weightDiscrepancy === true;
 
   return (
     <div className="min-h-screen bg-background pb-8">

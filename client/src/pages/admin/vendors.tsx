@@ -152,7 +152,7 @@ function VendorCard({ vendor, onStatusChange }: {
               <div>
                 <div className="flex items-center gap-2 mb-0.5">
                   <p className="text-sm font-semibold">{vendor.name}</p>
-                  {vendor.certified === 1 && (
+                  {vendor.certified === true && (
                     <Shield className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                   )}
                 </div>
@@ -388,7 +388,7 @@ export default function AdminVendors() {
           performanceTier: form.performanceTier,
           capabilities: JSON.stringify(form.capabilities.split(",").map(s => s.trim()).filter(Boolean)),
           status: "active",
-          certified: 1,
+          certified: true,
         }),
       });
       return res.json();
@@ -453,7 +453,7 @@ export default function AdminVendors() {
                 <Award className="w-4 h-4 text-amber-400" />
               </div>
               <div>
-                <p className="text-lg font-bold">{vendors.filter(v => v.certified === 1).length}</p>
+                <p className="text-lg font-bold">{vendors.filter(v => v.certified === true).length}</p>
                 <p className="text-[10px] text-muted-foreground">Certified</p>
               </div>
             </Card>

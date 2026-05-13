@@ -5,8 +5,9 @@
 -- 1. Downgrade any express_3h orders to same_day
 UPDATE orders SET delivery_speed = 'same_day' WHERE delivery_speed = 'express_3h';
 
--- 2. Remove rush_2hr add-on
-DELETE FROM add_ons WHERE name = 'rush_2hr';
+-- 2. Deactivate rush_2hr add-on. Historical note: an earlier version hard-deleted this row;
+-- a forward-compatible Wave A migration re-inserts it as inactive if needed.
+UPDATE add_ons SET is_active = 0 WHERE name = 'rush_2hr';
 
 -- 3. Fix pricing tiers to correct values
 UPDATE pricing_tiers SET flat_price = 24.99, overage_rate = 2.50, max_weight = 10 WHERE name = 'small_bag';

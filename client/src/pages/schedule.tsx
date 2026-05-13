@@ -246,7 +246,7 @@ export default function SchedulePage() {
           selectedAddOns: addOnPayload,
           bags: [],
           preferences: {},
-          certifiedOnly: certifiedOnly ? 1 : 0,
+          certifiedOnly: !!certifiedOnly,
           customerNotes,
           addressNotes,
           paymentMethodId: selectedPaymentMethodId,

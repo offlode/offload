@@ -3,6 +3,7 @@ import { storage } from "../storage";
 import { pricingConfig } from "../pricing-config-service";
 import { distanceMatrix, isGoogleMapsConfigured } from "../maps";
 import type { Vendor } from "@shared/schema";
+import { dollarsToCents } from "./money";
 
 // ════════════════════════════════════════════════════════════════
 //  UTILITY
@@ -54,19 +55,28 @@ export function normalizeDeliverySpeed(input: string | null | undefined): "48h" 
 
 export interface QuotePriceBreakdown {
   laundryServicePrice: number;
+  laundryServicePriceCents?: number;
   speedSurcharge: number;
+  speedSurchargeCents?: number;
   deliveryFee: number;
+  deliveryFeeCents?: number;
   preferredVendorSurcharge: number;
+  preferredVendorSurchargeCents?: number;
   addOnsTotal: number;
+  addOnsTotalCents?: number;
   // Dynamic logistics (Uber-style)
   pickupDistanceMiles: number;
   pickupDistanceFee: number;
+  pickupDistanceFeeCents?: number;
   floorFee: number;
+  floorFeeCents?: number;
   handoffFee: number;
+  handoffFeeCents?: number;
   trafficMultiplier: number;
   trafficRatio: number;
   trafficLevel: string;
   windowDiscount: number;
+  windowDiscountCents?: number;
   windowDiscountRate: number;
   surgeMultiplier: number;
   surgeTier: string;
@@ -78,16 +88,21 @@ export interface QuotePriceBreakdown {
   logisticsTotal: number;
   // ── totals ──
   subtotal: number;
+  subtotalCents?: number;
   taxRate: number;
   taxAmount: number;
+  taxAmountCents?: number;
   discount: number;
+  discountCents?: number;
   total: number;
+  totalCents?: number;
   lineItems: Array<{ label: string; amount: number; type: string }>;
   tierName: string;
   tierFlatPrice: number;
   tierMaxWeight: number;
   overageRate: number;
   deliverySpeed: string;
+  tierFlatPriceCents?: number;
   vendorChoiceMode?: string;
   recommendedVendorId?: number | null;
   recommendedVendorName?: string | null;
@@ -112,6 +127,7 @@ export async function calculateQuotePrice(input: {
   vendorLng?: number;
   vendorAddress?: string;
   pickupAddress?: string;
+  tierFlatPriceCents?: number;
   vendorChoiceMode?: string;              // auto | nearest | preferred | rated
 }): Promise<QuotePriceBreakdown> {
   // 1. Resolve tier
@@ -249,6 +265,8 @@ export async function calculateQuotePrice(input: {
   // Note: deliveryFee is intentionally EXCLUDED from the tax base — NY does not tax
   // separately stated delivery charges, and the direct /api/orders path uses the same rule.
   // This keeps the public-quote path and the direct-order path in sync.
+  // Logistics fees (distance, floor, handoff) included in taxable base by default.
+  // Consult NY tax counsel to confirm exclusion eligibility before changing.
   const taxableSubtotal = Math.round(
     (laundryServicePrice + speedSurcharge + preferredVendorSurcharge + addOnsTotal + logisticsAfterDemand) * 100
   ) / 100;
@@ -279,6 +297,7 @@ export async function calculateQuotePrice(input: {
 
   // 10. Total
   const total = Math.max(0, Math.round((subtotal + taxAmount - discount) * 100) / 100);
+  if (!Number.isFinite(total)) throw new Error("pricing_invalid");
 
   // Build line items for display
   const deliveryFeeLabel = DELIVERY_FEES[speed as keyof typeof DELIVERY_FEES]?.label || `Delivery (${speed})`;
@@ -331,12 +350,15 @@ export async function calculateQuotePrice(input: {
   }
 
   return {
-    laundryServicePrice, speedSurcharge, deliveryFee, preferredVendorSurcharge,
-    addOnsTotal,
+    laundryServicePrice, laundryServicePriceCents: dollarsToCents(laundryServicePrice),
+    speedSurcharge, speedSurchargeCents: dollarsToCents(speedSurcharge),
+    deliveryFee, deliveryFeeCents: dollarsToCents(deliveryFee),
+    preferredVendorSurcharge, preferredVendorSurchargeCents: dollarsToCents(preferredVendorSurcharge),
+    addOnsTotal, addOnsTotalCents: dollarsToCents(addOnsTotal),
     pickupDistanceMiles: logistics.distanceMiles,
-    pickupDistanceFee: logistics.distanceFee,
-    floorFee: logistics.floorFee,
-    handoffFee: logistics.handoffFee,
+    pickupDistanceFee: logistics.distanceFee, pickupDistanceFeeCents: dollarsToCents(logistics.distanceFee),
+    floorFee: logistics.floorFee, floorFeeCents: dollarsToCents(logistics.floorFee),
+    handoffFee: logistics.handoffFee, handoffFeeCents: dollarsToCents(logistics.handoffFee),
     trafficMultiplier: logistics.trafficMultiplier,
     trafficRatio: logistics.trafficRatio,
     trafficLevel: logistics.trafficLevel,
@@ -349,8 +371,11 @@ export async function calculateQuotePrice(input: {
     logisticsTotal: logisticsAfterDemand,
     demandMultiplier: rawDemandMultiplier,
     demandReason,
-    subtotal, taxRate: dbTaxRate, taxAmount, discount, total,
-    lineItems, tierName: normalizedTier, tierFlatPrice: tier.flatPrice,
+    subtotal, subtotalCents: dollarsToCents(subtotal), taxRate: dbTaxRate,
+    taxAmount, taxAmountCents: dollarsToCents(taxAmount),
+    discount, discountCents: dollarsToCents(discount),
+    total, totalCents: dollarsToCents(total),
+    lineItems, tierName: normalizedTier, tierFlatPrice: tier.flatPrice, tierFlatPriceCents: dollarsToCents(tier.flatPrice),
     tierMaxWeight: tier.maxWeight, overageRate: tier.overageRate, deliverySpeed: speed,
     vendorChoiceMode,
     recommendedVendorId,
@@ -376,6 +401,7 @@ export async function calculatePricing(bags: any[], deliverySpeed: string) {
   const taxRate = await pricingConfig.getTaxRate();
   const tax = Math.round(subtotal * taxRate * 100) / 100;
   const total = Math.round((subtotal + tax + deliveryFee) * 100) / 100;
+  if (!Number.isFinite(total)) throw new Error("pricing_invalid");
   return { subtotal, tax, deliveryFee, total };
 }
 
@@ -601,6 +627,7 @@ export interface LogisticsBreakdown {
   trafficRatio: number;
   trafficLevel: string;
   windowDiscount: number;
+  windowDiscountCents?: number;
   windowDiscountRate: number;
   logisticsBase: number;
   logisticsTotal: number;

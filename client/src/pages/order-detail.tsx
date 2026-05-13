@@ -783,7 +783,7 @@ export default function OrderDetailPage() {
               </div>
             )}
 
-            {order.weightDiscrepancy === 1 && (
+            {order.weightDiscrepancy === true && (
               <div className="mt-2 flex items-center gap-2 text-xs text-amber-400">
                 <AlertTriangle className="w-3.5 h-3.5" />
                 Weight discrepancy detected

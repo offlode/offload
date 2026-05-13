@@ -8,6 +8,13 @@
       "when": 1778636411829,
       "tag": "0000_high_redwing",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1778703533973,
+      "tag": "0001_premium_living_tribunal",
+      "breakpoints": true
     }
   ]
 }

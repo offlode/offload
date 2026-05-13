@@ -368,7 +368,7 @@ export const orderEvents = pgTable("order_events", {
   photoUrl: text("photo_url"),
   lat: doublePrecision("lat"),
   lng: doublePrecision("lng"),
-  timestamp: text("timestamp").notNull(),
+  timestamp: timestamptz("timestamp").notNull(),
 });
 
 export const insertOrderEventSchema = createInsertSchema(orderEvents).omit({ id: true });
@@ -420,7 +420,7 @@ export const messages = pgTable("messages", {
   messageType: text("message_type").default("text"), // text | image | system | auto_response
   isAiGenerated: boolean("is_ai_generated").default(false),
   readAt: timestamptz("read_at"),
-  timestamp: text("timestamp").notNull(),
+  timestamp: timestamptz("timestamp").notNull(),
 });
 
 export const insertMessageSchema = createInsertSchema(messages).omit({ id: true });
@@ -709,7 +709,7 @@ export const driverLocationHistory = pgTable("driver_location_history", {
   speed: doublePrecision("speed"),
   heading: doublePrecision("heading"),
   accuracy: doublePrecision("accuracy"),
-  timestamp: text("timestamp").notNull(),
+  timestamp: timestamptz("timestamp").notNull(),
 });
 
 export const insertDriverLocationHistorySchema = createInsertSchema(driverLocationHistory).omit({ id: true });
@@ -728,7 +728,7 @@ export const orderPhotos = pgTable("order_photos", {
   capturedBy: integer("captured_by").notNull().references(() => users.id, { onDelete: "restrict" }),
   capturedByRole: text("captured_by_role").notNull(),
   notes: text("notes"),
-  timestamp: text("timestamp").notNull(),
+  timestamp: timestamptz("timestamp").notNull(),
 });
 
 export const insertOrderPhotoSchema = createInsertSchema(orderPhotos).omit({ id: true });
@@ -746,7 +746,7 @@ export const orderStatusHistory = pgTable("order_status_history", {
   notes: text("notes"),
   lat: doublePrecision("lat"),
   lng: doublePrecision("lng"),
-  timestamp: text("timestamp").notNull(),
+  timestamp: timestamptz("timestamp").notNull(),
 });
 
 export const insertOrderStatusHistorySchema = createInsertSchema(orderStatusHistory).omit({ id: true });
@@ -863,7 +863,7 @@ export const pricingAuditLog = pgTable("pricing_audit_log", {
   details: text("details").notNull(), // JSON
   actorId: integer("actor_id").references(() => users.id, { onDelete: "set null" }),
   actorRole: text("actor_role"),
-  timestamp: text("timestamp").notNull(),
+  timestamp: timestamptz("timestamp").notNull(),
 });
 
 export const insertPricingAuditLogSchema = createInsertSchema(pricingAuditLog).omit({ id: true });
@@ -883,7 +883,7 @@ export const adminAuditLog = pgTable("admin_audit_log", {
   ip: text("ip"),
   userAgent: text("user_agent"),
   notes: text("notes"),
-  timestamp: text("timestamp").notNull(),
+  timestamp: timestamptz("timestamp").notNull(),
 });
 
 export const insertAdminAuditLogSchema = createInsertSchema(adminAuditLog).omit({ id: true });
