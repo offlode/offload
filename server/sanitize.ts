@@ -42,7 +42,12 @@ export function sanitizeMiddleware(req: Request, _res: Response, next: NextFunct
     for (const [k, v] of Object.entries(req.query)) {
       sanitized[k] = sanitizeValue(k, v);
     }
-    req.query = sanitized as any;
+    // Express exposes req.query as a getter-only property in the production runtime.
+    // Mutate the existing object instead of assigning a replacement.
+    for (const k of Object.keys(req.query)) {
+      delete (req.query as any)[k];
+    }
+    Object.assign(req.query, sanitized);
   }
 
   if (req.params && typeof req.params === "object") {
