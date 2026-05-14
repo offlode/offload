@@ -132,6 +132,8 @@ export async function calculateQuotePrice(input: {
   // Wave L: separation fee
   separated?: boolean;
   separationFeeCents?: number;
+  // B1: Signature Wash per-bag premium
+  bags?: Array<{ size: "small" | "medium" | "large" | "xl"; quantity: number }>;
 }): Promise<QuotePriceBreakdown> {
   // 1. Resolve tier
   const normalizedTier = TIER_NAME_MAP[input.tierName] || input.tierName;
@@ -201,6 +203,19 @@ export async function calculateQuotePrice(input: {
   if (separationFee > 0) {
     addOnsTotal += separationFee;
     addOnItems.push({ id: -1, name: "Separation fee", price: separationFee, qty: 1 });
+  }
+
+  // 6a2. B1: Signature Wash per-bag premium — taxable, added to addOnsTotal
+  let signaturePremiumDollars = 0;
+  let signaturePremiumBagCount = 0;
+  if (input.serviceType === "wash_fold_signature" && input.bags && input.bags.length > 0) {
+    for (const bagEntry of input.bags) {
+      const sizeKey = `${bagEntry.size}_bag` as "small_bag" | "medium_bag" | "large_bag" | "xl_bag";
+      const premiumCents = await pricingConfig.getSignaturePremiumCents(sizeKey);
+      signaturePremiumDollars += Math.round(premiumCents * bagEntry.quantity) / 100;
+      signaturePremiumBagCount += bagEntry.quantity;
+    }
+    signaturePremiumDollars = Math.round(signaturePremiumDollars * 100) / 100;
   }
 
   // 6b. Resolve recommended vendor (for logistics distance + traffic)
@@ -282,14 +297,14 @@ export async function calculateQuotePrice(input: {
   const logisticsAfterDemand = Math.round(logisticsAfterSurge * rawDemandMultiplier * 100) / 100;
   const demandDelta = Math.round((logisticsAfterDemand - logisticsAfterSurge) * 100) / 100;
 
-  // 7. Subtotal (laundry + preferred surcharge + addons + dynamic logistics)
+  // 7. Subtotal (laundry + preferred surcharge + addons + dynamic logistics + signature premium)
   // Note: deliveryFee is intentionally EXCLUDED from the tax base — NY does not tax
   // separately stated delivery charges, and the direct /api/orders path uses the same rule.
   // This keeps the public-quote path and the direct-order path in sync.
   // Logistics fees (distance, floor, handoff) included in taxable base by default.
-  // Consult NY tax counsel to confirm exclusion eligibility before changing.
+  // Signature Wash premium IS taxable per NY. Consult NY tax counsel before changing.
   const taxableSubtotal = Math.round(
-    (laundryServicePrice + speedSurcharge + preferredVendorSurcharge + addOnsTotal + logisticsAfterDemand) * 100
+    (laundryServicePrice + speedSurcharge + preferredVendorSurcharge + addOnsTotal + logisticsAfterDemand + signaturePremiumDollars) * 100
   ) / 100;
   const subtotal = Math.round((taxableSubtotal + deliveryFee) * 100) / 100;
 
@@ -372,6 +387,14 @@ export async function calculateQuotePrice(input: {
   }
   for (const ao of addOnItems) {
     lineItems.push({ label: `${ao.name} x${ao.qty}`, amount: ao.price * ao.qty, type: "addon" });
+  }
+  // B1: Signature Wash premium line item
+  if (signaturePremiumDollars > 0) {
+    lineItems.push({
+      label: `Signature Wash premium (×${signaturePremiumBagCount} bag${signaturePremiumBagCount !== 1 ? "s" : ""})`,
+      amount: signaturePremiumDollars,
+      type: "signature_premium",
+    });
   }
   lineItems.push({ label: `Tax (${(dbTaxRate * 100).toFixed(3)}%)`, amount: finalTaxAmount, type: "tax" });
   if (discount > 0) {

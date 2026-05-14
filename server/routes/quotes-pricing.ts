@@ -450,6 +450,8 @@ export function registerQuotesPricingRoutes(app: Express) {
         separated: z.boolean().optional(),
         clothing_types: z.array(z.string()).optional(),
         wash_preferences: z.any().optional(),
+        // B2: Signature Wash per-bag array
+        bags: z.array(z.object({ size: z.string(), quantity: z.number().int().nonnegative() })).optional(),
       }).strip();
       const parsed = QuoteBody.safeParse(req.body);
       if (!parsed.success) {
@@ -461,7 +463,8 @@ export function registerQuotesPricingRoutes(app: Express) {
         addOns, promoCode, sessionId, idempotencyKey,
         pickupFloor, pickupHasElevator, pickupHandoff, pickupWindowMinutes,
         scheduledPickup, vendorChoiceMode,
-        separated: qSeparated, clothing_types: qClothingTypes, wash_preferences: qWashPreferences } = parsed.data;
+        separated: qSeparated, clothing_types: qClothingTypes, wash_preferences: qWashPreferences,
+        bags: qBags } = parsed.data;
       // OD-P1: fold speedTier alias into deliverySpeed (deliverySpeed wins if both passed)
       const deliverySpeed = rawQDeliverySpeed ?? qSpeedTier;
 
@@ -496,6 +499,8 @@ export function registerQuotesPricingRoutes(app: Express) {
         pickupWindowMinutes: pickupWindowMinutes != null ? Number(pickupWindowMinutes) : undefined,
         scheduledPickup: scheduledPickup || undefined,
         vendorChoiceMode: vendorChoiceMode || undefined,
+        // B2: pass bags array for Signature Wash premium
+        bags: qBags as Array<{ size: "small" | "medium" | "large" | "xl"; quantity: number }> | undefined,
       });
 
       // Wave 2 + D4 spec: compute separation fee if separated=true.
