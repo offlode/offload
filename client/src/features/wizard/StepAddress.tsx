@@ -299,7 +299,8 @@ export function StepAddress({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Debounced ZIP-based service area check for free-text entry (no placeId)
+  // For free-text entry (no placeId), update address meta but do NOT call coverage check.
+  // Coverage issues must never block orders — ops verifies coverage post-order.
   useEffect(() => {
     if (addressPlaceId) return;
     const zip = extractZip(address);
@@ -309,15 +310,9 @@ export function StepAddress({
       onServiceAreaChangeRef.current(null);
       return;
     }
-    if (!zip) {
-      setAddressMeta({ ...EMPTY_ADDRESS_META, city, state });
-      onServiceAreaChangeRef.current(null);
-      return;
-    }
-    const timeout = window.setTimeout(() => {
-      checkServiceArea({ zip, city, state, lat: null, lng: null });
-    }, 350);
-    return () => window.clearTimeout(timeout);
+    setAddressMeta({ ...EMPTY_ADDRESS_META, zip, city, state });
+    // Do not call checkServiceArea for free-text — let canProceed() handle validation
+    onServiceAreaChangeRef.current(null);
   }, [address, addressPlaceId]);
 
   // Time-window preset chips (C6)
@@ -417,7 +412,7 @@ export function StepAddress({
             {autocompleteError}
           </p>
         )}
-        {!addressPlaceId && address && address.length >= 3 && !autocompleteError && !fetchingSuggestions && !showSuggestions && (
+        {!addressPlaceId && address && address.length >= 3 && !autocompleteError && !fetchingSuggestions && !showSuggestions && !(address.trim().length >= 8 && /\d/.test(address) && address.trim().split(/\s+/).length >= 2) && (
           <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
             <AlertCircle className="w-3 h-3" />
             Include street number and ZIP for best results
@@ -426,7 +421,20 @@ export function StepAddress({
         {checkingArea && (
           <p className="text-xs text-muted-foreground mt-1">Checking service area...</p>
         )}
-        {serviceAreaStatus === false && !checkingArea && (
+        {/* Yellow notice for free-text addresses (no placeId): coverage never blocks */}
+        {!addressPlaceId && address.trim().length >= 8 && /\d/.test(address) && address.trim().split(/\s+/).length >= 2 && !checkingArea && (
+          <div className="mt-2 rounded-xl bg-amber-500/10 border border-amber-500/30 p-3">
+            <p className="text-sm text-amber-600 font-medium flex items-center gap-1.5">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              We'll confirm coverage after you place the order. If we can't serve your address, we'll fully refund within 1 business day.
+            </p>
+            <p className="text-xs text-amber-600/80 mt-1 ml-[22px]">
+              Confirmaremos la cobertura después de realizar el pedido. Si no podemos atender su dirección, le reembolsaremos completamente en 1 día hábil.
+            </p>
+          </div>
+        )}
+        {/* Red error only for Place-selected addresses where coverage check explicitly failed */}
+        {addressPlaceId && serviceAreaStatus === false && !checkingArea && (
           <div className="mt-2 rounded-xl bg-red-500/10 border border-red-500/30 p-3">
             <p className="text-sm text-red-500 font-medium flex items-center gap-1.5">
               <AlertCircle className="w-4 h-4 flex-shrink-0" />
