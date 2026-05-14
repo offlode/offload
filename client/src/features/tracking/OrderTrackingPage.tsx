@@ -13,10 +13,17 @@ import { useState } from "react";
 import { ORDER_PROGRESS_LABELS, PRICING } from "@/lib/design-tokens";
 import { useAuth } from "@/contexts/auth-context";
 
+interface OrderProgressStep {
+  label: string;
+  fsmState: string;
+  completed: boolean;
+  timestamp: string | null;
+}
+
 interface OrderProgress {
-  labels: { key: string; label: string; completed: boolean; current: boolean; timestamp?: string }[];
-  currentLabel: string;
-  currentKey: string;
+  orderId: number;
+  currentStatus: string;
+  steps: OrderProgressStep[];
 }
 
 interface DriverInfo {
@@ -81,20 +88,36 @@ export default function OrderTrackingPage() {
     enabled: !!orderId,
   });
 
-  // Use backend progress or map from status
+  // Map backend progress steps, or fall back to client-side mapping from ORDER_PROGRESS_LABELS
   const progressLabels: { key: string; label: string; completed: boolean; current: boolean; timestamp?: string }[] =
-    progress?.labels || ORDER_PROGRESS_LABELS.map(l => {
-      const orderStatusIdx = ORDER_PROGRESS_LABELS.findIndex(p => p.key === order?.status);
-      const thisIdx = ORDER_PROGRESS_LABELS.findIndex(p => p.key === l.key);
-      return {
-        key: l.key,
-        label: l.label,
-        completed: thisIdx < orderStatusIdx,
-        current: thisIdx === orderStatusIdx,
-      };
-    });
+    progress?.steps && progress.steps.length > 0
+      ? (() => {
+          const firstNonCompleted = progress.steps.findIndex(s => !s.completed);
+          return progress.steps.map((step, idx) => ({
+            key: step.fsmState,
+            label: step.label,
+            completed: step.completed,
+            current: idx === firstNonCompleted,
+            timestamp: step.timestamp || undefined,
+          }));
+        })()
+      : ORDER_PROGRESS_LABELS.map(l => {
+          const orderStatusIdx = ORDER_PROGRESS_LABELS.findIndex(p => p.key === order?.status);
+          const thisIdx = ORDER_PROGRESS_LABELS.findIndex(p => p.key === l.key);
+          return {
+            key: l.key,
+            label: l.label,
+            completed: thisIdx < orderStatusIdx,
+            current: thisIdx === orderStatusIdx,
+          };
+        });
 
-  const currentLabel = progress?.currentLabel || order?.status?.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase()) || "Processing";
+  const currentLabel =
+    (progress?.currentStatus
+      ? progress.currentStatus.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())
+      : null)
+    || order?.status?.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())
+    || "Processing";
 
   if (isLoading) {
     return (

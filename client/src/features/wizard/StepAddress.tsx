@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { MapPin, Calendar, Clock, AlertCircle } from "lucide-react";
+import { MapPin, Calendar, Clock, AlertCircle, Bell } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@/components/ui/button";
+import { apiRequest } from "@/lib/queryClient";
 
 interface StepAddressProps {
   address: string;
@@ -11,10 +13,13 @@ interface StepAddressProps {
   pickupDate: string;
   pickupTimeWindow: string;
   specialInstructions: string;
+  serviceType: string;
+  serviceAreaStatus: boolean | null;
   onAddressChange: (address: string, placeId: string) => void;
   onDateChange: (date: string) => void;
   onTimeChange: (window: string) => void;
   onInstructionsChange: (instructions: string) => void;
+  onServiceAreaChange: (available: boolean | null) => void;
 }
 
 const TIME_WINDOWS = [
@@ -32,13 +37,64 @@ export function StepAddress({
   pickupDate,
   pickupTimeWindow,
   specialInstructions,
+  serviceType,
+  serviceAreaStatus,
   onAddressChange,
   onDateChange,
   onTimeChange,
   onInstructionsChange,
+  onServiceAreaChange,
 }: StepAddressProps) {
   const autocompleteRef = useRef<HTMLInputElement>(null);
   const [hasGoogleMaps, setHasGoogleMaps] = useState(false);
+  const [notifyRequested, setNotifyRequested] = useState(false);
+  const [notifyLoading, setNotifyLoading] = useState(false);
+  const [checkingArea, setCheckingArea] = useState(false);
+
+  // Store latest refs for callbacks used inside the Google Maps listener
+  const serviceTypeRef = useRef(serviceType);
+  const onServiceAreaChangeRef = useRef(onServiceAreaChange);
+  const onAddressChangeRef = useRef(onAddressChange);
+  useEffect(() => { serviceTypeRef.current = serviceType; }, [serviceType]);
+  useEffect(() => { onServiceAreaChangeRef.current = onServiceAreaChange; }, [onServiceAreaChange]);
+  useEffect(() => { onAddressChangeRef.current = onAddressChange; }, [onAddressChange]);
+
+  async function checkServiceArea(lat: number, lng: number, zip: string) {
+    setCheckingArea(true);
+    setNotifyRequested(false);
+    try {
+      const params = new URLSearchParams({
+        lat: String(lat),
+        lng: String(lng),
+        zip,
+        service_type: serviceTypeRef.current,
+      });
+      const res = await apiRequest(`/api/service-area/check?${params}`);
+      const result = await res.json();
+      onServiceAreaChangeRef.current(result.available === true);
+    } catch {
+      // On error, allow proceeding (null = not checked)
+      onServiceAreaChangeRef.current(null);
+    } finally {
+      setCheckingArea(false);
+    }
+  }
+
+  async function handleNotifyMe() {
+    setNotifyLoading(true);
+    try {
+      await apiRequest("/api/service-area-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address, addressPlaceId }),
+      });
+      setNotifyRequested(true);
+    } catch {
+      // silently fail
+    } finally {
+      setNotifyLoading(false);
+    }
+  }
 
   useEffect(() => {
     const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
@@ -76,7 +132,23 @@ export function StepAddress({
         ac.addListener("place_changed", () => {
           const place = ac.getPlace();
           if (place.formatted_address && place.place_id) {
-            onAddressChange(place.formatted_address, place.place_id);
+            onAddressChangeRef.current(place.formatted_address, place.place_id);
+
+            // Extract lat/lng and zip for service area check
+            const lat = place.geometry?.location?.lat();
+            const lng = place.geometry?.location?.lng();
+            let zip = "";
+            if (place.address_components) {
+              for (const comp of place.address_components) {
+                if (comp.types?.includes("postal_code")) {
+                  zip = comp.long_name || comp.short_name;
+                  break;
+                }
+              }
+            }
+            if (lat != null && lng != null) {
+              checkServiceArea(lat, lng, zip);
+            }
           }
         });
         setHasGoogleMaps(true);
@@ -84,7 +156,7 @@ export function StepAddress({
         // Google Maps not available — fall back to plain text
       }
     }
-  }, [onAddressChange]);
+  }, []);
 
   // Generate date options for next 7 days
   const dateOptions = Array.from({ length: 7 }, (_, i) => {
@@ -126,6 +198,34 @@ export function StepAddress({
             <AlertCircle className="w-3 h-3" />
             We'll verify your address
           </p>
+        )}
+        {checkingArea && (
+          <p className="text-xs text-muted-foreground mt-1">Checking service area...</p>
+        )}
+        {serviceAreaStatus === false && !checkingArea && (
+          <div className="mt-2 rounded-xl bg-red-500/10 border border-red-500/30 p-3">
+            <p className="text-sm text-red-500 font-medium flex items-center gap-1.5">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              We don't service your area yet
+            </p>
+            {notifyRequested ? (
+              <p className="text-xs text-muted-foreground mt-2 ml-5.5">
+                We'll notify you when we expand to your area.
+              </p>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-2 ml-5.5 text-xs"
+                disabled={notifyLoading}
+                onClick={handleNotifyMe}
+                data-testid="button-notify-service-area"
+              >
+                <Bell className="w-3.5 h-3.5 mr-1.5" />
+                {notifyLoading ? "Submitting..." : "Notify me when available"}
+              </Button>
+            )}
+          </div>
         )}
       </div>
 

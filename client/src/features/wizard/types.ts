@@ -20,6 +20,7 @@ export interface WizardState {
   pickupDate: string;
   pickupTimeWindow: string;
   specialInstructions: string;
+  serviceAreaAvailable: boolean | null;
   // Step 5: Payment
   paymentMethodId: string;
   // Step 6: Review (computed)
@@ -38,6 +39,7 @@ export const INITIAL_WIZARD_STATE: WizardState = {
   pickupDate: "",
   pickupTimeWindow: "",
   specialInstructions: "",
+  serviceAreaAvailable: null,
   paymentMethodId: "",
   deliverySpeed: "standard",
   serviceType: "wash_fold",

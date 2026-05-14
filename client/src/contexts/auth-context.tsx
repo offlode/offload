@@ -3,13 +3,17 @@ import type { User } from "@shared/schema";
 import { apiRequest, setCurrentUserId, setAuthToken, queryClient, setOnUnauthorized } from "@/lib/queryClient";
 import { useIOSPushRegistration } from "@/hooks/use-ios-push-registration";
 
+type Pending2FA = { userId: number; tempToken?: string } | null;
+
 type AuthContextType = {
   user: User | null;
   setUser: (user: User | null) => void;
   isAuthenticated: boolean;
   logout: () => void;
-  login: (email: string, password: string) => Promise<User>;
+  login: (email: string, password: string) => Promise<User | null>;
   register: (data: { name: string; email: string; phone?: string; password: string; role: string }) => Promise<User>;
+  pending2FA: Pending2FA;
+  verify2FA: (code: string) => Promise<User>;
 };
 
 const AuthContext = createContext<AuthContextType>({
@@ -19,10 +23,13 @@ const AuthContext = createContext<AuthContextType>({
   logout: () => {},
   login: async () => { throw new Error("Not initialized"); },
   register: async () => { throw new Error("Not initialized"); },
+  pending2FA: null,
+  verify2FA: async () => { throw new Error("Not initialized"); },
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUserState] = useState<User | null>(null);
+  const [pending2FA, setPending2FA] = useState<Pending2FA>(null);
   useIOSPushRegistration(user);
 
   // Keep the module-level userId and token in sync with the current user
@@ -75,7 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [setUser]);
 
-  const login = useCallback(async (email: string, password: string): Promise<User> => {
+  const login = useCallback(async (email: string, password: string): Promise<User | null> => {
     const res = await apiRequest("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -83,6 +90,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Login failed");
+
+    // If server requires 2FA, don't complete login yet
+    if (data.requires2FA) {
+      setPending2FA({ userId: data.userId, tempToken: data.tempToken });
+      return null;
+    }
+
     // Store server-issued session token
     if (data.token) {
       setAuthToken(data.token);
@@ -90,6 +104,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(data.user);
     return data.user;
   }, [setUser]);
+
+  const verify2FA = useCallback(async (code: string): Promise<User> => {
+    if (!pending2FA) throw new Error("No pending 2FA challenge");
+    // If code is longer than 6 characters, treat it as a backup code
+    const isBackupCode = code.length > 6;
+    const body: Record<string, unknown> = { userId: pending2FA.userId };
+    if (isBackupCode) {
+      body.backupCode = code;
+    } else {
+      body.token = code;
+    }
+    const res = await apiRequest("/api/auth/2fa-challenge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "2FA verification failed");
+    // Complete login with the full auth token
+    if (data.token) {
+      setAuthToken(data.token);
+    }
+    setPending2FA(null);
+    setUser(data.user);
+    return data.user;
+  }, [pending2FA, setUser]);
 
   const register = useCallback(async (data: { name: string; email: string; phone?: string; password: string; role: string }): Promise<User> => {
     const res = await apiRequest("/api/auth/register", {
@@ -108,7 +148,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [setUser]);
 
   return (
-    <AuthContext.Provider value={{ user, setUser, isAuthenticated: !!user, logout, login, register }}>
+    <AuthContext.Provider value={{ user, setUser, isAuthenticated: !!user, logout, login, register, pending2FA, verify2FA }}>
       {children}
     </AuthContext.Provider>
   );

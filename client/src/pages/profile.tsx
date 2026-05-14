@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import {
@@ -86,6 +86,8 @@ export default function ProfilePage() {
   const [twoFASecret, setTwoFASecret] = useState<{ qrUrl: string; secret: string; backupCodes: string[] } | null>(null);
   const [twoFACode, setTwoFACode] = useState("");
   const [twoFASetupDone, setTwoFASetupDone] = useState(false);
+  const [disable2FAOpen, setDisable2FAOpen] = useState(false);
+  const [disable2FACode, setDisable2FACode] = useState("");
   const [editName, setEditName] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [editPhone, setEditPhone] = useState("");
@@ -108,14 +110,60 @@ export default function ProfilePage() {
     updateUserMutation.mutate();
   };
 
-  // Notification prefs (in React state since no backend)
-  const [notifPrefs, setNotifPrefs] = useState({
-    orderUpdates: true,
-    promotions: true,
-    driverMessages: true,
-    email: true,
-    push: true,
+  // Notification prefs from backend
+  const notifDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const { data: notifPrefs } = useQuery<{
+    emailEnabled: boolean;
+    smsEnabled: boolean;
+    pushEnabled: boolean;
+    orderUpdates: boolean;
+    promotions: boolean;
+    weeklyDigest: boolean;
+  }>({
+    queryKey: ["/api/notification-preferences"],
+    queryFn: async () => {
+      const res = await apiRequest("/api/notification-preferences");
+      return res.json();
+    },
+    enabled: !!userId,
   });
+
+  const notifMutation = useMutation({
+    mutationFn: async (prefs: {
+      emailEnabled: boolean;
+      smsEnabled: boolean;
+      pushEnabled: boolean;
+      orderUpdates: boolean;
+      promotions: boolean;
+      weeklyDigest: boolean;
+    }) => {
+      const res = await apiRequest("/api/notification-preferences", {
+        method: "PUT",
+        body: JSON.stringify(prefs),
+      });
+      return res.json();
+    },
+    onError: (err: Error) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/notification-preferences"] });
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const handleNotifToggle = useCallback(
+    (key: string, value: boolean) => {
+      if (!notifPrefs) return;
+      const updated = { ...notifPrefs, [key]: value };
+      // Optimistic update
+      queryClient.setQueryData(["/api/notification-preferences"], updated);
+      // Debounce the PUT call
+      if (notifDebounceRef.current) clearTimeout(notifDebounceRef.current);
+      notifDebounceRef.current = setTimeout(() => {
+        notifMutation.mutate(updated);
+      }, 500);
+    },
+    [notifPrefs, notifMutation],
+  );
 
   // Wash prefs (in React state)
   const [washPrefs, setWashPrefs] = useState({
@@ -133,6 +181,13 @@ export default function ProfilePage() {
     },
     enabled: !!userId,
   });
+
+  // Check if user already has 2FA enabled
+  useEffect(() => {
+    if (user && (user as any).twoFactorEnabled) {
+      setTwoFASetupDone(true);
+    }
+  }, [user]);
 
   const { data: addresses } = useQuery<Address[]>({
     queryKey: ["/api/addresses", userId],
@@ -233,9 +288,13 @@ export default function ProfilePage() {
       return res.json();
     },
     onSuccess: (data) => {
+      const uri = data.uri || "";
+      const qrUrl = uri
+        ? `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(uri)}`
+        : "";
       setTwoFASecret({
-        qrUrl: data.qrUrl || data.otpauth_url || "",
-        secret: data.secret || data.base32 || "",
+        qrUrl,
+        secret: data.secret || "",
         backupCodes: data.backupCodes || [],
       });
     },
@@ -248,7 +307,7 @@ export default function ProfilePage() {
     mutationFn: async () => {
       const res = await apiRequest("/api/2fa/verify", {
         method: "POST",
-        body: JSON.stringify({ code: twoFACode }),
+        body: JSON.stringify({ token: twoFACode }),
       });
       return res.json();
     },
@@ -258,6 +317,25 @@ export default function ProfilePage() {
     },
     onError: (err: Error) => {
       toast({ title: "Invalid code", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const disable2FAMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("/api/2fa", {
+        method: "DELETE",
+        body: JSON.stringify({ token: disable2FACode }),
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      setTwoFASetupDone(false);
+      setDisable2FAOpen(false);
+      setDisable2FACode("");
+      toast({ title: "2FA disabled", description: "Two-factor authentication has been removed from your account." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to disable 2FA", description: err.message, variant: "destructive" });
     },
   });
 
@@ -494,7 +572,7 @@ export default function ProfilePage() {
                 setTwoFAOpen(true);
                 twoFASetupMutation.mutate();
               } else {
-                toast({ title: "2FA is enabled", description: "Your account is protected." });
+                setDisable2FAOpen(true);
               }
             }}
             rightElement={twoFASetupDone ? (
@@ -621,26 +699,53 @@ export default function ProfilePage() {
           <SheetHeader>
             <SheetTitle>Notification Preferences</SheetTitle>
           </SheetHeader>
-          <div className="mt-4 space-y-4">
-            {[
-              { key: "orderUpdates" as const, label: "Order Updates", desc: "Status changes and delivery alerts" },
-              { key: "promotions" as const, label: "Promotions", desc: "Deals and special offers" },
-              { key: "driverMessages" as const, label: "Driver Messages", desc: "Messages from your driver" },
-              { key: "email" as const, label: "Email Notifications", desc: "Receive updates by email" },
-              { key: "push" as const, label: "Push Notifications", desc: "Real-time mobile alerts" },
-            ].map(item => (
-              <div key={item.key} className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium">{item.label}</p>
-                  <p className="text-xs text-muted-foreground">{item.desc}</p>
-                </div>
-                <Switch
-                  checked={notifPrefs[item.key]}
-                  onCheckedChange={(v) => setNotifPrefs(p => ({ ...p, [item.key]: v }))}
-                  data-testid={`toggle-notif-${item.key}`}
-                />
+          <div className="mt-4 space-y-5">
+            {/* Channel toggles */}
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground mb-3 uppercase tracking-wide">Channels</p>
+              <div className="space-y-4">
+                {[
+                  { key: "pushEnabled" as const, label: "Push Notifications", desc: "Real-time mobile alerts" },
+                  { key: "emailEnabled" as const, label: "Email Notifications", desc: "Receive updates by email" },
+                  { key: "smsEnabled" as const, label: "SMS Notifications", desc: "Receive updates by text message" },
+                ].map(item => (
+                  <div key={item.key} className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium">{item.label}</p>
+                      <p className="text-xs text-muted-foreground">{item.desc}</p>
+                    </div>
+                    <Switch
+                      checked={notifPrefs?.[item.key] ?? false}
+                      onCheckedChange={(v) => handleNotifToggle(item.key, v)}
+                      data-testid={`toggle-notif-${item.key}`}
+                    />
+                  </div>
+                ))}
               </div>
-            ))}
+            </div>
+            {/* Category toggles */}
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground mb-3 uppercase tracking-wide">Categories</p>
+              <div className="space-y-4">
+                {[
+                  { key: "orderUpdates" as const, label: "Order Updates", desc: "Status changes and delivery alerts" },
+                  { key: "promotions" as const, label: "Promotions", desc: "Deals and special offers" },
+                  { key: "weeklyDigest" as const, label: "Weekly Digest", desc: "Weekly summary of activity" },
+                ].map(item => (
+                  <div key={item.key} className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium">{item.label}</p>
+                      <p className="text-xs text-muted-foreground">{item.desc}</p>
+                    </div>
+                    <Switch
+                      checked={notifPrefs?.[item.key] ?? false}
+                      onCheckedChange={(v) => handleNotifToggle(item.key, v)}
+                      data-testid={`toggle-notif-${item.key}`}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </SheetContent>
       </Sheet>
@@ -856,6 +961,44 @@ export default function ProfilePage() {
           </div>
         </SheetContent>
       </Sheet>
+
+      {/* Disable 2FA Confirmation */}
+      <AlertDialog open={disable2FAOpen} onOpenChange={setDisable2FAOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Disable Two-Factor Authentication</AlertDialogTitle>
+            <AlertDialogDescription>
+              Enter your current 6-digit authenticator code to disable 2FA.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="py-2">
+            <Input
+              value={disable2FACode}
+              onChange={e => setDisable2FACode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              placeholder="000000"
+              className="h-12 text-center text-lg font-mono tracking-widest"
+              maxLength={6}
+              data-testid="input-disable-2fa-code"
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              onClick={() => setDisable2FACode("")}
+              data-testid="button-disable-2fa-cancel"
+            >
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => disable2FAMutation.mutate()}
+              disabled={disable2FACode.length !== 6 || disable2FAMutation.isPending}
+              className="bg-red-500 text-white hover:bg-red-600 focus:ring-red-500"
+              data-testid="button-disable-2fa-confirm"
+            >
+              {disable2FAMutation.isPending ? "Disabling..." : "Disable 2FA"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Sign Out Confirmation */}
       <AlertDialog open={signOutOpen} onOpenChange={setSignOutOpen}>
