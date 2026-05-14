@@ -10,12 +10,14 @@ import { BAG_OPTIONS, type BagSize, type DeliverySpeed } from "@/lib/design-toke
 import { VoiceOrderModal } from "@/components/voice-order";
 
 import { WizardProgress } from "./WizardProgress";
+import { StepWashStyle } from "./StepWashStyle";
 import { StepBags } from "./StepBags";
 import { StepSeparation } from "./StepSeparation";
 import { StepClothingTypes } from "./StepClothingTypes";
 import { StepAddress } from "./StepAddress";
 import { StepPayment } from "./StepPayment";
 import { StepReview } from "./StepReview";
+import { EstimatedTotalFooter } from "./EstimatedTotalFooter";
 import { type WizardState, INITIAL_WIZARD_STATE } from "./types";
 
 const STORAGE_KEY = "offload_wizard_state";
@@ -55,11 +57,9 @@ function parseQueryParams(): Partial<WizardState> {
 
   const service = params.get("service");
   if (service) {
-    // "same_day" maps to delivery speed, not service type
     if (service === "same_day") {
       partial.deliverySpeed = "same_day" as DeliverySpeed;
     } else {
-      // wash_fold, dry_cleaning, comforters, etc.
       partial.serviceType = service;
     }
   }
@@ -140,21 +140,127 @@ export default function OrderNewPage() {
     setState(prev => ({ ...prev, [key]: value }));
   }, []);
 
-  // Skip step 3 if not separating
-  const skipStep3 = state.separateByType !== true;
+  // ── Branching helpers ──
+  // Standard (wash_fold):     step 2 → step 5 (skip separation+clothing)
+  // Signature (wash_fold_signature): step 2 → step 4 (clothing, skip separation prompt, force separateByType=true)
+  // Custom (wash_fold_custom): step 2 → step 5 (skip separation+clothing, prefs copied in)
+
+  const isStandard = state.serviceType === "wash_fold";
+  const isSignature = state.serviceType === "wash_fold_signature";
+  const isCustom = state.serviceType === "wash_fold_custom";
+
+  // Compute which steps to skip for WizardProgress
+  const skippedSteps: number[] = (() => {
+    if (isStandard) return [3, 4];       // skip Separate + Clothing
+    if (isSignature) return [3];          // skip Separate (force=true), show Clothing
+    if (isCustom) return [3, 4];          // skip Separate + Clothing
+    return [];
+  })();
 
   const goNext = () => {
-    if (step === 2 && skipStep3) {
-      setStep(4);
-    } else if (step < 6) {
+    if (step === 1) {
+      // Custom Wash: check for saved preferences before going to step 2
+      if (isCustom) {
+        const prefs = (user as any)?.washPreferences || (user as any)?.wash_preferences;
+        const hasPrefs = prefs && (typeof prefs === "object") && Object.keys(prefs).length > 0;
+        if (!hasPrefs) {
+          // Redirect to profile to set up preferences
+          navigate("/profile?openWashPrefs=1&returnTo=wizard");
+          return;
+        }
+        // Copy saved prefs into state
+        const specialInstructions = typeof prefs === "object" && prefs.notes
+          ? String(prefs.notes)
+          : "";
+        const clothingTypes = Array.isArray(prefs.clothingTypes) ? prefs.clothingTypes : [];
+        setState(prev => ({
+          ...prev,
+          specialInstructions,
+          clothingTypes,
+        }));
+      }
+      setStep(2);
+      return;
+    }
+
+    if (step === 2) {
+      if (isStandard) {
+        // Standard: skip separation + clothing, go to address
+        update("separateByType", false);
+        setStep(5);
+        return;
+      }
+      if (isSignature) {
+        // Signature: force separation, go directly to clothing
+        update("separateByType", true);
+        setStep(4);
+        return;
+      }
+      if (isCustom) {
+        // Custom: skip separation + clothing, go to address
+        update("separateByType", false);
+        setStep(5);
+        return;
+      }
+      // Fallback: go to separation step
+      setStep(3);
+      return;
+    }
+
+    if (step === 3) {
+      // After separation choice:
+      if (state.separateByType === true) {
+        setStep(4);
+      } else {
+        setStep(5);
+      }
+      return;
+    }
+
+    if (step === 4) {
+      setStep(5);
+      return;
+    }
+
+    if (step < 7) {
       setStep(step + 1);
     }
   };
 
   const goBack = () => {
-    if (step === 4 && skipStep3) {
+    if (step === 5) {
+      if (isStandard || isCustom) {
+        setStep(2);
+        return;
+      }
+      if (isSignature) {
+        setStep(4);
+        return;
+      }
+      // came from step 4 normally
+      if (state.separateByType === true) {
+        setStep(4);
+      } else {
+        setStep(3);
+      }
+      return;
+    }
+
+    if (step === 4) {
+      if (isSignature) {
+        setStep(2);
+        return;
+      }
+      setStep(3);
+      return;
+    }
+
+    if (step === 3) {
       setStep(2);
-    } else if (step > 1) {
+      return;
+    }
+
+    if (step > 1) {
       setStep(step - 1);
     } else {
       navigate("/");
@@ -168,12 +274,13 @@ export default function OrderNewPage() {
   // Validate current step
   const canProceed = (): boolean => {
     switch (step) {
-      case 1: return state.bags.length > 0 && state.bags.some(b => b.quantity > 0);
-      case 2: return state.separateByType !== null;
-      case 3: return state.clothingTypes.length > 0;
-      case 4: return !!state.address && !!state.pickupDate && !!state.pickupTimeWindow && state.serviceAreaAvailable === true;
-      case 5: return !!state.paymentMethodId;
-      case 6: return true;
+      case 1: return !!state.serviceType;
+      case 2: return state.bags.length > 0 && state.bags.some(b => b.quantity > 0);
+      case 3: return state.separateByType !== null;
+      case 4: return state.clothingTypes.length > 0;
+      case 5: return !!state.address && !!state.pickupDate && !!state.pickupTimeWindow && state.serviceAreaAvailable === true;
+      case 6: return !!state.paymentMethodId;
+      case 7: return true;
       default: return false;
     }
   };
@@ -181,7 +288,6 @@ export default function OrderNewPage() {
   // P0-4: Ensure address is persisted before submitting order
   async function ensureAddressId(): Promise<number> {
     if (state.pickupAddressId) return state.pickupAddressId;
-    // Save the address to the backend and get an ID
     const res = await apiRequest("/api/addresses", {
       method: "POST",
       body: JSON.stringify({
@@ -206,20 +312,23 @@ export default function OrderNewPage() {
     return active[0].size;
   }
 
-  // Submit order — P0-4: body matches backend schema
+  // Submit order
   const submitMutation = useMutation({
     mutationFn: async () => {
       const addressId = await ensureAddressId();
-      // Build ISO scheduledPickup from date + time window
       const scheduledPickup = state.pickupDate
         ? new Date(`${state.pickupDate}T08:00:00`).toISOString()
         : undefined;
+
+      const bags = state.bags
+        .filter(b => b.quantity > 0)
+        .map(b => ({ size: b.size, quantity: b.quantity }));
 
       const body = {
         pickupAddressId: addressId,
         pickupAddress: state.address,
         tierName: inferTierName(),
-        serviceType: state.serviceType,
+        serviceType: state.serviceType || "wash_fold",
         deliverySpeed: state.deliverySpeed,
         separated: state.separateByType ?? false,
         clothing_types: state.separateByType ? state.clothingTypes : [],
@@ -228,6 +337,7 @@ export default function OrderNewPage() {
         pickupTimeWindow: state.pickupTimeWindow,
         paymentMethodId: state.paymentMethodId ? Number(state.paymentMethodId) : undefined,
         specialInstructions: state.specialInstructions || undefined,
+        bags,
       };
       const res = await apiRequest("/api/orders", {
         method: "POST",
@@ -294,17 +404,23 @@ export default function OrderNewPage() {
 
       <div className="max-w-lg mx-auto">
         {/* Progress */}
-        <WizardProgress currentStep={step} skipStep3={skipStep3} />
+        <WizardProgress currentStep={step} skippedSteps={skippedSteps} />
 
         {/* Step content */}
         <div className="mt-4">
           {step === 1 && (
+            <StepWashStyle
+              value={state.serviceType}
+              onChange={v => update("serviceType", v)}
+            />
+          )}
+          {step === 2 && (
             <StepBags
               bags={state.bags}
               onChange={bags => update("bags", bags)}
             />
           )}
-          {step === 2 && (
+          {step === 3 && (
             <StepSeparation
               value={state.separateByType}
               separationFee={state.separationFee}
@@ -318,7 +434,7 @@ export default function OrderNewPage() {
               }}
             />
           )}
-          {step === 3 && (
+          {step === 4 && (
             <StepClothingTypes
               selected={state.clothingTypes}
               customTypes={state.customTypes}
@@ -326,7 +442,7 @@ export default function OrderNewPage() {
               onCustomTypesChange={types => update("customTypes", types)}
             />
           )}
-          {step === 4 && (
+          {step === 5 && (
             <StepAddress
               address={state.address}
               addressPlaceId={state.addressPlaceId}
@@ -346,13 +462,13 @@ export default function OrderNewPage() {
               onServiceAreaChange={available => update("serviceAreaAvailable", available)}
             />
           )}
-          {step === 5 && (
+          {step === 6 && (
             <StepPayment
               selectedMethodId={state.paymentMethodId}
               onSelect={id => update("paymentMethodId", id)}
             />
           )}
-          {step === 6 && (
+          {step === 7 && (
             <StepReview
               state={state}
               onEdit={goToStep}
@@ -362,10 +478,13 @@ export default function OrderNewPage() {
         </div>
       </div>
 
+      {/* Estimated total footer — steps 2–7 */}
+      <EstimatedTotalFooter state={state} currentStep={step} />
+
       {/* Bottom action bar */}
       <div className="fixed bottom-0 left-0 right-0 z-40 bg-background/95 backdrop-blur-xl border-t border-border px-5 py-4">
         <div className="max-w-lg mx-auto">
-          {step === 6 ? (
+          {step === 7 ? (
             <Button
               className="w-full h-12 text-base font-semibold"
               disabled={submitMutation.isPending || !quoteValid}

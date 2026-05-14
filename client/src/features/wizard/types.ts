@@ -44,14 +44,15 @@ export const INITIAL_WIZARD_STATE: WizardState = {
   serviceAreaAvailable: null,
   paymentMethodId: "",
   deliverySpeed: "standard",
-  serviceType: "wash_fold",
+  serviceType: "",
 };
 
 export const WIZARD_STEPS = [
-  { id: 1, title: "Select Bags", shortTitle: "Bags" },
-  { id: 2, title: "Separate by Type?", shortTitle: "Separate" },
-  { id: 3, title: "Clothing Types", shortTitle: "Types" },
-  { id: 4, title: "Address & Pickup", shortTitle: "Address" },
-  { id: 5, title: "Payment Method", shortTitle: "Payment" },
-  { id: 6, title: "Review & Confirm", shortTitle: "Review" },
+  { id: 1, title: "Choose Wash Style", shortTitle: "Style" },
+  { id: 2, title: "Select Bags", shortTitle: "Bags" },
+  { id: 3, title: "Separate by Type?", shortTitle: "Separate" },
+  { id: 4, title: "Clothing Types", shortTitle: "Types" },
+  { id: 5, title: "Address & Pickup", shortTitle: "Address" },
+  { id: 6, title: "Payment Method", shortTitle: "Payment" },
+  { id: 7, title: "Review & Confirm", shortTitle: "Review" },
 ] as const;

@@ -79,6 +79,19 @@ export default function ProfilePage() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [washPrefsOpen, setWashPrefsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+
+  // C4: Handle ?openWashPrefs=1&returnTo=wizard URL params
+  const [returnToWizard, setReturnToWizard] = useState(false);
+  useEffect(() => {
+    const hashSearch = window.location.hash.split("?")[1] || "";
+    const params = new URLSearchParams(hashSearch);
+    if (params.get("openWashPrefs") === "1") {
+      setWashPrefsOpen(true);
+      if (params.get("returnTo") === "wizard") {
+        setReturnToWizard(true);
+      }
+    }
+  }, []);
   const [signOutOpen, setSignOutOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [accountDeleted, setAccountDeleted] = useState(false);
@@ -263,6 +276,11 @@ export default function ProfilePage() {
       queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
       setWashPrefsOpen(false);
       toast({ title: "Preferences saved", description: "Your wash preferences have been updated." });
+      // C4: if we were redirected here from the wizard, go back
+      if (returnToWizard) {
+        setReturnToWizard(false);
+        navigate("/order/new");
+      }
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });

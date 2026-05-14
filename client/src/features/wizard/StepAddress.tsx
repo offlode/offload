@@ -247,6 +247,26 @@ export function StepAddress({
     return () => window.clearTimeout(timeout);
   }, [address, addressPlaceId]);
 
+  // Time-window preset chips (C6)
+  const now = new Date();
+  const currentHour = now.getHours();
+  const todayStr = now.toISOString().split("T")[0];
+  const tomorrowStr = (() => {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    return d.toISOString().split("T")[0];
+  })();
+
+  type PresetChip = { label: string; date: string; window: string };
+  const presetChips: PresetChip[] = [
+    // "Today 4–6 PM" — only if current time is before 2 PM
+    ...(currentHour < 14 ? [{ label: "Today 4–6 PM", date: todayStr, window: "16:00-18:00" }] : []),
+    { label: "Tomorrow 8–10 AM", date: tomorrowStr, window: "8:00 AM - 10:00 AM" },
+    { label: "Tomorrow 4–6 PM", date: tomorrowStr, window: "4:00 PM - 6:00 PM" },
+  ];
+
+  const [showDatePicker, setShowDatePicker] = useState(false);
+
   // Generate date options for next 7 days
   const dateOptions = Array.from({ length: 7 }, (_, i) => {
     const d = new Date();
@@ -335,7 +355,49 @@ export function StepAddress({
         )}
       </div>
 
-      {/* Date picker */}
+      {/* Time-window preset chips (C6) */}
+      <div>
+        <Label className="text-xs text-muted-foreground mb-1.5 flex items-center gap-1.5">
+          <Clock className="w-3.5 h-3.5" /> Quick Select
+        </Label>
+        <div className="flex flex-wrap gap-2">
+          {presetChips.map(chip => {
+            const isSelected = pickupDate === chip.date && pickupTimeWindow === chip.window;
+            return (
+              <button
+                key={chip.label}
+                onClick={() => {
+                  onDateChange(chip.date);
+                  onTimeChange(chip.window);
+                  setShowDatePicker(false);
+                }}
+                className={`px-3 py-2 rounded-xl text-xs font-medium min-h-[44px] flex items-center justify-center transition-all ${
+                  isSelected
+                    ? "bg-primary text-primary-foreground ring-2 ring-primary/30"
+                    : "bg-card border border-border hover:border-primary/40"
+                }`}
+                data-testid={`chip-${chip.label.replace(/\s+/g, "-").toLowerCase()}`}
+              >
+                {chip.label}
+              </button>
+            );
+          })}
+          <button
+            onClick={() => setShowDatePicker(prev => !prev)}
+            className={`px-3 py-2 rounded-xl text-xs font-medium min-h-[44px] flex items-center justify-center transition-all ${
+              showDatePicker
+                ? "bg-primary text-primary-foreground ring-2 ring-primary/30"
+                : "bg-card border border-border hover:border-primary/40"
+            }`}
+            data-testid="chip-pick-a-date"
+          >
+            Pick a date
+          </button>
+        </div>
+      </div>
+
+      {/* Date picker — shown when "Pick a date" is selected */}
+      {showDatePicker && (
       <div>
         <Label className="text-xs text-muted-foreground mb-1.5 flex items-center gap-1.5">
           <Calendar className="w-3.5 h-3.5" /> Pickup Date
@@ -357,6 +419,7 @@ export function StepAddress({
           ))}
         </div>
       </div>
+      )}
 
       {/* Time window */}
       <div>
