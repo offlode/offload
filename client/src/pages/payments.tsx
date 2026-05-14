@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
+import { loadStripe } from "@stripe/stripe-js";
+import { Elements, CardElement, useStripe, useElements } from "@stripe/react-stripe-js";
 import {
   ArrowLeft, CreditCard, Plus, Trash2, Smartphone, Wallet,
   Star, Shield
@@ -8,10 +10,7 @@ import {
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel,
@@ -35,10 +34,142 @@ const TYPE_LABELS: Record<string, string> = {
   google_pay: "Google Pay",
 };
 
-const TYPE_DESCRIPTIONS: Record<string, string> = {
-  apple_pay: "Touch ID or Face ID",
-  google_pay: "Google Wallet authentication",
-};
+// Fetch Stripe publishable key from backend config endpoint
+let stripePromise: ReturnType<typeof loadStripe> | null = null;
+function getStripePromise() {
+  if (stripePromise) return stripePromise;
+
+  // Prefer VITE env var, fall back to backend config
+  const viteKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY;
+  if (viteKey && viteKey.startsWith("pk_")) {
+    stripePromise = loadStripe(viteKey);
+    return stripePromise;
+  }
+
+  const apiBase = (import.meta.env.VITE_API_URL as string | undefined) || "";
+  stripePromise = fetch(`${apiBase}/api/config/stripe`)
+    .then(res => res.json())
+    .then(data => {
+      if (data.publishableKey && data.publishableKey.startsWith("pk_")) {
+        return loadStripe(data.publishableKey);
+      }
+      return null;
+    })
+    .catch(() => null);
+  return stripePromise;
+}
+
+// ─── Stripe Card Form (inside Elements provider) ───
+function StripeCardForm({ onSuccess, onCancel }: { onSuccess: () => void; onCancel: () => void }) {
+  const stripe = useStripe();
+  const elements = useElements();
+  const { toast } = useToast();
+  const [saving, setSaving] = useState(false);
+  const [cardError, setCardError] = useState("");
+
+  async function handleSubmit() {
+    if (!stripe || !elements) return;
+    setSaving(true);
+    setCardError("");
+
+    try {
+      // 1. Get a SetupIntent clientSecret from the backend
+      const intentRes = await apiRequest("/api/payments/setup-intent", { method: "POST" });
+      const { clientSecret } = await intentRes.json();
+
+      // 2. Confirm the card setup with Stripe
+      const cardElement = elements.getElement(CardElement);
+      if (!cardElement) {
+        setCardError("Card element not found.");
+        setSaving(false);
+        return;
+      }
+
+      const { error, setupIntent } = await stripe.confirmCardSetup(clientSecret, {
+        payment_method: { card: cardElement },
+      });
+
+      if (error) {
+        setCardError(error.message || "Card setup failed.");
+        setSaving(false);
+        return;
+      }
+
+      if (!setupIntent?.payment_method) {
+        setCardError("No payment method returned.");
+        setSaving(false);
+        return;
+      }
+
+      // 3. Save the payment method to our backend
+      const pmId = typeof setupIntent.payment_method === "string"
+        ? setupIntent.payment_method
+        : setupIntent.payment_method.id;
+      await apiRequest("/api/payments/save-card", {
+        method: "POST",
+        body: JSON.stringify({ paymentMethodId: pmId }),
+      });
+
+      toast({ title: "Card added successfully" });
+      onSuccess();
+    } catch (err: any) {
+      setCardError(err.message || "Failed to add card.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="text-xs text-muted-foreground mb-2 block">Card Details</label>
+        <div className="border border-border rounded-xl p-4 bg-background">
+          <CardElement
+            options={{
+              style: {
+                base: {
+                  fontSize: "16px",
+                  color: "#e2e8f0",
+                  "::placeholder": { color: "#64748b" },
+                  iconColor: "#7C3AED",
+                },
+                invalid: { color: "#ef4444", iconColor: "#ef4444" },
+              },
+            }}
+            onChange={(e) => {
+              if (e.error) setCardError(e.error.message);
+              else setCardError("");
+            }}
+          />
+        </div>
+        {cardError && (
+          <p className="text-xs text-red-400 mt-1.5">{cardError}</p>
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Test card: 4242 4242 4242 4242, any future expiry, any CVC, ZIP 10001
+      </p>
+      <div className="flex gap-3">
+        <Button
+          variant="outline"
+          className="flex-1 rounded-full"
+          onClick={onCancel}
+          disabled={saving}
+        >
+          Cancel
+        </Button>
+        <Button
+          className="flex-1 rounded-full bg-primary hover:bg-primary/90 text-white"
+          disabled={saving || !stripe}
+          onClick={handleSubmit}
+          data-testid="button-save-payment"
+        >
+          {saving ? "Saving..." : "Add Card"}
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 export default function PaymentsPage() {
   const [, navigate] = useLocation();
@@ -47,10 +178,12 @@ export default function PaymentsPage() {
   const userId = user?.id;
   const [formOpen, setFormOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<number | null>(null);
-  const [newType, setNewType] = useState("card");
-  const [newLabel, setNewLabel] = useState("");
-  const [newLast4, setNewLast4] = useState("");
-  const [newExpiry, setNewExpiry] = useState("");
+  const [stripeAvailable, setStripeAvailable] = useState<boolean | null>(null);
+
+  // Check Stripe availability
+  useEffect(() => {
+    getStripePromise().then(s => setStripeAvailable(s !== null));
+  }, []);
 
   const { data: methods, isLoading } = useQuery<PaymentMethod[]>({
     queryKey: ["/api/payment-methods", userId],
@@ -59,34 +192,6 @@ export default function PaymentsPage() {
       return res.json();
     },
     enabled: !!userId,
-  });
-
-  const createMutation = useMutation({
-    mutationFn: async () => {
-      const body: any = {
-        userId,
-        type: newType,
-        label: newLabel || TYPE_LABELS[newType] || "Card",
-        isDefault: 0,
-      };
-      if (newType === "card") {
-        body.last4 = newLast4;
-        body.expiryDate = newExpiry;
-      }
-      const res = await apiRequest("/api/payment-methods", {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/payment-methods", userId] });
-      closeForm();
-      toast({ title: "Payment method added" });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    },
   });
 
   const deleteMutation = useMutation({
@@ -120,17 +225,10 @@ export default function PaymentsPage() {
     },
   });
 
-  const closeForm = () => {
+  function handleCardAdded() {
+    queryClient.invalidateQueries({ queryKey: ["/api/payment-methods", userId] });
     setFormOpen(false);
-    setNewType("card");
-    setNewLabel("");
-    setNewLast4("");
-    setNewExpiry("");
-  };
-
-  const isValid = newType === "card"
-    ? (newLast4.length === 4 && newExpiry.length >= 4)
-    : true;
+  }
 
   const defaultMethod = methods?.find(pm => pm.isDefault);
   const allMethods = methods || [];
@@ -253,9 +351,6 @@ export default function PaymentsPage() {
                             )}
                           </div>
                           <div className="flex items-center gap-1 shrink-0">
-                            {/* H2-A fix: removed the fake "Edit" toast button. Editing a saved
-                                card requires removing and re-adding (Stripe never exposes the card
-                                number for in-place edit). Delete + re-add is the supported flow. */}
                             <button
                               className="w-8 h-8 rounded-lg flex items-center justify-center text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
                               onClick={() => setDeleteId(pm.id)}
@@ -275,7 +370,7 @@ export default function PaymentsPage() {
                       <CreditCard className="w-8 h-8 text-primary/60" />
                     </div>
                     <p className="text-sm font-medium mb-1">No payment methods</p>
-                    <p className="text-xs text-muted-foreground mb-4">Add a card or digital wallet to get started.</p>
+                    <p className="text-xs text-muted-foreground mb-4">Add a card to get started.</p>
                     <Button size="sm" onClick={() => setFormOpen(true)} data-testid="button-add-first-payment" className="rounded-full">
                       Add Payment Method
                     </Button>
@@ -314,10 +409,10 @@ export default function PaymentsPage() {
               </div>
               <ul className="space-y-2.5">
                 {[
-                  "All payment data is end-to-end secure",
-                  "We never store your details",
-                  "We use easy alias to identify your cards",
+                  "Card details are securely processed by Stripe",
+                  "We never store your full card number",
                   "PCI DSS compliant payment processing",
+                  "Encrypted end-to-end",
                 ].map((text, i) => (
                   <li key={i} className="flex items-start gap-2.5">
                     <div className="w-1.5 h-1.5 rounded-full bg-amber-400 mt-1.5 shrink-0" />
@@ -330,66 +425,34 @@ export default function PaymentsPage() {
         )}
       </div>
 
-      {/* Add Sheet */}
-      <Sheet open={formOpen} onOpenChange={(open) => { if (!open) closeForm(); }}>
+      {/* Add Card Sheet — with Stripe Elements */}
+      <Sheet open={formOpen} onOpenChange={(open) => { if (!open) setFormOpen(false); }}>
         <SheetContent side="bottom" className="max-h-[70vh] rounded-t-2xl">
           <SheetHeader>
             <SheetTitle>Add Payment Method</SheetTitle>
           </SheetHeader>
-          <div className="mt-4 space-y-4">
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1 block">Type</Label>
-              <Select value={newType} onValueChange={setNewType}>
-                <SelectTrigger data-testid="select-payment-type">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="card">Credit/Debit Card</SelectItem>
-                  <SelectItem value="apple_pay">Apple Pay</SelectItem>
-                  <SelectItem value="google_pay">Google Pay</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label className="text-xs text-muted-foreground">Label</Label>
-              <Input
-                placeholder="e.g., Personal Card"
-                value={newLabel}
-                onChange={e => setNewLabel(e.target.value)}
-                data-testid="input-payment-label"
-              />
-            </div>
-            {newType === "card" && (
-              <>
-                <div>
-                  <Label className="text-xs text-muted-foreground">Last 4 Digits</Label>
-                  <Input
-                    placeholder="4242"
-                    maxLength={4}
-                    value={newLast4}
-                    onChange={e => setNewLast4(e.target.value.replace(/\D/g, ""))}
-                    data-testid="input-payment-last4"
-                  />
-                </div>
-                <div>
-                  <Label className="text-xs text-muted-foreground">Expiry Date</Label>
-                  <Input
-                    placeholder="MM/YYYY"
-                    value={newExpiry}
-                    onChange={e => setNewExpiry(e.target.value)}
-                    data-testid="input-payment-expiry"
-                  />
-                </div>
-              </>
+          <div className="mt-4">
+            {stripeAvailable === false ? (
+              <div className="text-center py-6">
+                <CreditCard className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
+                <p className="text-sm font-medium mb-1">Stripe is not configured</p>
+                <p className="text-xs text-muted-foreground">
+                  Card payments are unavailable. Please contact support.
+                </p>
+              </div>
+            ) : stripeAvailable === null ? (
+              <div className="text-center py-6">
+                <Skeleton className="h-12 w-full rounded-xl" />
+                <p className="text-xs text-muted-foreground mt-2">Loading payment form...</p>
+              </div>
+            ) : (
+              <Elements stripe={getStripePromise()}>
+                <StripeCardForm
+                  onSuccess={handleCardAdded}
+                  onCancel={() => setFormOpen(false)}
+                />
+              </Elements>
             )}
-            <Button
-              className="w-full rounded-full bg-primary hover:bg-primary/90 text-white"
-              disabled={!isValid || createMutation.isPending}
-              onClick={() => createMutation.mutate()}
-              data-testid="button-save-payment"
-            >
-              {createMutation.isPending ? "Saving..." : "Add Payment Method"}
-            </Button>
           </div>
         </SheetContent>
       </Sheet>

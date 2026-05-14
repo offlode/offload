@@ -298,7 +298,8 @@ export default function ProfilePage() {
       // C4: if we were redirected here from the wizard, go back
       if (returnToWizard) {
         setReturnToWizard(false);
-        navigate("/order/new");
+        // Delay navigation so user sees the toast and the sheet close animation finishes
+        setTimeout(() => navigate("/order/new"), 600);
       }
     },
     onError: (err: Error) => {

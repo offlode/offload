@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { MapPin, Calendar, Clock, AlertCircle, Bell, RefreshCw } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -61,14 +61,84 @@ function parseCityStateFromAddress(value: string): Pick<AddressMeta, "city" | "s
   };
 }
 
-function getAddressComponent(
-  components: Array<{ long_name?: string; short_name?: string; types?: string[] }> | undefined,
-  type: string,
-  preferShort = false,
-): string {
-  const component = components?.find(comp => comp.types?.includes(type));
-  if (!component) return "";
-  return (preferShort ? component.short_name : component.long_name) || component.long_name || component.short_name || "";
+interface PlaceSuggestion {
+  text: string;
+  placeId: string;
+}
+
+const GOOGLE_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || "";
+
+async function fetchPlaceSuggestions(input: string): Promise<PlaceSuggestion[]> {
+  if (!GOOGLE_API_KEY || input.length < 3) return [];
+  try {
+    const res = await fetch("https://places.googleapis.com/v1/places:autocomplete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_API_KEY,
+      },
+      body: JSON.stringify({
+        input,
+        includedPrimaryTypes: ["street_address", "subpremise", "premise", "route"],
+        includedRegionCodes: ["us"],
+        languageCode: "en",
+      }),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const suggestions: PlaceSuggestion[] = (data.suggestions || [])
+      .filter((s: any) => s.placePrediction)
+      .map((s: any) => ({
+        text: s.placePrediction.text?.text || s.placePrediction.structuredFormat?.mainText?.text || "",
+        placeId: s.placePrediction.placeId || "",
+      }));
+    return suggestions;
+  } catch {
+    return [];
+  }
+}
+
+async function fetchPlaceDetails(placeId: string): Promise<{
+  formattedAddress: string;
+  lat: number | null;
+  lng: number | null;
+  zip: string;
+  city: string;
+  state: string;
+} | null> {
+  if (!GOOGLE_API_KEY || !placeId) return null;
+  try {
+    const res = await fetch(
+      `https://places.googleapis.com/v1/places/${placeId}?languageCode=en`,
+      {
+        headers: {
+          "X-Goog-Api-Key": GOOGLE_API_KEY,
+          "X-Goog-FieldMask": "formattedAddress,location,addressComponents",
+        },
+      },
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const lat = data.location?.latitude ?? null;
+    const lng = data.location?.longitude ?? null;
+    const components: Array<{ types: string[]; longText?: string; shortText?: string }> =
+      data.addressComponents || [];
+    const findComp = (type: string, short = false) => {
+      const c = components.find((comp) => comp.types?.includes(type));
+      if (!c) return "";
+      return short ? c.shortText || c.longText || "" : c.longText || c.shortText || "";
+    };
+    return {
+      formattedAddress: data.formattedAddress || "",
+      lat,
+      lng,
+      zip: findComp("postal_code"),
+      city: findComp("locality") || findComp("sublocality") || findComp("administrative_area_level_2"),
+      state: findComp("administrative_area_level_1", true),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function StepAddress({
@@ -87,13 +157,20 @@ export function StepAddress({
 }: StepAddressProps) {
   const { user } = useAuth();
   const autocompleteRef = useRef<HTMLInputElement>(null);
-  const [hasGoogleMaps, setHasGoogleMaps] = useState(false);
   const [notifyRequested, setNotifyRequested] = useState(false);
   const [notifyLoading, setNotifyLoading] = useState(false);
   const [checkingArea, setCheckingArea] = useState(false);
   const [addressMeta, setAddressMeta] = useState<AddressMeta>(EMPTY_ADDRESS_META);
 
-  // Store latest refs for callbacks used inside the Google Maps listener
+  // Autocomplete state
+  const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [autocompleteError, setAutocompleteError] = useState("");
+  const [fetchingSuggestions, setFetchingSuggestions] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const suggestionsRef = useRef<HTMLDivElement>(null);
+
+  // Store latest refs for callbacks
   const serviceTypeRef = useRef(serviceType);
   const onServiceAreaChangeRef = useRef(onServiceAreaChange);
   const onAddressChangeRef = useRef(onAddressChange);
@@ -162,71 +239,67 @@ export function StepAddress({
     }
   }
 
-  useEffect(() => {
-    const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
-    if (!apiKey || !autocompleteRef.current) return;
-
-    const g = window as any;
-
-    // Check if google maps Places is available
-    if (g.google?.maps?.places) {
-      initAutocomplete();
+  // Fetch autocomplete suggestions from Places API (New)
+  const fetchSuggestions = useCallback(async (input: string) => {
+    if (input.length < 3) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      setAutocompleteError("");
       return;
     }
-
-    // Load the script if not already loaded
-    const existing = document.querySelector('script[src*="maps.googleapis.com"]');
-    if (existing) {
-      existing.addEventListener("load", initAutocomplete);
-      return;
+    setFetchingSuggestions(true);
+    setAutocompleteError("");
+    const results = await fetchPlaceSuggestions(input);
+    setFetchingSuggestions(false);
+    setSuggestions(results);
+    setShowSuggestions(true);
+    if (results.length === 0 && input.length >= 5) {
+      setAutocompleteError("No address suggestions found. You can still enter your address manually.");
     }
+  }, []);
 
-    const script = document.createElement("script");
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`;
-    script.async = true;
-    script.onload = initAutocomplete;
-    document.head.appendChild(script);
+  // Handle selecting a suggestion
+  const handleSelectSuggestion = useCallback(async (suggestion: PlaceSuggestion) => {
+    setShowSuggestions(false);
+    setSuggestions([]);
+    setAutocompleteError("");
+    onAddressChangeRef.current(suggestion.text, suggestion.placeId);
 
-    function initAutocomplete() {
-      if (!autocompleteRef.current) return;
-      try {
-        const gm = (window as any).google;
-        const ac = new gm.maps.places.Autocomplete(autocompleteRef.current, {
-          types: ["address"],
-          componentRestrictions: { country: "us" },
+    // Fetch place details for lat/lng and address components
+    const details = await fetchPlaceDetails(suggestion.placeId);
+    if (details) {
+      if (details.formattedAddress) {
+        onAddressChangeRef.current(details.formattedAddress, suggestion.placeId);
+      }
+      if (details.zip || (details.lat != null && details.lng != null)) {
+        checkServiceArea({
+          zip: details.zip,
+          city: details.city,
+          state: details.state,
+          lat: details.lat,
+          lng: details.lng,
         });
-        ac.addListener("place_changed", () => {
-          const place = ac.getPlace();
-          if (place.formatted_address && place.place_id) {
-            onAddressChangeRef.current(place.formatted_address, place.place_id);
-
-            // Extract lat/lng and address details for service area check
-            const lat = place.geometry?.location?.lat();
-            const lng = place.geometry?.location?.lng();
-            const zip = getAddressComponent(place.address_components, "postal_code");
-            const city =
-              getAddressComponent(place.address_components, "locality") ||
-              getAddressComponent(place.address_components, "sublocality") ||
-              getAddressComponent(place.address_components, "administrative_area_level_2");
-            const state = getAddressComponent(place.address_components, "administrative_area_level_1", true);
-            if (zip || (lat != null && lng != null)) {
-              checkServiceArea({
-                zip,
-                city,
-                state,
-                lat: lat ?? null,
-                lng: lng ?? null,
-              });
-            }
-          }
-        });
-        setHasGoogleMaps(true);
-      } catch {
-        // Google Maps not available — fall back to plain text
       }
     }
   }, []);
 
+  // Close suggestions on outside click
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (
+        suggestionsRef.current &&
+        !suggestionsRef.current.contains(e.target as Node) &&
+        autocompleteRef.current &&
+        !autocompleteRef.current.contains(e.target as Node)
+      ) {
+        setShowSuggestions(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // Debounced ZIP-based service area check for free-text entry (no placeId)
   useEffect(() => {
     if (addressPlaceId) return;
     const zip = extractZip(address);
@@ -290,7 +363,7 @@ export function StepAddress({
       </div>
 
       {/* Address */}
-      <div>
+      <div className="relative">
         <Label className="text-xs text-muted-foreground mb-1.5 flex items-center gap-1.5">
           <MapPin className="w-3.5 h-3.5" /> Pickup Address
         </Label>
@@ -298,14 +371,53 @@ export function StepAddress({
           ref={autocompleteRef}
           value={address}
           onChange={e => {
-            onAddressChange(e.target.value, "");
+            const val = e.target.value;
+            onAddressChange(val, "");
             onServiceAreaChange(null);
+            setAutocompleteError("");
+            // Debounce autocomplete requests
+            if (debounceRef.current) clearTimeout(debounceRef.current);
+            debounceRef.current = setTimeout(() => fetchSuggestions(val), 300);
+          }}
+          onFocus={() => {
+            if (suggestions.length > 0) setShowSuggestions(true);
           }}
           placeholder="Enter your address"
           className="h-12 rounded-xl"
+          autoComplete="off"
           data-testid="input-address"
         />
-        {!hasGoogleMaps && address && !addressPlaceId && (
+
+        {/* Autocomplete dropdown */}
+        {showSuggestions && suggestions.length > 0 && (
+          <div
+            ref={suggestionsRef}
+            className="absolute z-50 left-0 right-0 mt-1 bg-card border border-border rounded-xl shadow-lg overflow-hidden"
+          >
+            {suggestions.map((s, i) => (
+              <button
+                key={s.placeId || i}
+                className="w-full text-left px-4 py-3 text-sm hover:bg-primary/10 transition-colors flex items-center gap-2 border-b border-border last:border-b-0"
+                onClick={() => handleSelectSuggestion(s)}
+                data-testid={`suggestion-${i}`}
+              >
+                <MapPin className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                <span className="truncate">{s.text}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {fetchingSuggestions && (
+          <p className="text-xs text-muted-foreground mt-1">Searching addresses...</p>
+        )}
+        {autocompleteError && (
+          <p className="text-xs text-amber-500 mt-1 flex items-center gap-1">
+            <AlertCircle className="w-3 h-3" />
+            {autocompleteError}
+          </p>
+        )}
+        {!addressPlaceId && address && address.length >= 3 && !autocompleteError && !fetchingSuggestions && !showSuggestions && (
           <p className="text-xs text-amber-500 mt-1 flex items-center gap-1">
             <AlertCircle className="w-3 h-3" />
             Enter a 5-digit ZIP so we can verify your service area

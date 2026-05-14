@@ -265,6 +265,78 @@ export function registerPaymentRoutes(app: Express) {
     res.json(payload);
   });
 
+  // ─────────────────────────────────────────────────────────
+  //  SETUP INTENT — collect a card via Stripe Elements (test mode)
+  // ─────────────────────────────────────────────────────────
+  app.post("/api/payments/setup-intent", requireAuth(), async (req, res) => {
+    if (!stripe) {
+      return res.status(503).json({ error: "Stripe is not configured on this server.", code: "STRIPE_NOT_CONFIGURED" });
+    }
+    const currentUser = (req as any).currentUser;
+
+    // Create a Stripe Customer on-the-fly so the SetupIntent can attach the card
+    let stripeCustomerId: string;
+    try {
+      const customer = await stripe.customers.create({
+        email: currentUser.email || undefined,
+        name: currentUser.name || undefined,
+        metadata: { offloadUserId: String(currentUser.id) },
+      });
+      stripeCustomerId = customer.id;
+    } catch (err: any) {
+      console.error("[Stripe] Customer creation failed:", err.message);
+      return res.status(500).json({ error: "Failed to create Stripe customer" });
+    }
+
+    try {
+      const setupIntent = await stripe.setupIntents.create({
+        customer: stripeCustomerId,
+        payment_method_types: ["card"],
+        metadata: { offloadUserId: String(currentUser.id) },
+      });
+      res.json({ clientSecret: setupIntent.client_secret });
+    } catch (err: any) {
+      console.error("[Stripe] SetupIntent creation failed:", err.message);
+      return res.status(500).json({ error: "Failed to create setup intent" });
+    }
+  });
+
+  // Save a confirmed payment method to the local DB after Stripe card setup
+  app.post("/api/payments/save-card", requireAuth(), async (req, res) => {
+    if (!stripe) {
+      return res.status(503).json({ error: "Stripe is not configured.", code: "STRIPE_NOT_CONFIGURED" });
+    }
+    const SaveCardBody = z.object({ paymentMethodId: z.string() }).strip();
+    const parsed = SaveCardBody.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Validation failed", issues: parsed.error.issues });
+    }
+    const currentUser = (req as any).currentUser;
+    const { paymentMethodId } = parsed.data;
+
+    try {
+      const pm = await stripe.paymentMethods.retrieve(paymentMethodId);
+      const card = pm.card;
+      const last4 = card?.last4 || "****";
+      const brand = card?.brand || "card";
+      const expMonth = card?.exp_month ?? 0;
+      const expYear = card?.exp_year ?? 0;
+
+      const saved = await storage.createPaymentMethod({
+        userId: currentUser.id,
+        type: "card",
+        label: `${brand.charAt(0).toUpperCase() + brand.slice(1)} ••${last4}`,
+        last4,
+        expiryDate: `${String(expMonth).padStart(2, "0")}/${expYear}`,
+        isDefault: false,
+      });
+      res.json(saved);
+    } catch (err: any) {
+      console.error("[Stripe] save-card failed:", err.message);
+      return res.status(500).json({ error: "Failed to save payment method" });
+    }
+  });
+
   app.post("/api/payments/setup-connect", requireAuth(), (_req, res) => {
     res.status(501).json({ error: "Vendor payout onboarding is not yet available. Please contact support." });
   });
