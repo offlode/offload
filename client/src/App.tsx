@@ -272,17 +272,21 @@ function AppContent() {
   const isManager = location.startsWith("/manager");
   // Chat uses its own full-screen layout but still shows the bottom nav
   const isChat = location.startsWith("/chat");
+  // Wizard and order tracking have their own header
+  const isWizard = location.startsWith("/order/new");
+  const isOrderDetail = /^\/orders\/\d+$/.test(location);
 
   // These handle their own layout
   if (isAuth || isAdmin || isStaff || isDriver || isManager) {
     return <AppRouter />;
   }
 
-  if (isChat) {
+  // Full-screen pages that manage their own header but show bottom nav
+  if (isChat || isWizard || isOrderDetail) {
     return (
       <>
         <AppRouter />
-        <BottomNav />
+        {!isWizard && <BottomNav />}
       </>
     );
   }

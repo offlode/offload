@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Home, ClipboardList, User, MessageCircle, Gift, HelpCircle } from "lucide-react";
+import { Home, ClipboardList, User, MessageCircle, Bell } from "lucide-react";
 import { useAuth } from "@/contexts/auth-context";
 import { NotificationBell } from "@/components/notification-bell";
 
@@ -7,7 +7,7 @@ const navItems = [
   { label: "Home", path: "/", icon: Home, matchPrefix: false },
   { label: "Orders", path: "/orders", icon: ClipboardList, matchPrefix: true },
   { label: "Chat", path: "/chat", icon: MessageCircle, matchPrefix: true, isCentral: true },
-  { label: "Rewards", path: "/loyalty", icon: Gift, matchPrefix: true },
+  { label: "Alerts", path: "/notifications", icon: Bell, matchPrefix: true },
   { label: "Profile", path: "/profile", icon: User, matchPrefix: true },
 ];
 
