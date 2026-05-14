@@ -108,6 +108,32 @@ export interface QuotePriceBreakdown {
   recommendedVendorName?: string | null;
 }
 
+// B1: Shared Signature Wash per-bag premium calculation.
+// Used by both calculateQuotePrice() and the order-create path so the
+// premium math lives in exactly one place.
+export function isSignatureService(serviceType: string | undefined | null): boolean {
+  return serviceType === "wash_fold_signature" || serviceType === "signature";
+}
+
+export async function calculateSignaturePremium(
+  serviceType: string | undefined | null,
+  bags: Array<{ size: string; quantity: number }> | undefined | null,
+): Promise<{ premiumDollars: number; bagCount: number }> {
+  if (!isSignatureService(serviceType) || !bags || bags.length === 0) {
+    return { premiumDollars: 0, bagCount: 0 };
+  }
+  let premiumDollars = 0;
+  let bagCount = 0;
+  for (const bagEntry of bags) {
+    const sizeKey = `${bagEntry.size}_bag` as "small_bag" | "medium_bag" | "large_bag" | "xl_bag";
+    const premiumCents = await pricingConfig.getSignaturePremiumCents(sizeKey);
+    premiumDollars += Math.round(premiumCents * bagEntry.quantity) / 100;
+    bagCount += bagEntry.quantity;
+  }
+  premiumDollars = Math.round(premiumDollars * 100) / 100;
+  return { premiumDollars, bagCount };
+}
+
 export async function calculateQuotePrice(input: {
   tierName: string;
   deliverySpeed: string;
@@ -206,17 +232,8 @@ export async function calculateQuotePrice(input: {
   }
 
   // 6a2. B1: Signature Wash per-bag premium — taxable, added to addOnsTotal
-  let signaturePremiumDollars = 0;
-  let signaturePremiumBagCount = 0;
-  if (input.serviceType === "wash_fold_signature" && input.bags && input.bags.length > 0) {
-    for (const bagEntry of input.bags) {
-      const sizeKey = `${bagEntry.size}_bag` as "small_bag" | "medium_bag" | "large_bag" | "xl_bag";
-      const premiumCents = await pricingConfig.getSignaturePremiumCents(sizeKey);
-      signaturePremiumDollars += Math.round(premiumCents * bagEntry.quantity) / 100;
-      signaturePremiumBagCount += bagEntry.quantity;
-    }
-    signaturePremiumDollars = Math.round(signaturePremiumDollars * 100) / 100;
-  }
+  const { premiumDollars: signaturePremiumDollars, bagCount: signaturePremiumBagCount } =
+    await calculateSignaturePremium(input.serviceType, input.bags);
 
   // 6b. Resolve recommended vendor (for logistics distance + traffic)
   // Used when caller didn't pass vendorLat/Lng directly.
