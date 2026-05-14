@@ -129,7 +129,7 @@ export default function LoyaltyPage() {
   const qc = useQueryClient();
   const [redeemPoints, setRedeemPoints] = useState([100]);
 
-  const { data, isLoading } = useQuery<LoyaltyData>({
+  const { data, isLoading, isError, refetch } = useQuery<LoyaltyData>({
     queryKey: ["/api/loyalty", user?.id],
     queryFn: async () => {
       const res = await apiRequest(`/api/loyalty/${user?.id}`);
@@ -165,10 +165,11 @@ export default function LoyaltyPage() {
     },
   });
 
-  const tier = data?.tier || "bronze";
-  const tierConfig = LOYALTY_TIERS[tier];
-  const currentPoints = data?.points || 0;
+  const tier = data?.tier;
+  const tierConfig = tier ? LOYALTY_TIERS[tier] : null;
+  const currentPoints = data?.points ?? 0;
   const tierProgress = (() => {
+    if (!tierConfig) return 0;
     if (!tierConfig.nextAt) return 100;
     const prev = tierConfig.minPoints;
     const range = tierConfig.nextAt - prev;
@@ -202,6 +203,23 @@ export default function LoyaltyPage() {
           <Skeleton className="h-28 w-full rounded-xl" />
           <Skeleton className="h-40 w-full rounded-xl" />
           <Skeleton className="h-64 w-full rounded-xl" />
+        </div>
+      ) : isError ? (
+        <div className="px-5">
+          <Card className="p-8 text-center" data-testid="card-loyalty-error">
+            <AlertCircle className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+            <p className="text-sm font-medium mb-1">Failed to load rewards</p>
+            <p className="text-xs text-muted-foreground mb-4">Something went wrong. Please try again.</p>
+            <Button size="sm" variant="outline" onClick={() => refetch()}>Retry</Button>
+          </Card>
+        </div>
+      ) : !data || !tierConfig ? (
+        <div className="px-5">
+          <Card className="p-8 text-center" data-testid="card-loyalty-empty">
+            <Gift className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+            <p className="text-sm font-medium mb-1">No rewards data yet</p>
+            <p className="text-xs text-muted-foreground">Complete your first order to start earning points.</p>
+          </Card>
         </div>
       ) : (
         <>
@@ -265,7 +283,7 @@ export default function LoyaltyPage() {
 
           {/* Current Perks */}
           <div className="px-5 mb-5">
-            <h2 className="text-sm font-semibold mb-3">Your {tier.charAt(0).toUpperCase() + tier.slice(1)} Perks</h2>
+            <h2 className="text-sm font-semibold mb-3">Your {tier!.charAt(0).toUpperCase() + tier!.slice(1)} Perks</h2>
             <Card className="p-4 space-y-3" data-testid="card-perks">
               {tierConfig.perks.map((perk, i) => (
                 <div key={i} className="flex items-center gap-3">

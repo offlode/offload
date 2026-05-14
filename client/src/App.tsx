@@ -14,7 +14,6 @@ import { useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
 
 import HomePage from "@/pages/home";
-import SchedulePage from "@/pages/schedule";
 import OrdersPage from "@/pages/orders";
 import OrderDetailPage from "@/pages/order-detail";
 import ProfilePage from "@/pages/profile";
@@ -53,7 +52,6 @@ import StaffQueue from "@/pages/staff/queue";
 import StaffQuality from "@/pages/staff/quality";
 import ManagerOrders from "@/pages/manager/orders";
 import ManagerPayouts from "@/pages/manager/payouts";
-import TrackingPage from "@/pages/tracking";
 import DashboardPage from "@/pages/dashboard";
 import CheckoutPage from "@/pages/checkout";
 import TrackEntryPage from "@/pages/track";
@@ -61,10 +59,23 @@ import SupportPage from "@/pages/support";
 import NotFound from "@/pages/not-found";
 import ForgotPasswordPage from "@/pages/forgot-password";
 import ResetPasswordPage from "@/pages/reset-password";
+import OrderNewPage from "@/features/wizard/OrderNewPage";
+import NotificationsPage from "@/features/notifications/NotificationsPage";
+import HelpPage from "@/features/help/HelpPage";
+import OrderTrackingPage from "@/features/tracking/OrderTrackingPage";
 
 function RequireAuth({ children, allowedRoles }: { children: React.ReactNode; allowedRoles?: string[] }) {
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, bootstrapping } = useAuth();
   const [, navigate] = useLocation();
+
+  // P0-5: Wait for auth hydration before redirecting
+  if (bootstrapping) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return <Redirect to="/login" />;
@@ -85,6 +96,10 @@ function RequireAuth({ children, allowedRoles }: { children: React.ReactNode; al
 }
 
 function AppRouter() {
+  const scheduleQuery = window.location.hash.includes("?")
+    ? window.location.hash.slice(window.location.hash.indexOf("?"))
+    : window.location.search;
+
   return (
     <Switch>
       {/* Public auth routes */}
@@ -99,13 +114,16 @@ function AppRouter() {
         {() => <RequireAuth allowedRoles={["customer"]}><HomePage /></RequireAuth>}
       </Route>
       <Route path="/schedule">
-        {() => <RequireAuth allowedRoles={["customer"]}><SchedulePage /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["customer"]}><Redirect to={`/order/new${scheduleQuery}`} /></RequireAuth>}
       </Route>
       <Route path="/orders">
         {() => <RequireAuth allowedRoles={["customer"]}><OrdersPage /></RequireAuth>}
       </Route>
+      <Route path="/order/new">
+        {() => <RequireAuth allowedRoles={["customer"]}><OrderNewPage /></RequireAuth>}
+      </Route>
       <Route path="/orders/:id">
-        {() => <RequireAuth allowedRoles={["customer"]}><OrderDetailPage /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["customer"]}><OrderTrackingPage /></RequireAuth>}
       </Route>
       <Route path="/profile">
         {() => <RequireAuth><ProfilePage /></RequireAuth>}
@@ -126,7 +144,7 @@ function AppRouter() {
         {() => <RequireAuth allowedRoles={["customer"]}><ChatPage /></RequireAuth>}
       </Route>
       <Route path="/tracking/:id">
-        {() => <RequireAuth allowedRoles={["customer"]}><TrackingPage /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["customer"]}><OrderTrackingPage /></RequireAuth>}
       </Route>
 
       {/* D4: additional customer routes */}
@@ -141,6 +159,12 @@ function AppRouter() {
       </Route>
       <Route path="/track">
         {() => <RequireAuth allowedRoles={["customer"]}><TrackEntryPage /></RequireAuth>}
+      </Route>
+      <Route path="/notifications">
+        {() => <RequireAuth allowedRoles={["customer"]}><NotificationsPage /></RequireAuth>}
+      </Route>
+      <Route path="/help">
+        {() => <RequireAuth allowedRoles={["customer"]}><HelpPage /></RequireAuth>}
       </Route>
       <Route path="/support">
         {() => <RequireAuth allowedRoles={["customer"]}><SupportPage /></RequireAuth>}
@@ -259,17 +283,21 @@ function AppContent() {
   const isManager = location.startsWith("/manager");
   // Chat uses its own full-screen layout but still shows the bottom nav
   const isChat = location.startsWith("/chat");
+  // Wizard and order tracking have their own header
+  const isWizard = location.startsWith("/order/new");
+  const isOrderDetail = /^\/orders\/\d+$/.test(location);
 
   // These handle their own layout
   if (isAuth || isAdmin || isStaff || isDriver || isManager) {
     return <AppRouter />;
   }
 
-  if (isChat) {
+  // Full-screen pages that manage their own header but show bottom nav
+  if (isChat || isWizard || isOrderDetail) {
     return (
       <>
         <AppRouter />
-        <BottomNav />
+        {!isWizard && <BottomNav />}
       </>
     );
   }

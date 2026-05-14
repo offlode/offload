@@ -1,39 +1,52 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-// Detect runtime environment:
-// 1. Native Capacitor (iOS/Android): location.protocol is "capacitor:" or "http:" with localhost — must use absolute API URL
-// 2. Deployed web: __PORT_5000__ is replaced by deploy_website with proxy path
-// 3. Local dev: __PORT_5000__ remains, falls back to relative "" (Vite proxy)
+// P0-9: Resolve API base URL
+// 1. Explicit env var (sandbox / staging)
+// 2. Native Capacitor → production API
+// 3. Relative '' for dev (Vite proxy) and web builds
 const PRODUCTION_API = "https://api.offloadusa.com";
 
-function resolveApiBase(): string {
-  if (typeof window !== "undefined") {
-    // 1. Capacitor native runtime detection (most reliable)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const cap = (window as any).Capacitor;
-    if (cap && typeof cap.isNativePlatform === "function" && cap.isNativePlatform()) {
-      return PRODUCTION_API;
-    }
-    // 2. Protocol-based detection for native shells
-    if (typeof location !== "undefined") {
-      const proto = location.protocol;
-      if (proto === "capacitor:" || proto === "ionic:" || proto === "file:") {
-        return PRODUCTION_API;
-      }
-    }
+function isNativePlatform(): boolean {
+  if (typeof window === "undefined") return false;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const cap = (window as any).Capacitor;
+  if (cap && typeof cap.isNativePlatform === "function" && cap.isNativePlatform()) return true;
+  if (typeof location !== "undefined") {
+    const proto = location.protocol;
+    if (proto === "capacitor:" || proto === "ionic:" || proto === "file:") return true;
   }
-  // 3. Web build: deploy_website replaces __PORT_5000__ at deploy time
-  return "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+  return false;
 }
 
-const API_BASE = resolveApiBase();
+const isNative = isNativePlatform();
 
-// Module-level auth token store — set via setAuthToken() from auth context
-let _authToken: string | null = null;
+const API_BASE: string =
+  (import.meta.env.VITE_API_URL as string | undefined) ||
+  (isNative ? PRODUCTION_API : "");
+
+// P0-5: Auth token persistence via localStorage
+const AUTH_TOKEN_KEY = "offload_auth_token";
+
+let _authToken: string | null =
+  typeof window !== "undefined" ? localStorage.getItem(AUTH_TOKEN_KEY) : null;
 let _currentUserId: number | null = null;
 
 export function setAuthToken(token: string | null) {
   _authToken = token;
+  if (typeof window !== "undefined") {
+    if (token) {
+      localStorage.setItem(AUTH_TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+    }
+  }
+}
+
+export function clearAuthToken() {
+  _authToken = null;
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+  }
 }
 
 export function getAuthToken(): string | null {
@@ -92,20 +105,54 @@ function handleUnauthorizedResponse(path: string, status: number) {
   }
 }
 
+// P1-16: Try to parse JSON error bodies for cleaner error messages
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
-    const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
+    const rawText = (await res.text()) || res.statusText;
+    let message = `${res.status}: ${rawText}`;
+    try {
+      const parsed = JSON.parse(rawText);
+      if (parsed.error || parsed.message) {
+        message = parsed.error || parsed.message;
+      }
+    } catch {
+      // Not JSON — keep the raw text
+    }
+    throw new Error(message);
   }
 }
 
-export async function apiRequest(path: string, options?: RequestInit): Promise<Response> {
+// P0-10: Extended apiRequest — detects FormData and skips JSON Content-Type
+export async function apiRequest(path: string, options?: RequestInit): Promise<Response>;
+export async function apiRequest(method: string, path: string, body?: unknown): Promise<Response>;
+export async function apiRequest(
+  pathOrMethod: string,
+  pathOrOptions?: string | RequestInit,
+  body?: unknown,
+): Promise<Response> {
+  let path: string;
+  let options: RequestInit | undefined;
+
+  if (typeof pathOrOptions === "string") {
+    // Called as apiRequest('POST', '/api/quotes', payload)
+    path = pathOrOptions;
+    options = {
+      method: pathOrMethod,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    };
+  } else {
+    // Called as apiRequest('/api/foo', { method: 'POST', ... })
+    path = pathOrMethod;
+    options = pathOrOptions;
+  }
+
+  const isFormData = options?.body instanceof FormData;
+
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+    ...(isFormData ? {} : { "Content-Type": "application/json" }),
     ...(options?.headers as Record<string, string>),
   };
 
-  // Inject Bearer token for native clients; browser sessions also use the HTTP-only cookie
   if (_authToken) {
     headers["Authorization"] = `Bearer ${_authToken}`;
   }

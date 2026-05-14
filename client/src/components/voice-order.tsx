@@ -30,6 +30,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { apiRequest } from "@/lib/queryClient";
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -54,8 +55,13 @@ interface Preferences {
 interface ExtractedOrder {
   serviceType: "wash_fold" | "dry_cleaning" | "comforters" | "alterations" | "mixed" | null;
   bagSize: "small" | "medium" | "large" | "xl" | null;
+  tierName?: string | null;
   deliverySpeed: "standard" | "next_day" | "same_day" | null;
   pickupAddress: string | null;
+  scheduledPickup?: string | null;
+  separated?: boolean;
+  clothingTypes?: string[];
+  special_instructions?: string | null;
   pickupWindow: PickupWindow | null;
   preferences: Preferences;
   confidence: { service: number; bagSize: number; address: number; window: number };
@@ -90,6 +96,39 @@ function isSpanishLowConfidence(extracted: ExtractedOrder | null, lang: "en" | "
   if (lang !== "es" || !extracted) return false;
   const { service, bagSize } = extracted.confidence;
   return service < CONFIDENCE_THRESHOLD || bagSize < CONFIDENCE_THRESHOLD;
+}
+
+function bagSizeFromTier(tierName: string | null | undefined): ExtractedOrder["bagSize"] {
+  if (!tierName) return null;
+  const normalized = tierName.replace(/_bag$/, "");
+  if (normalized === "small" || normalized === "medium" || normalized === "large" || normalized === "xl") {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeVoiceParseResponse(data: any, fallbackLanguage: "en" | "es"): ExtractedOrder {
+  const scheduled = data.scheduledPickup ? new Date(data.scheduledPickup) : null;
+  const pickupWindow = scheduled && !Number.isNaN(scheduled.getTime())
+    ? { date: scheduled.toISOString().split("T")[0] }
+    : null;
+
+  return {
+    serviceType: data.serviceType ?? null,
+    bagSize: data.bagSize ?? bagSizeFromTier(data.tierName),
+    tierName: data.tierName ?? null,
+    deliverySpeed: data.deliverySpeed ?? null,
+    pickupAddress: data.pickupAddress ?? null,
+    scheduledPickup: data.scheduledPickup ?? null,
+    separated: data.separated === true,
+    clothingTypes: Array.isArray(data.clothingTypes) ? data.clothingTypes : [],
+    special_instructions: data.special_instructions ?? null,
+    pickupWindow,
+    preferences: { notes: data.special_instructions ?? "" },
+    confidence: data.confidence ?? { service: 1, bagSize: 1, address: 1, window: 1 },
+    missingFields: Array.isArray(data.missingFields) ? data.missingFields : [],
+    language: data.language === "es" ? "es" : fallbackLanguage,
+  };
 }
 
 // ─── Main Component ───────────────────────────────────────────
@@ -135,12 +174,15 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
       setExtracted(null);
       setShowSpanishBeta(false);
       chunksRef.current = [];
-      // Check whether the live voice endpoint is available
+      // P1-11: Health check is advisory only — if it fails, leave mic enabled
       setVoiceAvailable(null);
-      fetch("/api/voice/health", { credentials: "include" })
+      apiRequest("/api/voice/health")
         .then((r) => r.json())
         .then((data) => setVoiceAvailable(!!data.available))
-        .catch(() => setVoiceAvailable(false));
+        .catch(() => {
+          // Advisory: don't block recording on health failure
+          setVoiceAvailable(true);
+        });
     }
   }, [open]);
 
@@ -208,38 +250,31 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
     setStep("processing");
     setProcessingLabel("Transcribing your voice…");
 
+    const formData = new FormData();
+    const ext = blob.type.includes("mp4") ? "mp4"
+      : blob.type.includes("ogg") ? "ogg"
+      : blob.type.includes("webm") ? "webm"
+      : "webm";
+    formData.append("audio", blob, `voice.${ext}`);
+    formData.append("language", lang);
+
     try {
-      // 1. Transcribe
-      const formData = new FormData();
-      const ext = blob.type.includes("mp4") ? "mp4"
-        : blob.type.includes("ogg") ? "ogg"
-        : blob.type.includes("webm") ? "webm"
-        : "webm";
-      formData.append("audio", blob, `voice.${ext}`);
+      let detectedLang: "en" | "es" = lang;
 
-      const transcribeController = new AbortController();
-      const transcribeTimeout = setTimeout(() => transcribeController.abort(), 30_000);
-
+      // P0-10: Use apiRequest with FormData (auto-detects and skips JSON Content-Type)
       let transcribeRes: Response;
       try {
-        transcribeRes = await fetch("/api/voice/transcribe", {
+        transcribeRes = await apiRequest("/api/voice/transcribe", {
           method: "POST",
           body: formData,
-          credentials: "include",
-          signal: transcribeController.signal,
         });
-      } finally {
-        clearTimeout(transcribeTimeout);
-      }
-
-      if (!transcribeRes.ok) {
-        const err = await transcribeRes.json().catch(() => ({}));
-        if (transcribeRes.status === 429) {
+      } catch (err: any) {
+        if (err.message?.includes("429")) {
           toast({ title: "Too many requests", description: "Wait a moment and try again.", variant: "destructive" });
           setStep("record");
           return;
         }
-        throw new Error(err.error || "Transcription failed");
+        throw err;
       }
 
       const transcribeData = await transcribeRes.json();
@@ -254,35 +289,28 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
         return;
       }
 
-      const text: string = transcribeData.text || "";
-      const detectedLang: "en" | "es" = transcribeData.language || "en";
+      const text = transcribeData.text || "";
+      detectedLang = transcribeData.language === "es" ? "es" : "en";
       setTranscript(text);
+
+      // P1-10: Guard empty transcription
+      if (!text.trim()) {
+        toast({ title: "We didn't catch that — try again", variant: "destructive" });
+        setStep("record");
+        return;
+      }
 
       setProcessingLabel("Extracting order details…");
 
-      // 2. Extract
-      const extractController = new AbortController();
-      const extractTimeout = setTimeout(() => extractController.abort(), 30_000);
+      // P0-10: Use apiRequest for parse endpoint
+      const parseRes = await apiRequest("POST", "/api/voice/parse", {
+        transcription: text,
+        language: detectedLang,
+      });
 
-      let extractRes: Response;
-      try {
-        extractRes = await fetch("/api/voice/extract", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript: text, language: detectedLang }),
-          signal: extractController.signal,
-        });
-      } finally {
-        clearTimeout(extractTimeout);
-      }
-
-      if (!extractRes.ok) {
-        const err = await extractRes.json().catch(() => ({}));
-        throw new Error(err.error || "Extraction failed");
-      }
-
-      const extractedData: ExtractedOrder = await extractRes.json();
+      const parseData = await parseRes.json();
+      detectedLang = parseData.language === "es" ? "es" : detectedLang;
+      const extractedData = normalizeVoiceParseResponse(parseData, detectedLang);
 
       // Check Spanish low-confidence
       if (lang === "es" && isSpanishLowConfidence(extractedData, detectedLang)) {
@@ -302,7 +330,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
               .join(" – ")
           : "",
       );
-      setEditNotes(extractedData.preferences?.notes || "");
+      setEditNotes(extractedData.special_instructions || extractedData.preferences?.notes || "");
       setExtracted(extractedData);
       setStep("confirm");
     } catch (err: any) {
@@ -320,13 +348,18 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
   }
 
   function handleContinue() {
-    // Prefill schedule page via window globals (same pattern as __offload_wash_type)
-    const tierName = mapBagSize(editBagSize || extracted?.bagSize || null);
+    // Prefill the order wizard via window globals.
+    const tierName = extracted?.tierName || mapBagSize(editBagSize || extracted?.bagSize || null);
     const speed = mapDeliverySpeed(editDeliverySpeed || extracted?.deliverySpeed || null);
 
     (window as any).__offload_voice_prefill = {
       tierName,
       deliverySpeed: speed,
+      separated: extracted?.separated,
+      clothingTypes: extracted?.clothingTypes ?? [],
+      pickupAddress: editPickupAddress || extracted?.pickupAddress,
+      scheduledPickup: extracted?.scheduledPickup,
+      special_instructions: editNotes || extracted?.special_instructions,
       pickupDate: editPickupDate,
       pickupTimeWindow: editPickupWindow,
       customerNotes: editNotes,
@@ -334,7 +367,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
       serviceType: editServiceType || extracted?.serviceType,
     };
 
-    navigate("/schedule");
+    navigate("/order/new");
     onClose();
   }
 
@@ -345,12 +378,13 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="voice-order-title">
       <Card className="w-full max-w-sm p-6 relative overflow-y-auto max-h-[90vh]">
         {/* Close */}
         <button
           onClick={() => { stopRecording(); onClose(); }}
-          className="absolute top-3 right-3 w-8 h-8 rounded-full flex items-center justify-center hover:bg-muted transition-colors"
+          className="absolute top-3 right-3 w-11 h-11 rounded-full flex items-center justify-center hover:bg-muted transition-colors"
+          aria-label="Close voice order"
           data-testid="button-close-voice"
         >
           <X className="w-4 h-4" />
@@ -361,7 +395,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
           <>
             <div className="text-center mb-5">
               <div className="flex items-center justify-center gap-2 mb-1">
-                <h3 className="text-lg font-bold">Order by Voice</h3>
+                <h3 id="voice-order-title" className="text-lg font-bold">Order by Voice</h3>
                 <Badge
                   variant="secondary"
                   className="text-[10px] px-2 py-0.5 bg-red-500/15 text-red-600 border border-red-500/25"
@@ -400,7 +434,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
               <button
                 onClick={() => setLang("en")}
                 className={cn(
-                  "px-3 py-1 rounded-full text-xs font-medium transition-all",
+                  "px-4 py-2 min-h-[44px] rounded-full text-xs font-medium transition-all",
                   lang === "en"
                     ? "bg-primary text-white"
                     : "bg-muted text-muted-foreground hover:bg-muted/80",
@@ -412,15 +446,14 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
               <button
                 onClick={() => setLang("es")}
                 className={cn(
-                  "px-3 py-1 rounded-full text-xs font-medium transition-all flex items-center gap-1",
+                  "px-4 py-2 min-h-[44px] rounded-full text-xs font-medium transition-all flex items-center gap-1",
                   lang === "es"
                     ? "bg-primary text-white"
                     : "bg-muted text-muted-foreground hover:bg-muted/80",
                 )}
                 data-testid="button-lang-es"
               >
-                Español
-                <span className="text-[9px] opacity-70">β</span>
+                Español <span className="text-[10px] font-semibold opacity-90">(beta)</span>
               </button>
             </div>
 
@@ -475,9 +508,14 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
             )}
 
             {!isRecording && voiceAvailable !== false && (
-              <p className="text-center text-xs text-muted-foreground">
-                Example: "I need a medium bag, wash and fold, standard delivery"
-              </p>
+              <>
+                <p className="text-center text-xs text-muted-foreground">
+                  Example: "I need a medium bag, wash and fold, standard delivery"
+                </p>
+                <p className="text-center text-xs text-muted-foreground mt-1 italic">
+                  We won't show a price until you review
+                </p>
+              </>
             )}
             {/* Language note always visible */}
             {voiceAvailable !== false && (
@@ -514,7 +552,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
               </div>
               {transcript && (
                 <p className="text-xs text-muted-foreground italic mb-2">
-                  "{transcript}"
+                  <span className="font-semibold not-italic">We heard:</span> "{transcript}"
                 </p>
               )}
               {showSpanishBeta && (
@@ -535,6 +573,9 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
               <p className="text-xs text-muted-foreground">
                 Edit any field, then tap Continue.
               </p>
+              <p className="text-xs text-muted-foreground italic mt-1">
+                We won't show a price until you review
+              </p>
             </div>
 
             <div className="space-y-3">
@@ -543,13 +584,13 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
                 <div className="flex items-center gap-2 mb-1">
                   <Label className="text-xs font-medium">Service Type</Label>
                   {isMissing("serviceType") && (
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-amber-600 border-amber-400">
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-400 border border-amber-500/30">
                       needs your input
                     </Badge>
                   )}
                 </div>
                 <Select value={editServiceType} onValueChange={setEditServiceType}>
-                  <SelectTrigger className="h-9 text-sm" data-testid="select-service-type">
+                  <SelectTrigger className="h-11 text-sm" data-testid="select-service-type">
                     <SelectValue placeholder="Select service…" />
                   </SelectTrigger>
                   <SelectContent>
@@ -567,20 +608,20 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
                 <div className="flex items-center gap-2 mb-1">
                   <Label className="text-xs font-medium">Bag Size</Label>
                   {isMissing("bagSize") && (
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-amber-600 border-amber-400">
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-400 border border-amber-500/30">
                       needs your input
                     </Badge>
                   )}
                 </div>
                 <Select value={editBagSize} onValueChange={setEditBagSize}>
-                  <SelectTrigger className="h-9 text-sm" data-testid="select-bag-size">
+                  <SelectTrigger className="h-11 text-sm" data-testid="select-bag-size">
                     <SelectValue placeholder="Select bag size…" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="small">Small (~10-15 lbs)</SelectItem>
-                    <SelectItem value="medium">Medium (~20-25 lbs)</SelectItem>
-                    <SelectItem value="large">Large (~30-35 lbs)</SelectItem>
-                    <SelectItem value="xl">XL (~40+ lbs)</SelectItem>
+                    <SelectItem value="small">Small — up to 10 lbs ($24.99)</SelectItem>
+                    <SelectItem value="medium">Medium — up to 20 lbs ($44.99)</SelectItem>
+                    <SelectItem value="large">Large — up to 30 lbs ($59.99)</SelectItem>
+                    <SelectItem value="xl">XL — up to 50 lbs ($89.99)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -590,13 +631,13 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
                 <div className="flex items-center gap-2 mb-1">
                   <Label className="text-xs font-medium">Delivery Speed</Label>
                   {isMissing("deliverySpeed") && (
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-amber-600 border-amber-400">
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-400 border border-amber-500/30">
                       needs your input
                     </Badge>
                   )}
                 </div>
                 <Select value={editDeliverySpeed} onValueChange={setEditDeliverySpeed}>
-                  <SelectTrigger className="h-9 text-sm" data-testid="select-delivery-speed">
+                  <SelectTrigger className="h-11 text-sm" data-testid="select-delivery-speed">
                     <SelectValue placeholder="Select speed…" />
                   </SelectTrigger>
                   <SelectContent>
@@ -612,13 +653,13 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
                 <div className="flex items-center gap-2 mb-1">
                   <Label className="text-xs font-medium">Pickup Address</Label>
                   {isMissing("pickupAddress") && (
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-amber-600 border-amber-400">
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-400 border border-amber-500/30">
                       needs your input
                     </Badge>
                   )}
                 </div>
                 <Input
-                  className="h-9 text-sm"
+                  className="h-11 text-sm"
                   placeholder="e.g. 123 Main St, Brooklyn"
                   value={editPickupAddress}
                   onChange={(e) => setEditPickupAddress(e.target.value)}
@@ -631,13 +672,13 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
                 <div className="flex items-center gap-2 mb-1">
                   <Label className="text-xs font-medium">Pickup Date</Label>
                   {isMissing("pickupWindow") && (
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-amber-600 border-amber-400">
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-400 border border-amber-500/30">
                       needs your input
                     </Badge>
                   )}
                 </div>
                 <Input
-                  className="h-9 text-sm"
+                  className="h-11 text-sm"
                   type="date"
                   value={editPickupDate}
                   onChange={(e) => setEditPickupDate(e.target.value)}
@@ -649,7 +690,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
               <div>
                 <Label className="text-xs font-medium mb-1 block">Pickup Time Window</Label>
                 <Input
-                  className="h-9 text-sm"
+                  className="h-11 text-sm"
                   placeholder="e.g. 8 AM – 10 AM"
                   value={editPickupWindow}
                   onChange={(e) => setEditPickupWindow(e.target.value)}
@@ -661,7 +702,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
               <div>
                 <Label className="text-xs font-medium mb-1 block">Notes / Preferences</Label>
                 <Input
-                  className="h-9 text-sm"
+                  className="h-11 text-sm"
                   placeholder="e.g. warm water, unscented detergent"
                   value={editNotes}
                   onChange={(e) => setEditNotes(e.target.value)}
@@ -677,7 +718,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
                 data-testid="button-confirm-voice"
               >
                 <ArrowRight className="w-4 h-4 mr-2" />
-                Continue to Schedule
+                Continue to Order
               </Button>
               <Button
                 variant="ghost"

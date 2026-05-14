@@ -19,24 +19,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/auth-context";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { friendlyStatus, STATUS_STYLES } from "@/lib/order-status";
 import type { Order, Vendor, Message } from "@shared/schema";
-
-const STATUS_STYLES: Record<string, string> = {
-  pending: "bg-amber-500/15 text-amber-400",
-  confirmed: "bg-blue-500/15 text-blue-400",
-  driver_assigned: "bg-blue-500/15 text-blue-400",
-  pickup_in_progress: "bg-blue-500/15 text-blue-400",
-  picked_up: "bg-cyan-500/15 text-cyan-400",
-  at_laundromat: "bg-primary/15 text-primary",
-  washing: "bg-primary/15 text-primary",
-  wash_complete: "bg-primary/15 text-primary",
-  packing: "bg-primary/15 text-primary",
-  ready_for_delivery: "bg-sky-500/15 text-sky-400",
-  out_for_delivery: "bg-blue-500/15 text-blue-400",
-  delivered: "bg-emerald-500/15 text-emerald-400",
-  cancelled: "bg-red-500/15 text-red-400",
-  disputed: "bg-orange-500/15 text-orange-400",
-};
 
 const CANCELLABLE = ["pending", "confirmed", "driver_assigned"];
 
@@ -56,29 +40,6 @@ const STATUS_PROGRESS: Record<string, number> = {
   cancelled: 0,
   disputed: 100,
 };
-
-const FRIENDLY_STATUS: Record<string, string> = {
-  pending: "Pending",
-  confirmed: "Confirmed",
-  driver_assigned: "Driver assigned",
-  driver_en_route_pickup: "Driver picking up",
-  pickup_in_progress: "Picking up",
-  picked_up: "Picked up",
-  at_laundromat: "At laundromat",
-  washing: "Being washed",
-  wash_complete: "Wash complete",
-  packing: "Packing",
-  ready_for_delivery: "Ready for delivery",
-  out_for_delivery: "Out for delivery",
-  driver_en_route_delivery: "Driver delivering",
-  delivered: "Delivered",
-  cancelled: "Cancelled",
-  disputed: "Disputed",
-};
-
-function formatStatus(s: string) {
-  return FRIENDLY_STATUS[s] || s.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-}
 
 type FilterTab = "all" | "active" | "completed" | "cancelled";
 
@@ -236,7 +197,7 @@ export default function OrdersPage() {
               <div key={order.id}>
                 <Link href={`/orders/${order.id}`}>
                   <Card
-                    className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 hover:shadow-[0_0_20px_rgba(123,92,246,0.08)] active:scale-[0.99]"
+                    className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 hover:shadow-[0_0_20px_rgba(124,58,237,0.08)] active:scale-[0.99]"
                     data-testid={`card-order-${order.id}`}
                   >
                     <div className="flex items-start gap-3">
@@ -265,7 +226,7 @@ export default function OrdersPage() {
                             variant="secondary"
                             className={`text-[10px] ${STATUS_STYLES[order.status] || "bg-muted"}`}
                           >
-                            {formatStatus(order.status)}
+                            {friendlyStatus(order.status)}
                           </Badge>
                         </div>
 
@@ -329,12 +290,12 @@ export default function OrdersPage() {
             </p>
             <p className="text-sm text-muted-foreground mb-4">
               {filter === "all"
-                ? "Schedule your first pickup and we'll take it from here."
-                : "Nothing to show for this filter."}
+                ? "Schedule your first pickup and we'll take care of the rest. Choose your bag size, customize your wash, and pick a time that works for you."
+                : "Nothing to show for this filter. Try switching to a different tab."}
             </p>
             {filter === "all" && (
-              <Link href="/schedule">
-                <Button data-testid="button-schedule-first">Schedule Pickup</Button>
+              <Link href="/order/new">
+                <Button data-testid="button-schedule-first">Schedule a Pickup</Button>
               </Link>
             )}
           </Card>

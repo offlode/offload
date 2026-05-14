@@ -13,9 +13,7 @@ export default function RegisterPage() {
   const { register: authRegister, setUser } = useAuth();
   const { toast } = useToast();
 
-  // Read role from window (set by role-select page) — wouter hash routing
-  // doesn't support query params in hash paths reliably
-  const role = (window as any).__offload_register_role || "customer";
+  const role = sessionStorage.getItem("offload_register_role") || "customer";
 
   const roleLabelMap: Record<string, string> = {
     customer: "Customer",
@@ -30,8 +28,26 @@ export default function RegisterPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<FieldError[]>([]);
+
+  // Password strength meter
+  const getPasswordStrength = (pw: string): { score: number; label: string; color: string } => {
+    if (!pw) return { score: 0, label: "", color: "" };
+    let score = 0;
+    if (pw.length >= 8) score++;
+    if (pw.length >= 12) score++;
+    if (/[A-Z]/.test(pw)) score++;
+    if (/[0-9]/.test(pw)) score++;
+    if (/[^A-Za-z0-9]/.test(pw)) score++;
+    if (score <= 1) return { score: 20, label: "Weak", color: "bg-red-500" };
+    if (score <= 2) return { score: 40, label: "Fair", color: "bg-orange-500" };
+    if (score <= 3) return { score: 60, label: "Good", color: "bg-yellow-500" };
+    if (score <= 4) return { score: 80, label: "Strong", color: "bg-emerald-500" };
+    return { score: 100, label: "Very strong", color: "bg-emerald-600" };
+  };
+  const passwordStrength = getPasswordStrength(password);
 
   const clearError = (field: string) => {
     setFieldErrors((prev) => prev.filter((e) => e.field !== field));
@@ -43,9 +59,10 @@ export default function RegisterPage() {
     if (!fullName.trim()) errors.push({ field: "fullName", message: "Full name is required" });
     if (!email.trim()) errors.push({ field: "email", message: "Email is required" });
     if (!password.trim()) errors.push({ field: "password", message: "Password is required" });
-    else if (password.length < 6) errors.push({ field: "password", message: "Password must be at least 6 characters" });
+    else if (password.length < 8) errors.push({ field: "password", message: "Password must be at least 8 characters" });
     if (!confirmPassword.trim()) errors.push({ field: "confirmPassword", message: "Please confirm your password" });
     else if (password !== confirmPassword) errors.push({ field: "confirmPassword", message: "Passwords do not match" });
+    if (!agreedToTerms) errors.push({ field: "terms", message: "You must agree to the Terms of Service" });
     if (errors.length > 0) {
       setFieldErrors(errors);
       scrollToFirstError(errors);
@@ -63,8 +80,8 @@ export default function RegisterPage() {
         role: role === "staff" ? "laundromat" : role,
       });
 
-      // Clean up role from window
-      delete (window as any).__offload_register_role;
+      // Clean up role from sessionStorage
+      sessionStorage.removeItem("offload_register_role");
 
       toast({ title: `Welcome to Offload, ${user.name.split(" ")[0]}!`, description: "Your account is ready. Let's get started." });
 
@@ -222,6 +239,24 @@ export default function RegisterPage() {
             <InlineFieldError field="password" errors={fieldErrors} />
           </div>
 
+          {/* Password Strength Meter */}
+          {password.length > 0 && (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Password strength</span>
+                <span className={`text-xs font-medium ${passwordStrength.score >= 60 ? "text-emerald-500" : passwordStrength.score >= 40 ? "text-orange-500" : "text-red-500"}`}>
+                  {passwordStrength.label}
+                </span>
+              </div>
+              <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${passwordStrength.color}`}
+                  style={{ width: `${passwordStrength.score}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           {/* Confirm Password */}
           <div className="relative">
             <label htmlFor="confirm-password" className="sr-only">Confirm Password</label>
@@ -245,6 +280,26 @@ export default function RegisterPage() {
               {showConfirmPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
             </button>
             <InlineFieldError field="confirmPassword" errors={fieldErrors} />
+          </div>
+
+          {/* Terms Checkbox */}
+          <div>
+            <label className="flex items-start gap-2 cursor-pointer" data-field="terms">
+              <input
+                type="checkbox"
+                checked={agreedToTerms}
+                onChange={(e) => { setAgreedToTerms(e.target.checked); clearError("terms"); }}
+                className="mt-0.5 w-4 h-4 rounded border-border accent-primary"
+                data-testid="checkbox-terms"
+              />
+              <span className="text-xs text-muted-foreground leading-snug">
+                I agree to the{" "}
+                <a href="/terms" className="text-primary hover:underline font-medium">Terms of Service</a>
+                {" "}and{" "}
+                <a href="/privacy" className="text-primary hover:underline font-medium">Privacy Policy</a>
+              </span>
+            </label>
+            <InlineFieldError field="terms" errors={fieldErrors} />
           </div>
 
           {/* Sign Up Button */}

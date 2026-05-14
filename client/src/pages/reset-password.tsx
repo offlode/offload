@@ -61,7 +61,7 @@ export default function ResetPasswordPage() {
 
   if (success) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[#010101] p-4">
+      <div className="min-h-screen flex items-center justify-center bg-background p-4">
         <div className="w-full max-w-md space-y-6 text-center">
           <div className="w-16 h-16 rounded-full bg-green-500/20 flex items-center justify-center mx-auto">
             <svg className="w-8 h-8 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -69,11 +69,9 @@ export default function ResetPasswordPage() {
             </svg>
           </div>
           <h1 className="text-2xl font-bold text-white">Password reset</h1>
-          <p className="text-[#999] text-sm">Your password has been updated. Redirecting to login...</p>
-          <Link href="/login">
-            <a className="inline-block mt-4 text-[#5B4BC4] hover:text-[#5B4BC4]/80 text-sm font-medium transition-colors">
+          <p className="text-muted-foreground text-sm">Your password has been updated. Redirecting to login...</p>
+          <Link href="/login" className="inline-block mt-4 text-primary hover:text-primary/80 text-sm font-medium transition-colors">
               Go to login now
-            </a>
           </Link>
 
         </div>
@@ -82,11 +80,11 @@ export default function ResetPasswordPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#010101] p-4">
+    <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <div className="w-full max-w-md space-y-6">
         <div className="text-center space-y-2">
           <h1 className="text-2xl font-bold text-white">Choose a new password</h1>
-          <p className="text-[#999] text-sm">Enter your new password below.</p>
+          <p className="text-muted-foreground text-sm">Enter your new password below.</p>
         </div>
 
         {serverError && (
@@ -97,7 +95,7 @@ export default function ResetPasswordPage() {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label htmlFor="password" className="block text-sm font-medium text-[#ccc] mb-1.5">
+            <label htmlFor="password" className="block text-sm font-medium text-foreground mb-1.5">
               New password
             </label>
             <div className="relative">
@@ -108,15 +106,15 @@ export default function ResetPasswordPage() {
                 value={password}
                 onChange={(e) => { setPassword(e.target.value); setErrors(prev => ({ ...prev, password: "" })); }}
                 placeholder="At least 8 characters"
-                className={`w-full px-4 py-3 pr-12 rounded-lg bg-[#1A1A1A] border text-white placeholder:text-[#666] focus:outline-none focus:ring-2 focus:ring-[#5B4BC4] transition-colors ${
-                  errors.password ? "border-red-500" : "border-[#2E2E2E]"
+                className={`w-full px-4 py-3 pr-12 rounded-lg bg-card border text-white placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary transition-colors ${
+                  errors.password ? "border-red-500" : "border-border"
                 }`}
 
               />
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-[#666] hover:text-[#999] transition-colors"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-muted-foreground transition-colors"
               >
                 {showPassword ? (
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" /></svg>
@@ -131,7 +129,7 @@ export default function ResetPasswordPage() {
           </div>
 
           <div>
-            <label htmlFor="confirm" className="block text-sm font-medium text-[#ccc] mb-1.5">
+            <label htmlFor="confirm" className="block text-sm font-medium text-foreground mb-1.5">
               Confirm password
             </label>
             <input
@@ -141,8 +139,8 @@ export default function ResetPasswordPage() {
               value={confirmPassword}
               onChange={(e) => { setConfirmPassword(e.target.value); setErrors(prev => ({ ...prev, confirm: "" })); }}
               placeholder="Type your password again"
-              className={`w-full px-4 py-3 rounded-lg bg-[#1A1A1A] border text-white placeholder:text-[#666] focus:outline-none focus:ring-2 focus:ring-[#5B4BC4] transition-colors ${
-                errors.confirm ? "border-red-500" : "border-[#2E2E2E]"
+              className={`w-full px-4 py-3 rounded-lg bg-card border text-white placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary transition-colors ${
+                errors.confirm ? "border-red-500" : "border-border"
               }`}
             />
             {errors.confirm && (
@@ -154,17 +152,15 @@ export default function ResetPasswordPage() {
             type="submit"
             data-testid="button-submit"
             disabled={loading}
-            className="w-full py-3 rounded-lg bg-[#5B4BC4] hover:bg-[#4A3BA3] text-white font-semibold text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full py-3 rounded-lg bg-primary hover:bg-primary/90 text-white font-semibold text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? "Resetting..." : "Reset password"}
           </button>
         </form>
 
         <div className="text-center">
-          <Link href="/login">
-            <a className="text-[#5B4BC4] hover:text-[#5B4BC4]/80 text-sm font-medium transition-colors">
+          <Link href="/login" className="text-primary hover:text-primary/80 text-sm font-medium transition-colors">
               &larr; Back to login
-            </a>
           </Link>
         </div>
 

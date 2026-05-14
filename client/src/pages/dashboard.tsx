@@ -10,45 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/contexts/auth-context";
 import { apiRequest } from "@/lib/queryClient";
+import { friendlyStatus, STATUS_STYLES } from "@/lib/order-status";
 import type { Order } from "@shared/schema";
-
-const FRIENDLY_STATUS: Record<string, string> = {
-  pending: "Pending",
-  confirmed: "Confirmed",
-  driver_assigned: "Driver Assigned",
-  pickup_in_progress: "Picking Up",
-  picked_up: "Picked Up",
-  at_laundromat: "At Laundromat",
-  washing: "Being Washed",
-  wash_complete: "Wash Complete",
-  packing: "Packing",
-  ready_for_delivery: "Ready for Delivery",
-  out_for_delivery: "Out for Delivery",
-  delivered: "Delivered",
-  cancelled: "Cancelled",
-  disputed: "Disputed",
-};
-
-const STATUS_STYLES: Record<string, string> = {
-  pending: "bg-amber-500/15 text-amber-400",
-  confirmed: "bg-blue-500/15 text-blue-400",
-  driver_assigned: "bg-blue-500/15 text-blue-400",
-  pickup_in_progress: "bg-blue-500/15 text-blue-400",
-  picked_up: "bg-cyan-500/15 text-cyan-400",
-  at_laundromat: "bg-primary/15 text-primary",
-  washing: "bg-primary/15 text-primary",
-  wash_complete: "bg-primary/15 text-primary",
-  packing: "bg-primary/15 text-primary",
-  ready_for_delivery: "bg-sky-500/15 text-sky-400",
-  out_for_delivery: "bg-blue-500/15 text-blue-400",
-  delivered: "bg-emerald-500/15 text-emerald-400",
-  cancelled: "bg-red-500/15 text-red-400",
-  disputed: "bg-orange-500/15 text-orange-400",
-};
-
-function friendlyStatus(s: string) {
-  return FRIENDLY_STATUS[s] || s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 function getGreeting() {
   const hour = new Date().getHours();

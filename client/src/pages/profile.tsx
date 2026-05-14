@@ -1,12 +1,13 @@
-import { useState } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import {
   User, Package, DollarSign, Star, Heart, MapPin, CreditCard,
   Bell, Shield, Settings, HelpCircle, LogOut, ChevronRight,
   Truck, Sun, Moon, LayoutDashboard, X, Check, ChevronDown, ArrowLeft,
-  Trash2
+  Trash2, Lock, Smartphone, QrCode, Copy, Loader2
 } from "lucide-react";
+import { CertifiedPanel } from "@/components/ui/certified-panel";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -78,9 +79,28 @@ export default function ProfilePage() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [washPrefsOpen, setWashPrefsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+
+  // C4: Handle ?openWashPrefs=1&returnTo=wizard URL params
+  const [returnToWizard, setReturnToWizard] = useState(false);
+  useEffect(() => {
+    const hashSearch = window.location.hash.split("?")[1] || "";
+    const params = new URLSearchParams(hashSearch);
+    if (params.get("openWashPrefs") === "1") {
+      setWashPrefsOpen(true);
+      if (params.get("returnTo") === "wizard") {
+        setReturnToWizard(true);
+      }
+    }
+  }, []);
   const [signOutOpen, setSignOutOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [accountDeleted, setAccountDeleted] = useState(false);
+  const [twoFAOpen, setTwoFAOpen] = useState(false);
+  const [twoFASecret, setTwoFASecret] = useState<{ qrUrl: string; secret: string; backupCodes: string[] } | null>(null);
+  const [twoFACode, setTwoFACode] = useState("");
+  const [twoFASetupDone, setTwoFASetupDone] = useState(false);
+  const [disable2FAOpen, setDisable2FAOpen] = useState(false);
+  const [disable2FACode, setDisable2FACode] = useState("");
   const [editName, setEditName] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [editPhone, setEditPhone] = useState("");
@@ -103,13 +123,65 @@ export default function ProfilePage() {
     updateUserMutation.mutate();
   };
 
-  // Notification prefs (in React state since no backend)
-  const [notifPrefs, setNotifPrefs] = useState({
-    orderUpdates: true,
-    promotions: true,
-    driverMessages: true,
-    email: true,
-    push: true,
+  // Notification prefs from backend
+  const notifDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const { data: notifPrefs } = useQuery<{
+    emailEnabled: boolean;
+    smsEnabled: boolean;
+    pushEnabled: boolean;
+    orderUpdates: boolean;
+    promotions: boolean;
+    weeklyDigest: boolean;
+  }>({
+    queryKey: ["/api/notification-preferences"],
+    queryFn: async () => {
+      const res = await apiRequest("/api/notification-preferences");
+      return res.json();
+    },
+    enabled: !!userId,
+  });
+
+  const notifMutation = useMutation({
+    mutationFn: async (prefs: {
+      emailEnabled: boolean;
+      smsEnabled: boolean;
+      pushEnabled: boolean;
+      orderUpdates: boolean;
+      promotions: boolean;
+      weeklyDigest: boolean;
+    }) => {
+      const res = await apiRequest("/api/notification-preferences", {
+        method: "PUT",
+        body: JSON.stringify(prefs),
+      });
+      return res.json();
+    },
+    onError: (err: Error) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/notification-preferences"] });
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const handleNotifToggle = useCallback(
+    (key: string, value: boolean) => {
+      if (!notifPrefs) return;
+      const updated = { ...notifPrefs, [key]: value };
+      // Optimistic update
+      queryClient.setQueryData(["/api/notification-preferences"], updated);
+      // Debounce the PUT call
+      if (notifDebounceRef.current) clearTimeout(notifDebounceRef.current);
+      notifDebounceRef.current = setTimeout(() => {
+        notifMutation.mutate(updated);
+      }, 500);
+    },
+    [notifPrefs, notifMutation],
+  );
+
+  // Certified vendor preference (controlled, persisted in localStorage)
+  const [certifiedOnly, setCertifiedOnly] = useState<boolean>(() => {
+    const stored = localStorage.getItem("offload_certified_only");
+    return stored !== null ? stored === "true" : true;
   });
 
   // Wash prefs (in React state)
@@ -118,6 +190,8 @@ export default function ProfilePage() {
     foldingStyle: "standard",
     hangers: false,
     fragrance: true,
+    waterTemp: "cold",
+    dryTemp: "medium",
   });
 
   const { data: user, isLoading: userLoading } = useQuery<UserType>({
@@ -128,6 +202,30 @@ export default function ProfilePage() {
     },
     enabled: !!userId,
   });
+
+  // Check if user already has 2FA enabled
+  useEffect(() => {
+    if (user && (user as any).twoFactorEnabled) {
+      setTwoFASetupDone(true);
+    }
+  }, [user]);
+
+  // Initialize wash prefs from saved user preferences
+  useEffect(() => {
+    if (!user) return;
+    const saved = (user as any)?.preferences;
+    if (saved && typeof saved === "object" && Object.keys(saved).length > 0) {
+      setWashPrefs(prev => ({
+        ...prev,
+        detergent: saved.detergent || prev.detergent,
+        foldingStyle: saved.foldingStyle || prev.foldingStyle,
+        hangers: typeof saved.hangers === "boolean" ? saved.hangers : prev.hangers,
+        fragrance: typeof saved.fragrance === "boolean" ? saved.fragrance : prev.fragrance,
+        waterTemp: saved.waterTemp || prev.waterTemp,
+        dryTemp: saved.dryTemp || prev.dryTemp,
+      }));
+    }
+  }, [user]);
 
   const { data: addresses } = useQuery<Address[]>({
     queryKey: ["/api/addresses", userId],
@@ -197,6 +295,12 @@ export default function ProfilePage() {
       queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
       setWashPrefsOpen(false);
       toast({ title: "Preferences saved", description: "Your wash preferences have been updated." });
+      // C4: if we were redirected here from the wizard, go back
+      if (returnToWizard) {
+        setReturnToWizard(false);
+        // Delay navigation so user sees the toast and the sheet close animation finishes
+        setTimeout(() => navigate("/order/new"), 600);
+      }
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -220,6 +324,70 @@ export default function ProfilePage() {
       toast({ title: "Failed to delete account", description: err.message, variant: "destructive" });
     },
   });
+
+  // 2FA setup
+  const twoFASetupMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("/api/2fa/setup", { method: "POST" });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      const uri = data.uri || "";
+      const qrUrl = uri
+        ? `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(uri)}`
+        : "";
+      setTwoFASecret({
+        qrUrl,
+        secret: data.secret || "",
+        backupCodes: data.backupCodes || [],
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "2FA setup failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const twoFAVerifyMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("/api/2fa/verify", {
+        method: "POST",
+        body: JSON.stringify({ token: twoFACode }),
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      setTwoFASetupDone(true);
+      toast({ title: "2FA enabled", description: "Your account is now protected with two-factor authentication." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Invalid code", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const disable2FAMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("/api/2fa", {
+        method: "DELETE",
+        body: JSON.stringify({ token: disable2FACode }),
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      setTwoFASetupDone(false);
+      setDisable2FAOpen(false);
+      setDisable2FACode("");
+      toast({ title: "2FA disabled", description: "Two-factor authentication has been removed from your account." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to disable 2FA", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // Favorite vendor = most-used or highest-rated from order history
+  const favoriteVendor = vendors?.reduce((best: any, v: any) => {
+    if (!best) return v;
+    return (v.rating || 0) > (best.rating || 0) ? v : best;
+  }, null);
 
   // Use authoritative user account data, fallback to computed from orders
   const totalOrders = user?.totalOrders || orders?.length || 0;
@@ -288,24 +456,44 @@ export default function ProfilePage() {
             <StatCard
               icon={<Package className="w-5 h-5" />}
               label="Orders"
-              value={String(totalOrders)}
+              value={userLoading ? "--" : String(totalOrders)}
               color="bg-emerald-500/15 text-emerald-400"
             />
             <StatCard
               icon={<DollarSign className="w-5 h-5" />}
               label="Total Spent"
-              value={`$${totalSpent.toFixed(2)}`}
+              value={userLoading ? "--" : `$${totalSpent.toFixed(2)}`}
               color="bg-emerald-500/15 text-emerald-400"
             />
-            <StatCard
-              icon={<Star className="w-5 h-5" />}
-              label="Rating"
-              value={String(user?.rating || 5.0)}
-              color="bg-amber-500/15 text-amber-400"
-            />
+            <div aria-label={user?.rating != null ? `Rating: ${Number(user.rating).toFixed(1)} out of 5` : "Rating not available"}>
+              <StatCard
+                icon={<Star className="w-5 h-5" />}
+                label="Rating"
+                value={user?.rating != null ? Number(user.rating).toFixed(1) : "--"}
+                color="bg-amber-500/15 text-amber-400"
+              />
+            </div>
           </div>
         </Card>
       </div>
+
+      {/* Favorite Vendor Badge */}
+      {favoriteVendor && (
+        <div className="px-5 mb-4">
+          <Card className="p-4 border-amber-500/20 bg-amber-500/5">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-amber-500/10 flex items-center justify-center">
+                <Star className="w-5 h-5 text-amber-500" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-amber-500 font-semibold">Top-rated vendor</p>
+                <p className="text-sm font-bold">{favoriteVendor.name}</p>
+                <p className="text-xs text-muted-foreground">{favoriteVendor.rating?.toFixed(1)}★ · {favoriteVendor.reviewCount || 0} reviews</p>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
 
       {/* Quick Actions */}
       <div className="px-5 mb-4">
@@ -329,6 +517,7 @@ export default function ProfilePage() {
           <Card
             className="p-3 text-center cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-95"
             onClick={() => setWashPrefsOpen(true)}
+            id="wash-prefs"
             data-testid="card-quick-wash"
           >
             <Settings className="w-5 h-5 text-primary mx-auto mb-1.5" />
@@ -379,7 +568,7 @@ export default function ProfilePage() {
             label="Notifications"
             value="Manage alerts"
             color="bg-primary/15 text-primary"
-            onClick={() => setNotifOpen(true)}
+            onClick={() => navigate("/notifications")}
           />
           <SettingsRow
             icon={<Shield className="w-4 h-4" />}
@@ -388,8 +577,11 @@ export default function ProfilePage() {
             color="bg-amber-500/15 text-amber-400"
             rightElement={
               <Switch
-                defaultChecked={true}
+                id="certified"
+                checked={certifiedOnly}
                 onCheckedChange={(v) => {
+                  setCertifiedOnly(v);
+                  localStorage.setItem("offload_certified_only", String(v));
                   toast({ title: v ? "Certified mode on" : "Certified mode off", description: v ? "Only certified vendors will be shown." : "All vendors will be shown." });
                 }}
                 data-testid="toggle-certified-pref"
@@ -416,6 +608,35 @@ export default function ProfilePage() {
         </Card>
       </div>
 
+      {/* Two-Factor Authentication */}
+      <div className="px-5 mb-4">
+        <h3 className="text-sm font-semibold mb-2">Security</h3>
+        <Card className="px-4 divide-y divide-border">
+          <SettingsRow
+            icon={<Lock className="w-4 h-4" />}
+            label="Two-Factor Authentication"
+            value={twoFASetupDone ? "Enabled" : "Protect your account"}
+            color={twoFASetupDone ? "bg-emerald-500/15 text-emerald-400" : "bg-primary/15 text-primary"}
+            onClick={() => {
+              if (!twoFASetupDone) {
+                setTwoFAOpen(true);
+                twoFASetupMutation.mutate();
+              } else {
+                setDisable2FAOpen(true);
+              }
+            }}
+            rightElement={twoFASetupDone ? (
+              <Badge variant="secondary" className="bg-emerald-500/15 text-emerald-400 text-[10px]">Active</Badge>
+            ) : undefined}
+          />
+        </Card>
+      </div>
+
+      {/* Offload Certified Education Panel */}
+      <div className="px-5 mb-4">
+        <CertifiedPanel />
+      </div>
+
       {/* Support */}
       <div className="px-5 mb-4">
         <h3 className="text-sm font-semibold mb-2">Support</h3>
@@ -434,7 +655,7 @@ export default function ProfilePage() {
             label="Help Center"
             value="FAQs and support"
             color="bg-muted text-muted-foreground"
-            onClick={() => navigate("/support")}
+            onClick={() => navigate("/help")}
           />
           <SettingsRow
             icon={<LogOut className="w-4 h-4" />}
@@ -510,44 +731,14 @@ export default function ProfilePage() {
                 data-testid="input-edit-phone"
               />
             </div>
-            <button
-              className="w-full h-[50px] rounded-full bg-primary text-white font-semibold text-base hover:bg-primary/90 transition-all disabled:opacity-60 disabled:cursor-not-allowed mt-2"
+            <Button
+              className="w-full h-[50px] rounded-full font-semibold text-base mt-2"
               disabled={updateUserMutation.isPending}
               onClick={handleSaveProfile}
               data-testid="button-save-profile"
             >
               {updateUserMutation.isPending ? "Saving..." : "Save Changes"}
-            </button>
-          </div>
-        </SheetContent>
-      </Sheet>
-
-      {/* Notifications Sheet */}
-      <Sheet open={notifOpen} onOpenChange={setNotifOpen}>
-        <SheetContent side="bottom" className="max-h-[60vh] rounded-t-2xl">
-          <SheetHeader>
-            <SheetTitle>Notification Preferences</SheetTitle>
-          </SheetHeader>
-          <div className="mt-4 space-y-4">
-            {[
-              { key: "orderUpdates" as const, label: "Order Updates", desc: "Status changes and delivery alerts" },
-              { key: "promotions" as const, label: "Promotions", desc: "Deals and special offers" },
-              { key: "driverMessages" as const, label: "Driver Messages", desc: "Messages from your driver" },
-              { key: "email" as const, label: "Email Notifications", desc: "Receive updates by email" },
-              { key: "push" as const, label: "Push Notifications", desc: "Real-time mobile alerts" },
-            ].map(item => (
-              <div key={item.key} className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium">{item.label}</p>
-                  <p className="text-xs text-muted-foreground">{item.desc}</p>
-                </div>
-                <Switch
-                  checked={notifPrefs[item.key]}
-                  onCheckedChange={(v) => setNotifPrefs(p => ({ ...p, [item.key]: v }))}
-                  data-testid={`toggle-notif-${item.key}`}
-                />
-              </div>
-            ))}
+            </Button>
           </div>
         </SheetContent>
       </Sheet>
@@ -619,6 +810,44 @@ export default function ProfilePage() {
                 data-testid="toggle-wash-fragrance"
               />
             </div>
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1 block">Water Temperature</Label>
+              <div className="grid grid-cols-3 gap-2">
+                {(["cold", "warm", "hot"] as const).map(t => (
+                  <button
+                    key={t}
+                    className={`p-2 rounded-lg text-xs font-medium text-center transition-all ${
+                      washPrefs.waterTemp === t
+                        ? "bg-[#7C3AED]/10 border-2 border-[#7C3AED]"
+                        : "bg-card border border-border hover:border-[#7C3AED]/20"
+                    }`}
+                    onClick={() => setWashPrefs(p => ({ ...p, waterTemp: t }))}
+                    data-testid={`wash-water-temp-${t}`}
+                  >
+                    {t.charAt(0).toUpperCase() + t.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1 block">Dry Temperature</Label>
+              <div className="grid grid-cols-3 gap-2">
+                {(["low", "medium", "high"] as const).map(t => (
+                  <button
+                    key={t}
+                    className={`p-2 rounded-lg text-xs font-medium text-center transition-all ${
+                      washPrefs.dryTemp === t
+                        ? "bg-[#7C3AED]/10 border-2 border-[#7C3AED]"
+                        : "bg-card border border-border hover:border-[#7C3AED]/20"
+                    }`}
+                    onClick={() => setWashPrefs(p => ({ ...p, dryTemp: t }))}
+                    data-testid={`wash-dry-temp-${t}`}
+                  >
+                    {t.charAt(0).toUpperCase() + t.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
             <Button
               className="w-full"
               disabled={saveWashPrefsMutation.isPending}
@@ -673,6 +902,134 @@ export default function ProfilePage() {
           </div>
         </SheetContent>
       </Sheet>
+
+      {/* 2FA Setup Sheet */}
+      <Sheet open={twoFAOpen} onOpenChange={setTwoFAOpen}>
+        <SheetContent side="bottom" className="max-h-[80vh] rounded-t-2xl">
+          <SheetHeader>
+            <SheetTitle>Enable Two-Factor Authentication</SheetTitle>
+          </SheetHeader>
+          <div className="mt-4 space-y-4">
+            {twoFASetupMutation.isPending ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                <span className="ml-2 text-sm text-muted-foreground">Setting up...</span>
+              </div>
+            ) : twoFASecret ? (
+              <>
+                <div className="text-center">
+                  <p className="text-sm text-muted-foreground mb-3">
+                    Scan this QR code with your authenticator app (Google Authenticator, Authy, etc.)
+                  </p>
+                  {twoFASecret.qrUrl ? (
+                    <div className="flex justify-center mb-3">
+                      <img
+                        src={twoFASecret.qrUrl}
+                        alt="2FA QR Code"
+                        className="w-48 h-48 rounded-lg bg-white p-2"
+                      />
+                    </div>
+                  ) : (
+                    <Card className="p-4 mb-3">
+                      <div className="flex items-center justify-center gap-2">
+                        <QrCode className="w-5 h-5 text-muted-foreground" />
+                        <p className="text-xs text-muted-foreground">QR code unavailable — use manual entry</p>
+                      </div>
+                    </Card>
+                  )}
+                  {twoFASecret.secret && (
+                    <div className="flex items-center justify-center gap-2 mb-4">
+                      <code className="text-xs bg-muted px-2 py-1 rounded font-mono">{twoFASecret.secret}</code>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(twoFASecret.secret);
+                          toast({ title: "Copied!", description: "Secret key copied to clipboard." });
+                        }}
+                        className="p-1 rounded hover:bg-muted"
+                      >
+                        <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Backup codes */}
+                {twoFASecret.backupCodes.length > 0 && (
+                  <Card className="p-4">
+                    <p className="text-xs font-semibold mb-2">Backup Codes — save these somewhere safe</p>
+                    <div className="grid grid-cols-2 gap-1">
+                      {twoFASecret.backupCodes.map((code, i) => (
+                        <code key={i} className="text-xs font-mono text-muted-foreground bg-muted px-2 py-1 rounded text-center">{code}</code>
+                      ))}
+                    </div>
+                  </Card>
+                )}
+
+                {/* Verify */}
+                <div>
+                  <Label className="text-xs text-muted-foreground mb-1.5 block">Enter the 6-digit code from your app</Label>
+                  <Input
+                    value={twoFACode}
+                    onChange={e => setTwoFACode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    placeholder="000000"
+                    className="h-12 text-center text-lg font-mono tracking-widest"
+                    maxLength={6}
+                    data-testid="input-2fa-code"
+                  />
+                </div>
+                <Button
+                  className="w-full"
+                  disabled={twoFACode.length !== 6 || twoFAVerifyMutation.isPending}
+                  onClick={() => twoFAVerifyMutation.mutate()}
+                  data-testid="button-verify-2fa"
+                >
+                  {twoFAVerifyMutation.isPending ? "Verifying..." : "Enable 2FA"}
+                </Button>
+              </>
+            ) : (
+              <p className="text-sm text-destructive text-center">Failed to initialize 2FA setup. Please try again.</p>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      {/* Disable 2FA Confirmation */}
+      <AlertDialog open={disable2FAOpen} onOpenChange={setDisable2FAOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Disable Two-Factor Authentication</AlertDialogTitle>
+            <AlertDialogDescription>
+              Enter your current 6-digit authenticator code to disable 2FA.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="py-2">
+            <Input
+              value={disable2FACode}
+              onChange={e => setDisable2FACode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              placeholder="000000"
+              className="h-12 text-center text-lg font-mono tracking-widest"
+              maxLength={6}
+              data-testid="input-disable-2fa-code"
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              onClick={() => setDisable2FACode("")}
+              data-testid="button-disable-2fa-cancel"
+            >
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => disable2FAMutation.mutate()}
+              disabled={disable2FACode.length !== 6 || disable2FAMutation.isPending}
+              className="bg-red-500 text-white hover:bg-red-600 focus:ring-red-500"
+              data-testid="button-disable-2fa-confirm"
+            >
+              {disable2FAMutation.isPending ? "Disabling..." : "Disable 2FA"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Sign Out Confirmation */}
       <AlertDialog open={signOutOpen} onOpenChange={setSignOutOpen}>
