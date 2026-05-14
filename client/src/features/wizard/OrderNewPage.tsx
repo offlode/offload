@@ -161,8 +161,9 @@ export default function OrderNewPage() {
     if (step === 1) {
       // Custom Wash: check for saved preferences before going to step 2
       if (isCustom) {
-        const prefs = (user as any)?.washPreferences || (user as any)?.wash_preferences;
-        const hasPrefs = prefs && (typeof prefs === "object") && Object.keys(prefs).length > 0;
+        const rawPrefs = (user as any)?.preferences;
+        const prefs = typeof rawPrefs === "string" ? (() => { try { return JSON.parse(rawPrefs); } catch { return null; } })() : rawPrefs;
+        const hasPrefs = prefs && typeof prefs === "object" && !Array.isArray(prefs) && Object.keys(prefs).length > 0;
         if (!hasPrefs) {
           // Redirect to profile to set up preferences
           navigate("/profile?openWashPrefs=1&returnTo=wizard");

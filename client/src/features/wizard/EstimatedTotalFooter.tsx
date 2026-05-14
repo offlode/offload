@@ -19,13 +19,10 @@ export function EstimatedTotalFooter({ state, currentStep }: EstimatedTotalFoote
   const [loading, setLoading] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Only render on steps 2–7 (not step 1)
-  if (currentStep < 2) return null;
-
   const hasBags = state.bags.some(b => b.quantity > 0);
 
   useEffect(() => {
-    if (!hasBags || !state.serviceType) {
+    if (currentStep < 2 || !hasBags || !state.serviceType) {
       setTotal(null);
       return;
     }
@@ -70,12 +67,16 @@ export function EstimatedTotalFooter({ state, currentStep }: EstimatedTotalFoote
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    currentStep,
     state.bags,
     state.serviceType,
     state.separateByType,
     state.deliverySpeed,
     hasBags,
   ]);
+
+  // Only render on steps 2–7 (not step 1)
+  if (currentStep < 2) return null;
 
   const displayTotal =
     loading

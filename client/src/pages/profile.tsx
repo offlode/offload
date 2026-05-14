@@ -190,6 +190,8 @@ export default function ProfilePage() {
     foldingStyle: "standard",
     hangers: false,
     fragrance: true,
+    waterTemp: "cold",
+    dryTemp: "medium",
   });
 
   const { data: user, isLoading: userLoading } = useQuery<UserType>({
@@ -205,6 +207,23 @@ export default function ProfilePage() {
   useEffect(() => {
     if (user && (user as any).twoFactorEnabled) {
       setTwoFASetupDone(true);
+    }
+  }, [user]);
+
+  // Initialize wash prefs from saved user preferences
+  useEffect(() => {
+    if (!user) return;
+    const saved = (user as any)?.preferences;
+    if (saved && typeof saved === "object" && Object.keys(saved).length > 0) {
+      setWashPrefs(prev => ({
+        ...prev,
+        detergent: saved.detergent || prev.detergent,
+        foldingStyle: saved.foldingStyle || prev.foldingStyle,
+        hangers: typeof saved.hangers === "boolean" ? saved.hangers : prev.hangers,
+        fragrance: typeof saved.fragrance === "boolean" ? saved.fragrance : prev.fragrance,
+        waterTemp: saved.waterTemp || prev.waterTemp,
+        dryTemp: saved.dryTemp || prev.dryTemp,
+      }));
     }
   }, [user]);
 
@@ -789,6 +808,44 @@ export default function ProfilePage() {
                 onCheckedChange={(v) => setWashPrefs(p => ({ ...p, fragrance: v }))}
                 data-testid="toggle-wash-fragrance"
               />
+            </div>
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1 block">Water Temperature</Label>
+              <div className="grid grid-cols-3 gap-2">
+                {(["cold", "warm", "hot"] as const).map(t => (
+                  <button
+                    key={t}
+                    className={`p-2 rounded-lg text-xs font-medium text-center transition-all ${
+                      washPrefs.waterTemp === t
+                        ? "bg-[#7C3AED]/10 border-2 border-[#7C3AED]"
+                        : "bg-card border border-border hover:border-[#7C3AED]/20"
+                    }`}
+                    onClick={() => setWashPrefs(p => ({ ...p, waterTemp: t }))}
+                    data-testid={`wash-water-temp-${t}`}
+                  >
+                    {t.charAt(0).toUpperCase() + t.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1 block">Dry Temperature</Label>
+              <div className="grid grid-cols-3 gap-2">
+                {(["low", "medium", "high"] as const).map(t => (
+                  <button
+                    key={t}
+                    className={`p-2 rounded-lg text-xs font-medium text-center transition-all ${
+                      washPrefs.dryTemp === t
+                        ? "bg-[#7C3AED]/10 border-2 border-[#7C3AED]"
+                        : "bg-card border border-border hover:border-[#7C3AED]/20"
+                    }`}
+                    onClick={() => setWashPrefs(p => ({ ...p, dryTemp: t }))}
+                    data-testid={`wash-dry-temp-${t}`}
+                  >
+                    {t.charAt(0).toUpperCase() + t.slice(1)}
+                  </button>
+                ))}
+              </div>
             </div>
             <Button
               className="w-full"
