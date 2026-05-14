@@ -14,7 +14,6 @@ import { useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
 
 import HomePage from "@/pages/home";
-import SchedulePage from "@/pages/schedule";
 import OrdersPage from "@/pages/orders";
 import OrderDetailPage from "@/pages/order-detail";
 import ProfilePage from "@/pages/profile";
@@ -89,6 +88,10 @@ function RequireAuth({ children, allowedRoles }: { children: React.ReactNode; al
 }
 
 function AppRouter() {
+  const scheduleQuery = window.location.hash.includes("?")
+    ? window.location.hash.slice(window.location.hash.indexOf("?"))
+    : window.location.search;
+
   return (
     <Switch>
       {/* Public auth routes */}
@@ -103,7 +106,7 @@ function AppRouter() {
         {() => <RequireAuth allowedRoles={["customer"]}><HomePage /></RequireAuth>}
       </Route>
       <Route path="/schedule">
-        {() => <RequireAuth allowedRoles={["customer"]}><SchedulePage /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["customer"]}><Redirect to={`/order/new${scheduleQuery}`} /></RequireAuth>}
       </Route>
       <Route path="/orders">
         {() => <RequireAuth allowedRoles={["customer"]}><OrdersPage /></RequireAuth>}

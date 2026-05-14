@@ -1,7 +1,7 @@
 import { Minus, Plus, Package } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { PRICING, type BagSize } from "@/lib/design-tokens";
+import { BAG_OPTIONS, type BagSize } from "@/lib/design-tokens";
 import type { BagSelection } from "./types";
 
 interface StepBagsProps {
@@ -31,8 +31,7 @@ export function StepBags({ bags, onChange }: StepBagsProps) {
   };
 
   const totalBags = bags.reduce((sum, b) => sum + b.quantity, 0);
-  const totalWeight = bags.reduce((sum, b) => sum + b.quantity * PRICING[b.size].maxLbs, 0);
-  const totalFee = bags.reduce((sum, b) => sum + b.quantity * PRICING[b.size].price, 0);
+  const totalWeight = bags.reduce((sum, b) => sum + b.quantity * BAG_OPTIONS[b.size].maxLbs, 0);
 
   return (
     <div className="px-5 space-y-4">
@@ -45,7 +44,7 @@ export function StepBags({ bags, onChange }: StepBagsProps) {
 
       <div className="space-y-3">
         {BAG_SIZES.map(({ size, icon }) => {
-          const tier = PRICING[size];
+          const tier = BAG_OPTIONS[size];
           const qty = getQuantity(size);
           const isSelected = qty > 0;
 
@@ -67,7 +66,6 @@ export function StepBags({ bags, onChange }: StepBagsProps) {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between mb-0.5">
                     <p className="text-sm font-semibold">{tier.label}</p>
-                    <p className="text-sm font-bold text-primary">${tier.price.toFixed(2)}</p>
                   </div>
                   <p className="text-xs text-muted-foreground">
                     Up to {tier.maxLbs} lbs
@@ -118,7 +116,6 @@ export function StepBags({ bags, onChange }: StepBagsProps) {
                 Up to {totalWeight} lbs total capacity
               </p>
             </div>
-            <p className="text-lg font-bold text-primary">${totalFee.toFixed(2)}</p>
           </div>
         </Card>
       )}

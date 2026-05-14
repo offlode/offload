@@ -25,21 +25,19 @@ export const colors = {
   statusMuted: "bg-muted text-muted-foreground",
 } as const;
 
-// Pricing (canonical — do NOT change without owner directive)
-export const BAG_PRICING = {
-  small: { price: 24.99, maxLbs: 10, label: "Small Bag" },
-  medium: { price: 44.99, maxLbs: 20, label: "Medium Bag" },
-  large: { price: 59.99, maxLbs: 30, label: "Large Bag" },
-  xl: { price: 89.99, maxLbs: 50, label: "XL Bag" },
+// Bag metadata for customer display only. Pricing is backend-owned and is never
+// calculated in the customer app.
+export const BAG_OPTIONS = {
+  small: { maxLbs: 10, label: "Small Bag" },
+  medium: { maxLbs: 20, label: "Medium Bag" },
+  large: { maxLbs: 30, label: "Large Bag" },
+  xl: { maxLbs: 50, label: "XL Bag" },
 } as const;
 
-export const PRICING = BAG_PRICING;
-export const OVERAGE_PER_LB = 2.50;
-
 export const DELIVERY_SPEEDS = {
-  standard: { fee: 0, label: "Standard (48h)", hours: 48 },
-  next_day: { fee: 5.99, label: "Next Day (24h)", hours: 24 },
-  same_day: { fee: 12.99, label: "Same Day", hours: 12 },
+  standard: { label: "Standard (48h)", hours: 48 },
+  next_day: { label: "Next Day (24h)", hours: 24 },
+  same_day: { label: "Same Day", hours: 12 },
 } as const;
 
 // Clothing types — Loom verbatim list (D9)
@@ -69,13 +67,13 @@ export const ORDER_PROGRESS_LABELS = [
   { key: "at_facility", label: "At Facility" },
   { key: "washing", label: "Washing" },
   { key: "wash_complete", label: "Wash Complete" },
-  { key: "folded_packaged", label: "Folded & Packaged" },
-  { key: "final_weight_verified", label: "Weight Verified" },
+  { key: "folded_packaged", label: "Laundry Folded & Packaged" },
+  { key: "final_weight_verified", label: "Final Weight Verified" },
   { key: "ready_for_delivery", label: "Ready for Delivery" },
   { key: "out_for_delivery", label: "Out for Delivery" },
   { key: "delivered", label: "Delivered" },
   { key: "completed", label: "Completed" },
 ] as const;
 
-export type BagSize = keyof typeof BAG_PRICING;
+export type BagSize = keyof typeof BAG_OPTIONS;
 export type DeliverySpeed = keyof typeof DELIVERY_SPEEDS;

@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { apiRequest } from "@/lib/queryClient";
+import { useAuth } from "@/contexts/auth-context";
 
 interface StepAddressProps {
   address: string;
@@ -31,6 +32,44 @@ const TIME_WINDOWS = [
   "6:00 PM - 8:00 PM",
 ];
 
+interface AddressMeta {
+  zip: string;
+  city: string;
+  state: string;
+  lat: number | null;
+  lng: number | null;
+}
+
+const EMPTY_ADDRESS_META: AddressMeta = {
+  zip: "",
+  city: "",
+  state: "",
+  lat: null,
+  lng: null,
+};
+
+function extractZip(value: string): string {
+  return value.match(/\b\d{5}(?:-\d{4})?\b/)?.[0].slice(0, 5) ?? "";
+}
+
+function parseCityStateFromAddress(value: string): Pick<AddressMeta, "city" | "state"> {
+  const match = value.match(/,\s*([^,]+),\s*([A-Z]{2})\s+\d{5}(?:-\d{4})?\b/i);
+  return {
+    city: match?.[1]?.trim() ?? "",
+    state: match?.[2]?.toUpperCase() ?? "",
+  };
+}
+
+function getAddressComponent(
+  components: Array<{ long_name?: string; short_name?: string; types?: string[] }> | undefined,
+  type: string,
+  preferShort = false,
+): string {
+  const component = components?.find(comp => comp.types?.includes(type));
+  if (!component) return "";
+  return (preferShort ? component.short_name : component.long_name) || component.long_name || component.short_name || "";
+}
+
 export function StepAddress({
   address,
   addressPlaceId,
@@ -45,11 +84,13 @@ export function StepAddress({
   onInstructionsChange,
   onServiceAreaChange,
 }: StepAddressProps) {
+  const { user } = useAuth();
   const autocompleteRef = useRef<HTMLInputElement>(null);
   const [hasGoogleMaps, setHasGoogleMaps] = useState(false);
   const [notifyRequested, setNotifyRequested] = useState(false);
   const [notifyLoading, setNotifyLoading] = useState(false);
   const [checkingArea, setCheckingArea] = useState(false);
+  const [addressMeta, setAddressMeta] = useState<AddressMeta>(EMPTY_ADDRESS_META);
 
   // Store latest refs for callbacks used inside the Google Maps listener
   const serviceTypeRef = useRef(serviceType);
@@ -59,16 +100,16 @@ export function StepAddress({
   useEffect(() => { onServiceAreaChangeRef.current = onServiceAreaChange; }, [onServiceAreaChange]);
   useEffect(() => { onAddressChangeRef.current = onAddressChange; }, [onAddressChange]);
 
-  async function checkServiceArea(lat: number, lng: number, zip: string) {
+  async function checkServiceArea(meta: AddressMeta) {
     setCheckingArea(true);
     setNotifyRequested(false);
+    setAddressMeta(meta);
+    onServiceAreaChangeRef.current(null);
     try {
-      const params = new URLSearchParams({
-        lat: String(lat),
-        lng: String(lng),
-        zip,
-        service_type: serviceTypeRef.current,
-      });
+      const params = new URLSearchParams({ service_type: serviceTypeRef.current });
+      if (meta.zip) params.set("zip", meta.zip);
+      if (meta.lat != null) params.set("lat", String(meta.lat));
+      if (meta.lng != null) params.set("lng", String(meta.lng));
       const res = await apiRequest(`/api/service-area/check?${params}`);
       const result = await res.json();
       onServiceAreaChangeRef.current(result.available === true);
@@ -83,10 +124,32 @@ export function StepAddress({
   async function handleNotifyMe() {
     setNotifyLoading(true);
     try {
+      const manual = parseCityStateFromAddress(address);
+      const zip = addressMeta.zip || extractZip(address);
+      const city = addressMeta.city || manual.city;
+      const state = addressMeta.state || manual.state;
+      const contactName = user?.name ?? "";
+      const contactEmail = user?.email ?? "";
+      const contactPhone = user?.phone ?? "";
       await apiRequest("/api/service-area-requests", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ address, addressPlaceId }),
+        body: JSON.stringify({
+          address,
+          addressPlaceId,
+          zip,
+          city,
+          state,
+          lat: addressMeta.lat,
+          lng: addressMeta.lng,
+          requested_service: serviceType,
+          contact_name: contactName,
+          contact_email: contactEmail,
+          contact_phone: contactPhone,
+          name: contactName,
+          email: contactEmail,
+          phone: contactPhone,
+        }),
       });
       setNotifyRequested(true);
     } catch {
@@ -134,20 +197,23 @@ export function StepAddress({
           if (place.formatted_address && place.place_id) {
             onAddressChangeRef.current(place.formatted_address, place.place_id);
 
-            // Extract lat/lng and zip for service area check
+            // Extract lat/lng and address details for service area check
             const lat = place.geometry?.location?.lat();
             const lng = place.geometry?.location?.lng();
-            let zip = "";
-            if (place.address_components) {
-              for (const comp of place.address_components) {
-                if (comp.types?.includes("postal_code")) {
-                  zip = comp.long_name || comp.short_name;
-                  break;
-                }
-              }
-            }
-            if (lat != null && lng != null) {
-              checkServiceArea(lat, lng, zip);
+            const zip = getAddressComponent(place.address_components, "postal_code");
+            const city =
+              getAddressComponent(place.address_components, "locality") ||
+              getAddressComponent(place.address_components, "sublocality") ||
+              getAddressComponent(place.address_components, "administrative_area_level_2");
+            const state = getAddressComponent(place.address_components, "administrative_area_level_1", true);
+            if (zip || (lat != null && lng != null)) {
+              checkServiceArea({
+                zip,
+                city,
+                state,
+                lat: lat ?? null,
+                lng: lng ?? null,
+              });
             }
           }
         });
@@ -157,6 +223,26 @@ export function StepAddress({
       }
     }
   }, []);
+
+  useEffect(() => {
+    if (addressPlaceId) return;
+    const zip = extractZip(address);
+    const { city, state } = parseCityStateFromAddress(address);
+    if (!address) {
+      setAddressMeta(EMPTY_ADDRESS_META);
+      onServiceAreaChangeRef.current(null);
+      return;
+    }
+    if (!zip) {
+      setAddressMeta({ ...EMPTY_ADDRESS_META, city, state });
+      onServiceAreaChangeRef.current(null);
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      checkServiceArea({ zip, city, state, lat: null, lng: null });
+    }, 350);
+    return () => window.clearTimeout(timeout);
+  }, [address, addressPlaceId]);
 
   // Generate date options for next 7 days
   const dateOptions = Array.from({ length: 7 }, (_, i) => {
@@ -188,7 +274,10 @@ export function StepAddress({
         <Input
           ref={autocompleteRef}
           value={address}
-          onChange={e => onAddressChange(e.target.value, addressPlaceId)}
+          onChange={e => {
+            onAddressChange(e.target.value, "");
+            onServiceAreaChange(null);
+          }}
           placeholder="Enter your address"
           className="h-12 rounded-xl"
           data-testid="input-address"
@@ -196,7 +285,7 @@ export function StepAddress({
         {!hasGoogleMaps && address && !addressPlaceId && (
           <p className="text-xs text-amber-500 mt-1 flex items-center gap-1">
             <AlertCircle className="w-3 h-3" />
-            We'll verify your address
+            Enter a 5-digit ZIP so we can verify your service area
           </p>
         )}
         {checkingArea && (

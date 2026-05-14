@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/auth-context";
 import { apiRequest } from "@/lib/queryClient";
-import { PRICING, type BagSize, type DeliverySpeed } from "@/lib/design-tokens";
+import { BAG_OPTIONS, type BagSize, type DeliverySpeed } from "@/lib/design-tokens";
 import { VoiceOrderModal } from "@/components/voice-order";
 
 import { WizardProgress } from "./WizardProgress";
@@ -19,6 +19,35 @@ import { StepReview } from "./StepReview";
 import { type WizardState, INITIAL_WIZARD_STATE } from "./types";
 
 const STORAGE_KEY = "offload_wizard_state";
+
+type VoicePrefill = {
+  tierName?: string | null;
+  bagSize?: string | null;
+  serviceType?: string | null;
+  separated?: boolean | null;
+  clothingTypes?: string[] | null;
+  pickupAddress?: string | null;
+  address?: string | null;
+  scheduledPickup?: string | null;
+  pickupDate?: string | null;
+  pickupTimeWindow?: string | null;
+  special_instructions?: string | null;
+  notes?: string | null;
+  customerNotes?: string | null;
+  deliverySpeed?: string | null;
+};
+
+function normalizeVoiceBag(value: string | null | undefined): BagSize | null {
+  const normalized = value?.replace(/_bag$/, "") as BagSize | undefined;
+  return normalized && normalized in BAG_OPTIONS ? normalized : null;
+}
+
+function normalizeDeliverySpeed(value: string | null | undefined): DeliverySpeed | null {
+  if (value === "same_day") return "same_day";
+  if (value === "next_day" || value === "24h") return "next_day";
+  if (value === "standard" || value === "48h") return "standard";
+  return null;
+}
 
 function parseQueryParams(): Partial<WizardState> {
   const params = new URLSearchParams(window.location.hash.split("?")[1] || "");
@@ -39,11 +68,40 @@ function parseQueryParams(): Partial<WizardState> {
   if (speed === "same_day") partial.deliverySpeed = "same_day" as DeliverySpeed;
 
   const bag = params.get("bag");
-  if (bag && bag in PRICING) {
+  if (bag && bag in BAG_OPTIONS) {
     partial.bags = [{ size: bag as BagSize, quantity: 1 }];
   }
 
   return partial;
+}
+
+function applyVoicePrefill(base: WizardState): WizardState {
+  const voice = (window as any).__offload_voice_prefill as VoicePrefill | undefined;
+  if (!voice) return base;
+
+  const bagSize = normalizeVoiceBag(voice.tierName ?? voice.bagSize);
+  const deliverySpeed = normalizeDeliverySpeed(voice.deliverySpeed);
+  const scheduledPickup = voice.scheduledPickup ? new Date(voice.scheduledPickup) : null;
+  const scheduledPickupDate = scheduledPickup && !Number.isNaN(scheduledPickup.getTime())
+    ? scheduledPickup.toISOString().split("T")[0]
+    : undefined;
+
+  delete (window as any).__offload_voice_prefill;
+
+  return {
+    ...base,
+    ...(bagSize ? { bags: [{ size: bagSize, quantity: base.bags.find(b => b.size === bagSize)?.quantity ?? 1 }] } : {}),
+    ...(voice.serviceType ? { serviceType: voice.serviceType } : {}),
+    ...(deliverySpeed ? { deliverySpeed } : {}),
+    ...(typeof voice.separated === "boolean" ? { separateByType: voice.separated } : {}),
+    ...(Array.isArray(voice.clothingTypes) ? { clothingTypes: voice.clothingTypes } : {}),
+    ...(voice.pickupAddress || voice.address ? { address: voice.pickupAddress || voice.address || "" } : {}),
+    ...(scheduledPickupDate || voice.pickupDate ? { pickupDate: scheduledPickupDate || voice.pickupDate || "" } : {}),
+    ...(voice.pickupTimeWindow ? { pickupTimeWindow: voice.pickupTimeWindow } : {}),
+    ...(voice.special_instructions || voice.notes || voice.customerNotes
+      ? { specialInstructions: voice.special_instructions || voice.notes || voice.customerNotes || "" }
+      : {}),
+  };
 }
 
 function loadSavedState(): WizardState | null {
@@ -62,9 +120,9 @@ export default function OrderNewPage() {
   // Initialize state from sessionStorage > query params > defaults
   const [state, setState] = useState<WizardState>(() => {
     const saved = loadSavedState();
-    if (saved) return saved;
+    if (saved) return applyVoicePrefill(saved);
     const qp = parseQueryParams();
-    return { ...INITIAL_WIZARD_STATE, ...qp };
+    return applyVoicePrefill({ ...INITIAL_WIZARD_STATE, ...qp });
   });
 
   const [step, setStep] = useState(1);
@@ -112,7 +170,7 @@ export default function OrderNewPage() {
       case 1: return state.bags.length > 0 && state.bags.some(b => b.quantity > 0);
       case 2: return state.separateByType !== null;
       case 3: return state.clothingTypes.length > 0;
-      case 4: return !!state.address && !!state.pickupDate && !!state.pickupTimeWindow && state.serviceAreaAvailable !== false;
+      case 4: return !!state.address && !!state.pickupDate && !!state.pickupTimeWindow && state.serviceAreaAvailable === true;
       case 5: return !!state.paymentMethodId;
       case 6: return true;
       default: return false;

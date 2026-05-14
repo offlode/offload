@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useState } from "react";
-import { ORDER_PROGRESS_LABELS, PRICING } from "@/lib/design-tokens";
+import { ORDER_PROGRESS_LABELS } from "@/lib/design-tokens";
 import { useAuth } from "@/contexts/auth-context";
 
 interface OrderProgressStep {

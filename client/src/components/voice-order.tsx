@@ -54,8 +54,13 @@ interface Preferences {
 interface ExtractedOrder {
   serviceType: "wash_fold" | "dry_cleaning" | "comforters" | "alterations" | "mixed" | null;
   bagSize: "small" | "medium" | "large" | "xl" | null;
+  tierName?: string | null;
   deliverySpeed: "standard" | "next_day" | "same_day" | null;
   pickupAddress: string | null;
+  scheduledPickup?: string | null;
+  separated?: boolean;
+  clothingTypes?: string[];
+  special_instructions?: string | null;
   pickupWindow: PickupWindow | null;
   preferences: Preferences;
   confidence: { service: number; bagSize: number; address: number; window: number };
@@ -90,6 +95,39 @@ function isSpanishLowConfidence(extracted: ExtractedOrder | null, lang: "en" | "
   if (lang !== "es" || !extracted) return false;
   const { service, bagSize } = extracted.confidence;
   return service < CONFIDENCE_THRESHOLD || bagSize < CONFIDENCE_THRESHOLD;
+}
+
+function bagSizeFromTier(tierName: string | null | undefined): ExtractedOrder["bagSize"] {
+  if (!tierName) return null;
+  const normalized = tierName.replace(/_bag$/, "");
+  if (normalized === "small" || normalized === "medium" || normalized === "large" || normalized === "xl") {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeVoiceParseResponse(data: any, fallbackLanguage: "en" | "es"): ExtractedOrder {
+  const scheduled = data.scheduledPickup ? new Date(data.scheduledPickup) : null;
+  const pickupWindow = scheduled && !Number.isNaN(scheduled.getTime())
+    ? { date: scheduled.toISOString().split("T")[0] }
+    : null;
+
+  return {
+    serviceType: data.serviceType ?? null,
+    bagSize: data.bagSize ?? bagSizeFromTier(data.tierName),
+    tierName: data.tierName ?? null,
+    deliverySpeed: data.deliverySpeed ?? null,
+    pickupAddress: data.pickupAddress ?? null,
+    scheduledPickup: data.scheduledPickup ?? null,
+    separated: data.separated === true,
+    clothingTypes: Array.isArray(data.clothingTypes) ? data.clothingTypes : [],
+    special_instructions: data.special_instructions ?? null,
+    pickupWindow,
+    preferences: { notes: data.special_instructions ?? "" },
+    confidence: data.confidence ?? { service: 1, bagSize: 1, address: 1, window: 1 },
+    missingFields: Array.isArray(data.missingFields) ? data.missingFields : [],
+    language: data.language === "es" ? "es" : fallbackLanguage,
+  };
 }
 
 // ─── Main Component ───────────────────────────────────────────
@@ -206,7 +244,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
 
   async function processAudio(blob: Blob) {
     setStep("processing");
-    setProcessingLabel("Processing your voice…");
+    setProcessingLabel("Transcribing your voice…");
 
     const formData = new FormData();
     const ext = blob.type.includes("mp4") ? "mp4"
@@ -217,119 +255,74 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
     formData.append("language", lang);
 
     try {
-      let extractedData: ExtractedOrder | null = null;
-      let text = "";
       let detectedLang: "en" | "es" = lang;
 
-      // Try the unified parse endpoint first
-      // TODO: Once POST /api/voice/parse is live, remove the fallback transcribe+extract path
-      let usedParse = false;
+      const transcribeController = new AbortController();
+      const transcribeTimeout = setTimeout(() => transcribeController.abort(), 30_000);
+
+      let transcribeRes: Response;
       try {
-        const parseController = new AbortController();
-        const parseTimeout = setTimeout(() => parseController.abort(), 30_000);
-
-        let parseRes: Response;
-        try {
-          parseRes = await fetch("/api/voice/parse", {
-            method: "POST",
-            body: formData,
-            credentials: "include",
-            signal: parseController.signal,
-          });
-        } finally {
-          clearTimeout(parseTimeout);
-        }
-
-        if (parseRes.ok) {
-          const parseData = await parseRes.json();
-          extractedData = parseData as ExtractedOrder;
-          text = parseData.transcript || "";
-          detectedLang = parseData.language || lang;
-          setTranscript(text);
-          usedParse = true;
-        } else if (parseRes.status !== 404) {
-          // Non-404 error — still fall back but log the issue
-          console.warn("[VoiceOrder] /api/voice/parse returned", parseRes.status, "— falling back to transcribe+extract");
-        }
-      } catch (parseErr: any) {
-        // Parse endpoint not available — fall back silently
-        console.warn("[VoiceOrder] /api/voice/parse unavailable — falling back to transcribe+extract", parseErr?.message);
+        transcribeRes = await fetch("/api/voice/transcribe", {
+          method: "POST",
+          body: formData,
+          credentials: "include",
+          signal: transcribeController.signal,
+        });
+      } finally {
+        clearTimeout(transcribeTimeout);
       }
 
-      // Fallback: transcribe → extract (two-step flow)
-      if (!usedParse) {
-        setProcessingLabel("Transcribing your voice…");
-
-        const transcribeController = new AbortController();
-        const transcribeTimeout = setTimeout(() => transcribeController.abort(), 30_000);
-
-        let transcribeRes: Response;
-        try {
-          transcribeRes = await fetch("/api/voice/transcribe", {
-            method: "POST",
-            body: formData,
-            credentials: "include",
-            signal: transcribeController.signal,
-          });
-        } finally {
-          clearTimeout(transcribeTimeout);
-        }
-
-        if (!transcribeRes.ok) {
-          const err = await transcribeRes.json().catch(() => ({}));
-          if (transcribeRes.status === 429) {
-            toast({ title: "Too many requests", description: "Wait a moment and try again.", variant: "destructive" });
-            setStep("record");
-            return;
-          }
-          throw new Error(err.error || "Transcription failed");
-        }
-
-        const transcribeData = await transcribeRes.json();
-
-        if (transcribeData.warning === "language_unsupported") {
-          toast({
-            title: "Language not supported",
-            description: "Please speak in English or Spanish.",
-            variant: "destructive",
-          });
+      if (!transcribeRes.ok) {
+        const err = await transcribeRes.json().catch(() => ({}));
+        if (transcribeRes.status === 429) {
+          toast({ title: "Too many requests", description: "Wait a moment and try again.", variant: "destructive" });
           setStep("record");
           return;
         }
-
-        text = transcribeData.text || "";
-        detectedLang = transcribeData.language || "en";
-        setTranscript(text);
-
-        setProcessingLabel("Extracting order details…");
-
-        const extractController = new AbortController();
-        const extractTimeout = setTimeout(() => extractController.abort(), 30_000);
-
-        let extractRes: Response;
-        try {
-          extractRes = await fetch("/api/voice/extract", {
-            method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ transcript: text, language: detectedLang }),
-            signal: extractController.signal,
-          });
-        } finally {
-          clearTimeout(extractTimeout);
-        }
-
-        if (!extractRes.ok) {
-          const err = await extractRes.json().catch(() => ({}));
-          throw new Error(err.error || "Extraction failed");
-        }
-
-        extractedData = await extractRes.json();
+        throw new Error(err.error || "Transcription failed");
       }
 
-      if (!extractedData) {
-        throw new Error("No extraction data returned");
+      const transcribeData = await transcribeRes.json();
+
+      if (transcribeData.warning === "language_unsupported") {
+        toast({
+          title: "Language not supported",
+          description: "Please speak in English or Spanish.",
+          variant: "destructive",
+        });
+        setStep("record");
+        return;
       }
+
+      const text = transcribeData.text || "";
+      detectedLang = transcribeData.language === "es" ? "es" : "en";
+      setTranscript(text);
+      setProcessingLabel("Extracting order details…");
+
+      const parseController = new AbortController();
+      const parseTimeout = setTimeout(() => parseController.abort(), 30_000);
+
+      let parseRes: Response;
+      try {
+        parseRes = await fetch("/api/voice/parse", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transcription: text, language: detectedLang }),
+          signal: parseController.signal,
+        });
+      } finally {
+        clearTimeout(parseTimeout);
+      }
+
+      if (!parseRes.ok) {
+        const err = await parseRes.json().catch(() => ({}));
+        throw new Error(err.error || "Voice parsing failed");
+      }
+
+      const parseData = await parseRes.json();
+      detectedLang = parseData.language === "es" ? "es" : detectedLang;
+      const extractedData = normalizeVoiceParseResponse(parseData, detectedLang);
 
       // Check Spanish low-confidence
       if (lang === "es" && isSpanishLowConfidence(extractedData, detectedLang)) {
@@ -349,7 +342,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
               .join(" – ")
           : "",
       );
-      setEditNotes(extractedData.preferences?.notes || "");
+      setEditNotes(extractedData.special_instructions || extractedData.preferences?.notes || "");
       setExtracted(extractedData);
       setStep("confirm");
     } catch (err: any) {
@@ -367,13 +360,18 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
   }
 
   function handleContinue() {
-    // Prefill schedule page via window globals (same pattern as __offload_wash_type)
-    const tierName = mapBagSize(editBagSize || extracted?.bagSize || null);
+    // Prefill the order wizard via window globals.
+    const tierName = extracted?.tierName || mapBagSize(editBagSize || extracted?.bagSize || null);
     const speed = mapDeliverySpeed(editDeliverySpeed || extracted?.deliverySpeed || null);
 
     (window as any).__offload_voice_prefill = {
       tierName,
       deliverySpeed: speed,
+      separated: extracted?.separated,
+      clothingTypes: extracted?.clothingTypes ?? [],
+      pickupAddress: editPickupAddress || extracted?.pickupAddress,
+      scheduledPickup: extracted?.scheduledPickup,
+      special_instructions: editNotes || extracted?.special_instructions,
       pickupDate: editPickupDate,
       pickupTimeWindow: editPickupWindow,
       customerNotes: editNotes,

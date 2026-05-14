@@ -1,28 +1,34 @@
 import { useQuery } from "@tanstack/react-query";
-import { Package, Shirt, MapPin, CreditCard, Clock, Truck, DollarSign, Loader2 } from "lucide-react";
+import { Package, Shirt, MapPin, CreditCard, Truck, DollarSign, Loader2, AlertCircle } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { PRICING, DELIVERY_SPEEDS } from "@/lib/design-tokens";
+import { BAG_OPTIONS, DELIVERY_SPEEDS } from "@/lib/design-tokens";
 import type { WizardState } from "./types";
-import { useAuth } from "@/contexts/auth-context";
 
 interface StepReviewProps {
   state: WizardState;
   onEdit: (step: number) => void;
 }
 
+interface QuoteLineItem {
+  label: string;
+  amount_cents: number;
+  type?: string;
+}
+
 interface QuoteResponse {
-  bagsTotal: number;
-  separationFee: number;
-  deliveryFee: number;
-  tax: number;
-  total: number;
+  line_items: QuoteLineItem[];
+  total_cents: number;
+}
+
+function formatCents(cents: number) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+  }).format(cents / 100);
 }
 
 export function StepReview({ state, onEdit }: StepReviewProps) {
-  const { user } = useAuth();
-
-  // Build the full quote payload per the backend contract
   const quotePayload = {
     bag_counts: state.bags.filter(b => b.quantity > 0).map(b => ({ size: b.size, quantity: b.quantity })),
     separated: state.separateByType,
@@ -34,8 +40,7 @@ export function StepReview({ state, onEdit }: StepReviewProps) {
     delivery_speed: state.deliverySpeed,
   };
 
-  // Attempt to get real quote from backend
-  const { data: quote, isLoading: quoteLoading } = useQuery<QuoteResponse>({
+  const { data: quote, isLoading: quoteLoading, isError: quoteError } = useQuery<QuoteResponse>({
     queryKey: ["/api/quote", JSON.stringify(quotePayload)],
     queryFn: async () => {
       const res = await fetch("/api/quote", {
@@ -50,24 +55,6 @@ export function StepReview({ state, onEdit }: StepReviewProps) {
     retry: false,
     staleTime: 60_000,
   });
-
-  // Client-side estimate as fallback (NOT used for Stripe — Stripe amount MUST come from backend)
-  const clientEstimate = {
-    bagsTotal: state.bags.reduce((sum, b) => sum + b.quantity * PRICING[b.size].price, 0),
-    separationFee: state.separateByType ? state.separationFee : 0,
-    deliveryFee: DELIVERY_SPEEDS[state.deliverySpeed]?.fee ?? 0,
-    get subtotal() { return this.bagsTotal + this.separationFee + this.deliveryFee; },
-    get tax() { return this.subtotal * 0.08875; },
-    get total() { return this.subtotal + this.tax; },
-  };
-
-  const display = quote || {
-    bagsTotal: clientEstimate.bagsTotal,
-    separationFee: clientEstimate.separationFee,
-    deliveryFee: clientEstimate.deliveryFee,
-    tax: clientEstimate.tax,
-    total: clientEstimate.total,
-  };
 
   const totalBags = state.bags.reduce((sum, b) => sum + b.quantity, 0);
 
@@ -93,7 +80,7 @@ export function StepReview({ state, onEdit }: StepReviewProps) {
             <div className="mt-1 space-y-0.5">
               {state.bags.filter(b => b.quantity > 0).map(b => (
                 <p key={b.size} className="text-xs text-muted-foreground">
-                  {b.quantity}x {PRICING[b.size].label} — ${(b.quantity * PRICING[b.size].price).toFixed(2)}
+                  {b.quantity}x {BAG_OPTIONS[b.size].label}
                 </p>
               ))}
             </div>
@@ -169,11 +156,6 @@ export function StepReview({ state, onEdit }: StepReviewProps) {
           <DollarSign className="w-5 h-5 text-primary" />
           <p className="text-sm font-bold">Order Total</p>
           {quoteLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />}
-          {!quote && !quoteLoading && (
-            <span className="text-[10px] bg-amber-500/15 text-amber-500 px-1.5 py-0.5 rounded-full">
-              Estimate
-            </span>
-          )}
         </div>
         {quoteLoading ? (
           <div className="space-y-2">
@@ -181,35 +163,23 @@ export function StepReview({ state, onEdit }: StepReviewProps) {
             <Skeleton className="h-4 w-3/4" />
             <Skeleton className="h-6 w-1/2" />
           </div>
+        ) : quoteError || !quote ? (
+          <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-600">
+            <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+            <span>Quote unavailable — refresh to retry</span>
+          </div>
         ) : (
           <div className="space-y-1.5">
-            {/* Itemized bag lines */}
-            {state.bags.filter(b => b.quantity > 0).map(b => (
-              <div key={b.size} className="flex justify-between text-xs">
-                <span className="text-muted-foreground">
-                  {b.quantity}x {PRICING[b.size].label}
-                </span>
-                <span>${(b.quantity * PRICING[b.size].price).toFixed(2)}</span>
+            {quote.line_items.map((item, idx) => (
+              <div key={`${item.type ?? item.label}-${idx}`} className="flex justify-between text-xs">
+                <span className="text-muted-foreground">{item.label}</span>
+                <span>{formatCents(item.amount_cents)}</span>
               </div>
             ))}
-            {display.separationFee > 0 && (
-              <div className="flex justify-between text-xs">
-                <span className="text-muted-foreground">Separation fee</span>
-                <span>${display.separationFee.toFixed(2)}</span>
-              </div>
-            )}
-            <div className="flex justify-between text-xs">
-              <span className="text-muted-foreground">Delivery fee</span>
-              <span>{display.deliveryFee > 0 ? `$${display.deliveryFee.toFixed(2)}` : "FREE"}</span>
-            </div>
-            <div className="flex justify-between text-xs">
-              <span className="text-muted-foreground">Tax</span>
-              <span>${display.tax.toFixed(2)}</span>
-            </div>
             <div className="border-t border-border my-2" />
             <div className="flex justify-between">
               <span className="text-sm font-bold">Total</span>
-              <span className="text-lg font-bold text-primary">${display.total.toFixed(2)}</span>
+              <span className="text-lg font-bold text-primary">{formatCents(quote.total_cents)}</span>
             </div>
           </div>
         )}
