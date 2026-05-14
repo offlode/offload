@@ -165,6 +165,12 @@ export default function ProfilePage() {
     [notifPrefs, notifMutation],
   );
 
+  // Certified vendor preference (controlled, persisted in localStorage)
+  const [certifiedOnly, setCertifiedOnly] = useState<boolean>(() => {
+    const stored = localStorage.getItem("offload_certified_only");
+    return stored !== null ? stored === "true" : true;
+  });
+
   // Wash prefs (in React state)
   const [washPrefs, setWashPrefs] = useState({
     detergent: "standard",
@@ -412,21 +418,23 @@ export default function ProfilePage() {
             <StatCard
               icon={<Package className="w-5 h-5" />}
               label="Orders"
-              value={String(totalOrders)}
+              value={userLoading ? "--" : String(totalOrders)}
               color="bg-emerald-500/15 text-emerald-400"
             />
             <StatCard
               icon={<DollarSign className="w-5 h-5" />}
               label="Total Spent"
-              value={`$${totalSpent.toFixed(2)}`}
+              value={userLoading ? "--" : `$${totalSpent.toFixed(2)}`}
               color="bg-emerald-500/15 text-emerald-400"
             />
-            <StatCard
-              icon={<Star className="w-5 h-5" />}
-              label="Rating"
-              value={user?.rating != null ? String(user.rating) : "--"}
-              color="bg-amber-500/15 text-amber-400"
-            />
+            <div aria-label={user?.rating != null ? `Rating: ${Number(user.rating).toFixed(1)} out of 5` : "Rating not available"}>
+              <StatCard
+                icon={<Star className="w-5 h-5" />}
+                label="Rating"
+                value={user?.rating != null ? Number(user.rating).toFixed(1) : "--"}
+                color="bg-amber-500/15 text-amber-400"
+              />
+            </div>
           </div>
         </Card>
       </div>
@@ -440,7 +448,7 @@ export default function ProfilePage() {
                 <Star className="w-5 h-5 text-amber-500" />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-xs text-amber-500 font-semibold">Favorite Vendor</p>
+                <p className="text-xs text-amber-500 font-semibold">Top-rated vendor</p>
                 <p className="text-sm font-bold">{favoriteVendor.name}</p>
                 <p className="text-xs text-muted-foreground">{favoriteVendor.rating?.toFixed(1)}★ · {favoriteVendor.reviewCount || 0} reviews</p>
               </div>
@@ -471,6 +479,7 @@ export default function ProfilePage() {
           <Card
             className="p-3 text-center cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-95"
             onClick={() => setWashPrefsOpen(true)}
+            id="wash-prefs"
             data-testid="card-quick-wash"
           >
             <Settings className="w-5 h-5 text-primary mx-auto mb-1.5" />
@@ -530,8 +539,11 @@ export default function ProfilePage() {
             color="bg-amber-500/15 text-amber-400"
             rightElement={
               <Switch
-                defaultChecked={true}
+                id="certified"
+                checked={certifiedOnly}
                 onCheckedChange={(v) => {
+                  setCertifiedOnly(v);
+                  localStorage.setItem("offload_certified_only", String(v));
                   toast({ title: v ? "Certified mode on" : "Certified mode off", description: v ? "Only certified vendors will be shown." : "All vendors will be shown." });
                 }}
                 data-testid="toggle-certified-pref"
@@ -681,14 +693,14 @@ export default function ProfilePage() {
                 data-testid="input-edit-phone"
               />
             </div>
-            <button
-              className="w-full h-[50px] rounded-full bg-primary text-white font-semibold text-base hover:bg-primary/90 transition-all disabled:opacity-60 disabled:cursor-not-allowed mt-2"
+            <Button
+              className="w-full h-[50px] rounded-full font-semibold text-base mt-2"
               disabled={updateUserMutation.isPending}
               onClick={handleSaveProfile}
               data-testid="button-save-profile"
             >
               {updateUserMutation.isPending ? "Saving..." : "Save Changes"}
-            </button>
+            </Button>
           </div>
         </SheetContent>
       </Sheet>

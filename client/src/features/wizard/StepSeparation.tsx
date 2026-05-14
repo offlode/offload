@@ -74,46 +74,58 @@ export function StepSeparation({ value, separationFee, bags, onChange }: StepSep
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <Card
-          className={`p-5 cursor-pointer transition-all duration-200 text-center ${
-            value === true
-              ? "border-primary ring-2 ring-primary/20 bg-primary/5"
-              : "hover:border-primary/30"
-          }`}
+      <div className="grid grid-cols-2 gap-3" role="radiogroup" aria-label="Separation preference">
+        <button
+          role="radio"
+          aria-checked={value === true}
           onClick={() => onChange(true)}
           data-testid="separation-yes"
+          className="text-left"
         >
-          <div className={`w-12 h-12 rounded-full mx-auto mb-3 flex items-center justify-center ${
-            value === true ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
-          }`}>
-            <Check className="w-6 h-6" />
-          </div>
-          <p className="text-sm font-bold mb-1">Yes, separate</p>
-          <p className="text-xs text-muted-foreground">
-            Wash items by type for best results
-          </p>
-        </Card>
+          <Card
+            className={`p-5 cursor-pointer transition-all duration-200 text-center ${
+              value === true
+                ? "border-primary ring-2 ring-primary/20 bg-primary/5"
+                : "hover:border-primary/30"
+            }`}
+          >
+            <div className={`w-12 h-12 rounded-full mx-auto mb-3 flex items-center justify-center ${
+              value === true ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+            }`}>
+              <Check className="w-6 h-6" />
+            </div>
+            <p className="text-sm font-bold mb-1">Yes, separate</p>
+            <p className="text-xs text-muted-foreground">
+              Wash items by type for best results
+            </p>
+          </Card>
+        </button>
 
-        <Card
-          className={`p-5 cursor-pointer transition-all duration-200 text-center ${
-            value === false
-              ? "border-primary ring-2 ring-primary/20 bg-primary/5"
-              : "hover:border-primary/30"
-          }`}
+        <button
+          role="radio"
+          aria-checked={value === false}
           onClick={() => onChange(false)}
           data-testid="separation-no"
+          className="text-left"
         >
-          <div className={`w-12 h-12 rounded-full mx-auto mb-3 flex items-center justify-center ${
-            value === false ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
-          }`}>
-            <X className="w-6 h-6" />
-          </div>
-          <p className="text-sm font-bold mb-1">No, wash together</p>
-          <p className="text-xs text-muted-foreground">
-            All items washed as one load
-          </p>
-        </Card>
+          <Card
+            className={`p-5 cursor-pointer transition-all duration-200 text-center ${
+              value === false
+                ? "border-primary ring-2 ring-primary/20 bg-primary/5"
+                : "hover:border-primary/30"
+            }`}
+          >
+            <div className={`w-12 h-12 rounded-full mx-auto mb-3 flex items-center justify-center ${
+              value === false ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+            }`}>
+              <X className="w-6 h-6" />
+            </div>
+            <p className="text-sm font-bold mb-1">No, wash together</p>
+            <p className="text-xs text-muted-foreground">
+              All items washed as one load
+            </p>
+          </Card>
+        </button>
       </div>
 
       {/* Separation fee disclosure */}
@@ -134,7 +146,7 @@ export function StepSeparation({ value, separationFee, bags, onChange }: StepSep
                 ) : displayFee > 0 ? (
                   `$${displayFee.toFixed(2)} separation fee will be added to your order.`
                 ) : (
-                  "(no extra charge)"
+                  "Surcharge unavailable — refresh to retry"
                 )}
               </p>
             </div>

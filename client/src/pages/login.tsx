@@ -182,7 +182,7 @@ export default function LoginPage() {
         <form onSubmit={handleLogin} className="w-full space-y-4">
           {/* Email */}
           <div>
-            <label htmlFor="email" className="sr-only">
+            <label htmlFor="email" className="text-xs text-muted-foreground mb-1.5 block">
               Email
             </label>
             <input
@@ -200,7 +200,7 @@ export default function LoginPage() {
 
           {/* Password */}
           <div className="relative">
-            <label htmlFor="password" className="sr-only">
+            <label htmlFor="password" className="text-xs text-muted-foreground mb-1.5 block">
               Password
             </label>
             <input
@@ -217,7 +217,7 @@ export default function LoginPage() {
               data-testid="button-toggle-password"
               type="button"
               onClick={() => setShowPassword(!showPassword)}
-              aria-label="Toggle password visibility"
+              aria-label={showPassword ? "Hide password" : "Show password"}
               className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
             >
               {showPassword ? (
@@ -235,7 +235,7 @@ export default function LoginPage() {
               data-testid="link-forgot-password"
               type="button"
               className="text-sm text-primary hover:text-primary/80 transition-colors"
-              onClick={() => { window.location.hash = "#/forgot-password"; }}
+              onClick={() => navigate("/forgot-password")}
 
             >
               Forgot Password?

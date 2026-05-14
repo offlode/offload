@@ -124,7 +124,7 @@ export default function HomePage() {
     enabled: !!user,
   });
 
-  const { data: vendors, isLoading: vendorsLoading } = useQuery<Vendor[]>({
+  const { data: vendors, isLoading: vendorsLoading, isError: vendorsError, refetch: refetchVendors } = useQuery<Vendor[]>({
     queryKey: ["/api/vendors"],
     enabled: !!user,
   });
@@ -176,7 +176,7 @@ export default function HomePage() {
         <Link href="/order/new">
           <Card
             data-testid="card-schedule-pickup"
-            className="relative overflow-hidden bg-gradient-to-br from-primary bg-primary text-primary-foreground p-6 cursor-pointer group transition-all duration-300 hover:shadow-[0_0_40px_rgba(123,92,246,0.25)]"
+            className="relative overflow-hidden bg-gradient-to-br from-primary to-primary/70 text-primary-foreground p-6 cursor-pointer group transition-all duration-300 hover:shadow-[0_0_40px_rgba(123,92,246,0.25)]"
           >
             {/* Decorative orbs */}
             <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full -mr-10 -mt-10 blur-sm" />
@@ -236,61 +236,49 @@ export default function HomePage() {
               <VendorSkeleton />
               <VendorSkeleton />
             </>
+          ) : vendorsError ? (
+            <Card className="p-4 min-w-[200px] max-w-[220px] shrink-0 snap-start text-center">
+              <p className="text-xs text-muted-foreground mb-2">Failed to load vendors</p>
+              <Button size="sm" variant="outline" onClick={() => refetchVendors()}>Retry</Button>
+            </Card>
           ) : vendors && vendors.length > 0 ? (
             vendors.slice(0, 6).map(vendor => (
-              <Card
+              <button
                 key={vendor.id}
-                className="p-4 min-w-[200px] max-w-[220px] shrink-0 snap-start cursor-pointer transition-all duration-200 hover:border-primary/30"
-                onClick={() => toast({
-                  title: vendor.name,
-                  description: `${vendor.address}, ${vendor.city} — ${vendor.rating}★`,
-                })}
+                className="text-left"
+                onClick={() => navigate(`/vendors/${vendor.id}`)}
                 data-testid={`vendor-card-${vendor.id}`}
               >
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="w-8 h-8 rounded-full bg-emerald-500/10 flex items-center justify-center">
-                    <Shield className="w-4 h-4 text-emerald-500" />
+                <Card
+                  className="p-4 min-w-[200px] max-w-[220px] shrink-0 snap-start cursor-pointer transition-all duration-200 hover:border-primary/30"
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-8 h-8 rounded-full bg-emerald-500/10 flex items-center justify-center">
+                      <Shield className="w-4 h-4 text-emerald-500" />
+                    </div>
+                    {vendor.certified && (
+                      <Badge variant="secondary" className="text-[9px] bg-emerald-500/15 text-emerald-400 px-1 py-0">
+                        Certified
+                      </Badge>
+                    )}
                   </div>
-                  {vendor.certified && (
-                    <Badge variant="secondary" className="text-[9px] bg-emerald-500/15 text-emerald-400 px-1 py-0">
-                      Certified
-                    </Badge>
-                  )}
-                </div>
-                <p className="text-sm font-semibold truncate">{vendor.name}</p>
-                <div className="flex items-center gap-1 mt-1">
-                  <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
-                  <span className="text-xs text-muted-foreground">
-                    {vendor.rating?.toFixed(1)} ({vendor.reviewCount || 0})
-                  </span>
-                </div>
-                <p className="text-[10px] text-muted-foreground mt-1 truncate">
-                  {vendor.city || vendor.address}
-                </p>
-              </Card>
+                  <p className="text-sm font-semibold truncate">{vendor.name}</p>
+                  <div className="flex items-center gap-1 mt-1">
+                    <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
+                    <span className="text-xs text-muted-foreground">
+                      {vendor.rating?.toFixed(1)} ({vendor.reviewCount || 0})
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-1 truncate">
+                    {vendor.city || vendor.address}
+                  </p>
+                </Card>
+              </button>
             ))
           ) : (
-            <>
-              {/* Honest skeleton placeholders — no fake vendor names */}
-              <Card className="p-4 min-w-[200px] max-w-[220px] shrink-0 snap-start">
-                <Skeleton className="w-8 h-8 rounded-full mb-2" />
-                <Skeleton className="h-4 w-3/4 mb-1" />
-                <Skeleton className="h-3 w-full mb-1" />
-                <p className="text-[10px] text-muted-foreground mt-2">Finding vendors near you...</p>
-              </Card>
-              <Card className="p-4 min-w-[200px] max-w-[220px] shrink-0 snap-start">
-                <Skeleton className="w-8 h-8 rounded-full mb-2" />
-                <Skeleton className="h-4 w-3/4 mb-1" />
-                <Skeleton className="h-3 w-full mb-1" />
-                <p className="text-[10px] text-muted-foreground mt-2">Finding vendors near you...</p>
-              </Card>
-              <Card className="p-4 min-w-[200px] max-w-[220px] shrink-0 snap-start">
-                <Skeleton className="w-8 h-8 rounded-full mb-2" />
-                <Skeleton className="h-4 w-3/4 mb-1" />
-                <Skeleton className="h-3 w-full mb-1" />
-                <p className="text-[10px] text-muted-foreground mt-2">Finding vendors near you...</p>
-              </Card>
-            </>
+            <Card className="p-4 min-w-[200px] max-w-[220px] shrink-0 snap-start text-center">
+              <p className="text-xs text-muted-foreground">No vendors found nearby</p>
+            </Card>
           )}
         </div>
       </div>

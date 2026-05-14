@@ -378,12 +378,13 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="voice-order-title">
       <Card className="w-full max-w-sm p-6 relative overflow-y-auto max-h-[90vh]">
         {/* Close */}
         <button
           onClick={() => { stopRecording(); onClose(); }}
-          className="absolute top-3 right-3 w-8 h-8 rounded-full flex items-center justify-center hover:bg-muted transition-colors"
+          className="absolute top-3 right-3 w-11 h-11 rounded-full flex items-center justify-center hover:bg-muted transition-colors"
+          aria-label="Close voice order"
           data-testid="button-close-voice"
         >
           <X className="w-4 h-4" />
@@ -394,7 +395,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
           <>
             <div className="text-center mb-5">
               <div className="flex items-center justify-center gap-2 mb-1">
-                <h3 className="text-lg font-bold">Order by Voice</h3>
+                <h3 id="voice-order-title" className="text-lg font-bold">Order by Voice</h3>
                 <Badge
                   variant="secondary"
                   className="text-[10px] px-2 py-0.5 bg-red-500/15 text-red-600 border border-red-500/25"
@@ -433,7 +434,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
               <button
                 onClick={() => setLang("en")}
                 className={cn(
-                  "px-3 py-1 rounded-full text-xs font-medium transition-all",
+                  "px-4 py-2 min-h-[44px] rounded-full text-xs font-medium transition-all",
                   lang === "en"
                     ? "bg-primary text-white"
                     : "bg-muted text-muted-foreground hover:bg-muted/80",
@@ -445,7 +446,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
               <button
                 onClick={() => setLang("es")}
                 className={cn(
-                  "px-3 py-1 rounded-full text-xs font-medium transition-all flex items-center gap-1",
+                  "px-4 py-2 min-h-[44px] rounded-full text-xs font-medium transition-all flex items-center gap-1",
                   lang === "es"
                     ? "bg-primary text-white"
                     : "bg-muted text-muted-foreground hover:bg-muted/80",
@@ -507,9 +508,14 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
             )}
 
             {!isRecording && voiceAvailable !== false && (
-              <p className="text-center text-xs text-muted-foreground">
-                Example: "I need a medium bag, wash and fold, standard delivery"
-              </p>
+              <>
+                <p className="text-center text-xs text-muted-foreground">
+                  Example: "I need a medium bag, wash and fold, standard delivery"
+                </p>
+                <p className="text-center text-xs text-muted-foreground mt-1 italic">
+                  We won't show a price until you review
+                </p>
+              </>
             )}
             {/* Language note always visible */}
             {voiceAvailable !== false && (
@@ -567,6 +573,9 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
               <p className="text-xs text-muted-foreground">
                 Edit any field, then tap Continue.
               </p>
+              <p className="text-xs text-muted-foreground italic mt-1">
+                We won't show a price until you review
+              </p>
             </div>
 
             <div className="space-y-3">
@@ -575,13 +584,13 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
                 <div className="flex items-center gap-2 mb-1">
                   <Label className="text-xs font-medium">Service Type</Label>
                   {isMissing("serviceType") && (
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-amber-600 border-amber-400">
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-400 border border-amber-500/30">
                       needs your input
                     </Badge>
                   )}
                 </div>
                 <Select value={editServiceType} onValueChange={setEditServiceType}>
-                  <SelectTrigger className="h-9 text-sm" data-testid="select-service-type">
+                  <SelectTrigger className="h-11 text-sm" data-testid="select-service-type">
                     <SelectValue placeholder="Select service…" />
                   </SelectTrigger>
                   <SelectContent>
@@ -599,20 +608,20 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
                 <div className="flex items-center gap-2 mb-1">
                   <Label className="text-xs font-medium">Bag Size</Label>
                   {isMissing("bagSize") && (
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-amber-600 border-amber-400">
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-400 border border-amber-500/30">
                       needs your input
                     </Badge>
                   )}
                 </div>
                 <Select value={editBagSize} onValueChange={setEditBagSize}>
-                  <SelectTrigger className="h-9 text-sm" data-testid="select-bag-size">
+                  <SelectTrigger className="h-11 text-sm" data-testid="select-bag-size">
                     <SelectValue placeholder="Select bag size…" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="small">Small (~10-15 lbs)</SelectItem>
-                    <SelectItem value="medium">Medium (~20-25 lbs)</SelectItem>
-                    <SelectItem value="large">Large (~30-35 lbs)</SelectItem>
-                    <SelectItem value="xl">XL (~40+ lbs)</SelectItem>
+                    <SelectItem value="small">Small — up to 10 lbs ($24.99)</SelectItem>
+                    <SelectItem value="medium">Medium — up to 20 lbs ($44.99)</SelectItem>
+                    <SelectItem value="large">Large — up to 30 lbs ($59.99)</SelectItem>
+                    <SelectItem value="xl">XL — up to 50 lbs ($89.99)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -622,13 +631,13 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
                 <div className="flex items-center gap-2 mb-1">
                   <Label className="text-xs font-medium">Delivery Speed</Label>
                   {isMissing("deliverySpeed") && (
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-amber-600 border-amber-400">
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-400 border border-amber-500/30">
                       needs your input
                     </Badge>
                   )}
                 </div>
                 <Select value={editDeliverySpeed} onValueChange={setEditDeliverySpeed}>
-                  <SelectTrigger className="h-9 text-sm" data-testid="select-delivery-speed">
+                  <SelectTrigger className="h-11 text-sm" data-testid="select-delivery-speed">
                     <SelectValue placeholder="Select speed…" />
                   </SelectTrigger>
                   <SelectContent>
@@ -644,13 +653,13 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
                 <div className="flex items-center gap-2 mb-1">
                   <Label className="text-xs font-medium">Pickup Address</Label>
                   {isMissing("pickupAddress") && (
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-amber-600 border-amber-400">
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-400 border border-amber-500/30">
                       needs your input
                     </Badge>
                   )}
                 </div>
                 <Input
-                  className="h-9 text-sm"
+                  className="h-11 text-sm"
                   placeholder="e.g. 123 Main St, Brooklyn"
                   value={editPickupAddress}
                   onChange={(e) => setEditPickupAddress(e.target.value)}
@@ -663,13 +672,13 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
                 <div className="flex items-center gap-2 mb-1">
                   <Label className="text-xs font-medium">Pickup Date</Label>
                   {isMissing("pickupWindow") && (
-                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-amber-600 border-amber-400">
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-400 border border-amber-500/30">
                       needs your input
                     </Badge>
                   )}
                 </div>
                 <Input
-                  className="h-9 text-sm"
+                  className="h-11 text-sm"
                   type="date"
                   value={editPickupDate}
                   onChange={(e) => setEditPickupDate(e.target.value)}
@@ -681,7 +690,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
               <div>
                 <Label className="text-xs font-medium mb-1 block">Pickup Time Window</Label>
                 <Input
-                  className="h-9 text-sm"
+                  className="h-11 text-sm"
                   placeholder="e.g. 8 AM – 10 AM"
                   value={editPickupWindow}
                   onChange={(e) => setEditPickupWindow(e.target.value)}
@@ -693,7 +702,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
               <div>
                 <Label className="text-xs font-medium mb-1 block">Notes / Preferences</Label>
                 <Input
-                  className="h-9 text-sm"
+                  className="h-11 text-sm"
                   placeholder="e.g. warm water, unscented detergent"
                   value={editNotes}
                   onChange={(e) => setEditNotes(e.target.value)}

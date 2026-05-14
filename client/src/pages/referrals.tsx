@@ -58,7 +58,7 @@ export default function ReferralsPage() {
   const [copied, setCopied] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
 
-  const { data, isLoading } = useQuery<ReferralData>({
+  const { data, isLoading, isError, refetch } = useQuery<ReferralData>({
     queryKey: ["/api/referrals", user?.id],
     queryFn: async () => {
       const res = await apiRequest(`/api/referrals/${user?.id}`);
@@ -67,7 +67,7 @@ export default function ReferralsPage() {
     enabled: !!user?.id,
   });
 
-  const referralCode = data?.referralCode || user?.referralCode || "OFFLOAD10";
+  const referralCode = data?.referralCode || user?.referralCode || "";
   const referralLink = `https://offload.app/join?ref=${referralCode}`;
 
   const handleCopyCode = async () => {
@@ -130,6 +130,31 @@ export default function ReferralsPage() {
         </div>
       </div>
 
+      {isError ? (
+        <div className="px-5">
+          <Card className="p-8 text-center" data-testid="card-referral-error">
+            <Gift className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+            <p className="text-sm font-medium mb-1">Failed to load referral data</p>
+            <p className="text-xs text-muted-foreground mb-4">Something went wrong. Please try again.</p>
+            <Button size="sm" variant="outline" onClick={() => refetch()}>Retry</Button>
+          </Card>
+        </div>
+      ) : isLoading ? (
+        <div className="px-5 space-y-4">
+          <Skeleton className="h-44 w-full rounded-2xl" />
+          <Skeleton className="h-28 w-full rounded-xl" />
+          <Skeleton className="h-40 w-full rounded-xl" />
+        </div>
+      ) : !data ? (
+        <div className="px-5">
+          <Card className="p-8 text-center" data-testid="card-referral-empty">
+            <Gift className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+            <p className="text-sm font-medium mb-1">No referral data available</p>
+            <p className="text-xs text-muted-foreground">Complete your first order to get your referral code.</p>
+          </Card>
+        </div>
+      ) : (
+      <>
       {/* Hero Card */}
       <div className="px-5 mb-5">
         <Card
@@ -314,6 +339,8 @@ export default function ReferralsPage() {
           </Card>
         )}
       </div>
+      </>
+      )}
     </div>
   );
 }
