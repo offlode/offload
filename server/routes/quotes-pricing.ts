@@ -446,6 +446,10 @@ export function registerQuotesPricingRoutes(app: Express) {
         pickupWindowMinutes: z.number().optional().nullable(),
         scheduledPickup: z.string().optional(),
         vendorChoiceMode: z.string().optional(),
+        // Wave 2: separation & wash preference fields
+        separated: z.boolean().optional(),
+        clothing_types: z.array(z.string()).optional(),
+        wash_preferences: z.any().optional(),
       }).strip();
       const parsed = QuoteBody.safeParse(req.body);
       if (!parsed.success) {
@@ -456,7 +460,8 @@ export function registerQuotesPricingRoutes(app: Express) {
         deliverySpeed: rawQDeliverySpeed, speedTier: qSpeedTier, vendorId,
         addOns, promoCode, sessionId, idempotencyKey,
         pickupFloor, pickupHasElevator, pickupHandoff, pickupWindowMinutes,
-        scheduledPickup, vendorChoiceMode } = parsed.data;
+        scheduledPickup, vendorChoiceMode,
+        separated: qSeparated, clothing_types: qClothingTypes, wash_preferences: qWashPreferences } = parsed.data;
       // OD-P1: fold speedTier alias into deliverySpeed (deliverySpeed wins if both passed)
       const deliverySpeed = rawQDeliverySpeed ?? qSpeedTier;
 
@@ -492,6 +497,26 @@ export function registerQuotesPricingRoutes(app: Express) {
         scheduledPickup: scheduledPickup || undefined,
         vendorChoiceMode: vendorChoiceMode || undefined,
       });
+
+      // Wave 2: compute separation fee if separated=true
+      let separationFeeCents = 0;
+      if (qSeparated) {
+        // Resolve vendor separation fee, or default 500 cents ($5)
+        let resolvedVendor = vendorId ? await storage.getVendor(Number(vendorId)) : null;
+        if (resolvedVendor && (resolvedVendor as any).separationFeeCents > 0) {
+          separationFeeCents = (resolvedVendor as any).separationFeeCents;
+        } else {
+          separationFeeCents = 500; // default $5
+        }
+        // Add separation fee to breakdown
+        const sepFeeDollars = separationFeeCents / 100;
+        breakdown.subtotal = Math.round((breakdown.subtotal + sepFeeDollars) * 100) / 100;
+        breakdown.total = Math.round((breakdown.total + sepFeeDollars) * 100) / 100;
+        breakdown.lineItems = [
+          ...breakdown.lineItems,
+          { label: "Separation Fee", amount: sepFeeDollars, type: "separation_fee" },
+        ];
+      }
 
       // Calculate expiry
       const expiresAt = new Date(Date.now() + QUOTE_VALIDITY_MINUTES * 60 * 1000).toISOString();
@@ -573,6 +598,9 @@ export function registerQuotesPricingRoutes(app: Express) {
       res.status(201).json({
         ...quote,
         lineItems: breakdown.lineItems,
+        // Wave 2: include separation info if present
+        ...(qSeparated ? { separation_fee_cents: separationFeeCents, separated: true } : {}),
+        ...(qClothingTypes ? { clothing_types: qClothingTypes } : {}),
       });
     } catch (err: any) {
       console.error("[/api/quotes] error:", err);

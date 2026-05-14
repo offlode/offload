@@ -19,6 +19,7 @@ import { registerAdminRoutes } from "./routes/admin";
 import { registerPaymentRoutes } from "./routes/payments";
 import { registerPlatformRoutes } from "./routes/platform";
 import { registerWaveLRoutes } from "./routes/wave-l";
+import { registerWave2Routes } from "./routes/wave-2";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -231,6 +232,7 @@ export async function registerRoutes(
   registerPaymentRoutes(app);
   registerPlatformRoutes(app);
   registerWaveLRoutes(app);
+  registerWave2Routes(app);
 
   // ── API versioning header ──
   app.use((_req, res, next) => {

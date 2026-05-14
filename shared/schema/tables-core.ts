@@ -210,6 +210,9 @@ export const drivers = pgTable("drivers", {
   customerRatingAvg: doublePrecision("customer_rating_avg").default(4.8),
   // Availability preferences — JSON: { days: string[], timeStart: "HH:MM", timeEnd: "HH:MM" }
   workSchedule: text("work_schedule"),
+  // Wave 2: vehicle profile fields
+  vehicleColor: text("vehicle_color"),
+  vehiclePhotoUrl: text("vehicle_photo_url"),
 });
 
 export const insertDriverSchema = createInsertSchema(drivers).omit({ id: true });

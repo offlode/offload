@@ -531,6 +531,22 @@ async function ensureIntegrityConstraints() {
     }
   }
 
+  // Wave 2: vehicle profile columns on drivers
+  const wave2Cols: Array<[string, string]> = [
+    ["drivers", "vehicle_color TEXT"],
+    ["drivers", "vehicle_photo_url TEXT"],
+  ];
+  for (const [table, colDef] of wave2Cols) {
+    try {
+      await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${colDef}`);
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      if (!msg.includes("already exists") && !msg.includes("duplicate column")) {
+        console.warn(`[integrity] Wave 2 ${table} column:`, msg);
+      }
+    }
+  }
+
   console.log("[integrity] FK constraints, indexes, and shadow cents columns applied.");
 }
 

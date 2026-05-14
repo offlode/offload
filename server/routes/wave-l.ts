@@ -130,31 +130,47 @@ export function registerWaveLRoutes(app: Express): void {
   //  WASH RUNS
   // ══════════════════════════════════════════════════════════
 
+  // Wave 2 compat: accept BOTH new shape {orderId, washType, clothingCategory, weightLbs, notes}
+  // AND v1 operator shape {orderId, durationMin, clothingTypesInRun} / {order_id, duration_min, clothing_types_in_run}
   app.post("/api/wash-runs", requireAuth(["laundromat", "admin", "manager"]), async (req: Request, res: Response) => {
     try {
       const user = (req as any).currentUser;
-      const { order_id, vendor_id, duration_min, separation_required, clothing_types, notes } = req.body;
+      const body = req.body;
 
-      if (!order_id) return res.status(400).json({ error: "order_id is required" });
+      // Normalize: accept both camelCase and snake_case
+      const orderId = body.orderId || body.order_id;
+      const vendorId = body.vendorId || body.vendor_id;
+      const durationMin = body.durationMin || body.duration_min;
+      const washType = body.washType || body.wash_type;
+      const clothingCategory = body.clothingCategory || body.clothing_category;
+      const weightLbs = body.weightLbs || body.weight_lbs;
+      const separationRequired = body.separation_required || body.separationRequired || false;
+      const notes = body.notes;
+      // v1 operator shape compat
+      const clothingTypesInRun = body.clothingTypesInRun || body.clothing_types_in_run || body.clothing_types;
 
-      const order = await storage.getOrder(order_id);
+      if (!orderId) return res.status(400).json({ error: "orderId (or order_id) is required" });
+
+      const order = await storage.getOrder(orderId);
       if (!order) return res.status(404).json({ error: "Order not found" });
 
-      const vId = vendor_id || order.vendorId;
+      const vId = vendorId || order.vendorId;
       if (!vId) return res.status(400).json({ error: "vendor_id is required" });
 
       const [run] = await db
         .insert(washRuns)
         .values({
-          orderId: order_id,
+          orderId,
           operatorId: user.id,
           vendorId: vId,
           status: "pending",
-          durationMin: duration_min || null,
+          durationMin: durationMin || null,
           startAt: now(),
-          separationRequired: separation_required || false,
-          clothingTypes: clothing_types ? JSON.stringify(clothing_types) : null,
-          notes: notes || null,
+          separationRequired: separationRequired,
+          clothingTypes: clothingTypesInRun ? JSON.stringify(
+            Array.isArray(clothingTypesInRun) ? clothingTypesInRun : [clothingTypesInRun]
+          ) : (clothingCategory ? JSON.stringify([clothingCategory]) : null),
+          notes: notes || (washType ? `washType: ${washType}` : null) || null,
         })
         .returning();
 
@@ -194,14 +210,33 @@ export function registerWaveLRoutes(app: Express): void {
     }
   });
 
+  // Wave 2: extended to accept optional folded_photo_url alongside weightAfterLbs
   app.post("/api/wash-runs/:id/complete", requireAuth(["laundromat", "admin", "manager"]), async (req: Request, res: Response) => {
     try {
       const runId = parseInt(paramStr(req.params.id), 10);
       if (isNaN(runId)) return res.status(400).json({ error: "Invalid run ID" });
 
+      const { folded_photo_url, foldedPhotoUrl, weightAfterLbs, weight_after_lbs } = req.body;
+      const photoUrl = folded_photo_url || foldedPhotoUrl;
+
+      // Build update payload
+      const updatePayload: Record<string, any> = { status: "done", completedAt: now(), endAt: now() };
+
+      // If photo URL provided, append to photo_urls array
+      if (photoUrl) {
+        // Read existing photo_urls, append new one
+        const [existing] = await db.select({ photoUrls: washRuns.photoUrls }).from(washRuns).where(eq(washRuns.id, runId));
+        let photos: string[] = [];
+        if (existing?.photoUrls) {
+          try { photos = JSON.parse(existing.photoUrls); } catch { photos = []; }
+        }
+        photos.push(photoUrl);
+        updatePayload.photoUrls = JSON.stringify(photos);
+      }
+
       const [run] = await db
         .update(washRuns)
-        .set({ status: "done", completedAt: now(), endAt: now() })
+        .set(updatePayload)
         .where(eq(washRuns.id, runId))
         .returning();
 
@@ -319,19 +354,36 @@ export function registerWaveLRoutes(app: Express): void {
         await db.update(users).set({ mustChangePassword: true } as any).where(eq(users.id, newUser.id));
       }
 
+      // Wave 2: accept permissions as bitmask number OR as JSON object
+      // Bitmask: 1=view_orders, 2=update_wash_status, 4=weight_verification, 8=photo_upload, 16=wash_preferences
+      let resolvedPermissions: Record<string, boolean>;
+      if (typeof permissions === "number") {
+        resolvedPermissions = {
+          view_orders: !!(permissions & 1),
+          update_wash_status: !!(permissions & 2),
+          weight_verification: !!(permissions & 4),
+          photo_upload: !!(permissions & 8),
+          wash_preferences: !!(permissions & 16),
+        };
+      } else if (permissions && typeof permissions === "object") {
+        resolvedPermissions = permissions;
+      } else {
+        resolvedPermissions = {
+          view_orders: true,
+          update_wash_status: role === "wash_operator",
+          weight_verification: role === "wash_operator",
+          photo_upload: true,
+          wash_preferences: role === "wash_operator",
+        };
+      }
+
       const [emp] = await db
         .insert(vendorEmployees)
         .values({
           vendorId: resolvedVendorId,
           userId: newUser.id,
           role,
-          permissions: JSON.stringify(permissions || {
-            view_orders: true,
-            update_wash_status: role === "wash_operator",
-            weight_verification: role === "wash_operator",
-            photo_upload: true,
-            wash_preferences: role === "wash_operator",
-          }),
+          permissions: JSON.stringify(resolvedPermissions),
           tempPasswordHash: hashedPassword,
           active: true,
           joinedAt: now(),
@@ -427,7 +479,20 @@ export function registerWaveLRoutes(app: Express): void {
       const { role, permissions, active } = req.body;
       const updates: Record<string, any> = {};
       if (role !== undefined) updates.role = role;
-      if (permissions !== undefined) updates.permissions = JSON.stringify(permissions);
+      if (permissions !== undefined) {
+        // Wave 2: accept bitmask or object
+        if (typeof permissions === "number") {
+          updates.permissions = JSON.stringify({
+            view_orders: !!(permissions & 1),
+            update_wash_status: !!(permissions & 2),
+            weight_verification: !!(permissions & 4),
+            photo_upload: !!(permissions & 8),
+            wash_preferences: !!(permissions & 16),
+          });
+        } else {
+          updates.permissions = JSON.stringify(permissions);
+        }
+      }
       if (active !== undefined) {
         updates.active = active;
         if (!active) updates.deactivatedAt = now();
@@ -903,7 +968,14 @@ export function registerWaveLRoutes(app: Express): void {
   //  VOICE ORDER (structured extraction, NO price compute)
   // ══════════════════════════════════════════════════════════
 
+  // DEPRECATED: Use POST /api/voice/parse instead (Wave 2).
+  // Owner directive: "Voice NEVER displays a price; price comes from /api/quote after wizard submission."
+  // This endpoint should NOT be used by the new wizard flow. Kept for backward compat only.
   app.post("/api/voice/order", requireAuth(), async (req: Request, res: Response) => {
+    // Set deprecation header
+    res.setHeader("Deprecation", "true");
+    res.setHeader("Sunset", "2026-07-01");
+    res.setHeader("Link", '</api/voice/parse>; rel="successor-version"');
     try {
       const { transcript, intent } = req.body;
 
