@@ -531,6 +531,22 @@ async function ensureIntegrityConstraints() {
     }
   }
 
+  // Fix: convert pricing_tiers.is_active from integer to boolean (original migration created it as INTEGER DEFAULT 1)
+  try {
+    const { rows } = await pool.query(`
+      SELECT data_type FROM information_schema.columns
+      WHERE table_name = 'pricing_tiers' AND column_name = 'is_active'
+    `);
+    if (rows.length > 0 && rows[0].data_type !== 'boolean') {
+      await pool.query(`ALTER TABLE pricing_tiers ALTER COLUMN is_active DROP DEFAULT`);
+      await pool.query(`ALTER TABLE pricing_tiers ALTER COLUMN is_active TYPE boolean USING CASE WHEN is_active::text IN ('1','t','true','yes','y') THEN true ELSE false END`);
+      await pool.query(`ALTER TABLE pricing_tiers ALTER COLUMN is_active SET DEFAULT true`);
+      console.log("[integrity] Converted pricing_tiers.is_active from integer to boolean");
+    }
+  } catch (e: any) {
+    console.warn("[integrity] pricing_tiers.is_active conversion:", e?.message);
+  }
+
   // Wave 2: vehicle profile columns on drivers
   const wave2Cols: Array<[string, string]> = [
     ["drivers", "vehicle_color TEXT"],
@@ -553,6 +569,8 @@ async function ensureIntegrityConstraints() {
     ["users", "must_change_password BOOLEAN DEFAULT FALSE"],
     ["users", "preferences TEXT"],
     ["vendors", "is_demo BOOLEAN DEFAULT FALSE"],
+    ["orders", "pickup_distance_fee_cents INTEGER DEFAULT 0"],
+    ["quotes", "pickup_distance_fee_cents INTEGER DEFAULT 0"],
   ];
   for (const [table, colDef] of wave2Cols) {
     try {
