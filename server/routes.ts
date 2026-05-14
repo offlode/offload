@@ -86,9 +86,10 @@ export async function registerRoutes(
       "http://offloadusa.com",
       "https://www.offloadusa.com",
       "https://admin.offloadusa.com",
-      // Render hostnames (admin + api + site) — prod
+      // Render hostnames (admin + api + customer + site) — prod
       "https://offload-admin.onrender.com",
       "https://offload-api.onrender.com",
+      "https://offload-customer.onrender.com",
       "https://offload-site.onrender.com",
       // Render hostnames — sandbox
       "https://offload-admin-sandbox.onrender.com",
