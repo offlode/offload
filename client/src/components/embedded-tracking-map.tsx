@@ -126,7 +126,7 @@ export default function EmbeddedTrackingMap({
           icon: {
             path: g.maps.SymbolPath.CIRCLE,
             scale: 10,
-            fillColor: "#5B4BC4",
+            fillColor: "#7C3AED",
             fillOpacity: 1,
             strokeColor: "#ffffff",
             strokeWeight: 3,

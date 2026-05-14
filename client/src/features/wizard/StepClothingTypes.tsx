@@ -56,7 +56,7 @@ export function StepClothingTypes({
             <button
               key={type}
               onClick={() => toggleType(type)}
-              className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-medium transition-all duration-200 ${
+              className={`inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-medium min-h-[44px] transition-all duration-200 ${
                 isActive
                   ? "bg-primary text-primary-foreground ring-1 ring-primary/30"
                   : "bg-card border border-border text-foreground hover:border-primary/30"

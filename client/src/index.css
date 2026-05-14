@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 /* OFFLOAD — Logistics + trust infrastructure platform
-   Brand purple: #5B4BC4 (HSL 248 51% 53%)
+   Brand purple: #7C3AED (HSL 262 83% 58%)
    Dark surfaces (Figma #1C1C1C/#232323/#2E2E2E), Inter
    Matches Figma "Offload new version" source of truth */
 
@@ -27,19 +27,19 @@
   --sidebar: 0 0% 5%;
   --sidebar-foreground: 0 0% 92%;
   --sidebar-border: 0 0% 12%;
-  --sidebar-primary: 248 51% 53%;
+  --sidebar-primary: 262 83% 58%;
   --sidebar-primary-foreground: 0 0% 100%;
   --sidebar-accent: 0 0% 14%;
   --sidebar-accent-foreground: 0 0% 92%;
-  --sidebar-ring: 248 51% 53%;
+  --sidebar-ring: 262 83% 58%;
   
   /* Popover */
   --popover: 0 0% 100%;
   --popover-foreground: 0 0% 7%;
   --popover-border: 0 0% 88%;
   
-  /* Primary — brand purple #5B4BC4 */
-  --primary: 248 51% 53%;
+  /* Primary — brand purple #7C3AED */
+  --primary: 262 83% 58%;
   --primary-foreground: 0 0% 100%;
   
   /* Secondary */
@@ -51,7 +51,7 @@
   --muted-foreground: 0 0% 50%;
   
   /* Accent — soft purple tint */
-  --accent: 248 20% 95%;
+  --accent: 262 20% 95%;
   --accent-foreground: 0 0% 7%;
   
   /* Destructive */
@@ -60,10 +60,10 @@
   
   /* Input */
   --input: 0 0% 82%;
-  --ring: 248 51% 53%;
+  --ring: 262 83% 58%;
   
   /* Chart palette — from Figma color grid */
-  --chart-1: 248 51% 53%;
+  --chart-1: 262 83% 58%;
   --chart-2: 142 71% 45%;
   --chart-3: 213 94% 68%;
   --chart-4: 38 92% 50%;
@@ -147,11 +147,11 @@
   --sidebar: 0 0% 3%;
   --sidebar-foreground: 0 0% 92%;
   --sidebar-border: 0 0% 12%;
-  --sidebar-primary: 248 51% 58%;
+  --sidebar-primary: 262 83% 58%;
   --sidebar-primary-foreground: 0 0% 100%;
   --sidebar-accent: 0 0% 14%;
   --sidebar-accent-foreground: 0 0% 92%;
-  --sidebar-ring: 248 51% 58%;
+  --sidebar-ring: 262 83% 58%;
   
   /* Popover */
   --popover: 0 0% 10%;
@@ -159,7 +159,7 @@
   --popover-border: 0 0% 18%;
   
   /* Primary — brand purple, slightly brighter for dark */
-  --primary: 248 51% 58%;
+  --primary: 262 83% 58%;
   --primary-foreground: 0 0% 100%;
   
   /* Secondary */
@@ -180,7 +180,7 @@
   
   /* Input */
   --input: 0 0% 22%;
-  --ring: 248 51% 58%;
+  --ring: 262 83% 58%;
   
   /* Charts — brighter for dark bg, from Figma palette */
   --chart-1: 270 95% 75%;
@@ -351,11 +351,11 @@
 
 /* Gradient utilities removed — solid colors only */
 .gradient-primary {
-  background: hsl(248 51% 53%);
+  background: hsl(262 83% 58%);
 }
 
 .gradient-fresh {
-  background: hsl(248 51% 53%);
+  background: hsl(262 83% 58%);
 }
 
 /* ─── Status badge colors ─── */

@@ -13,32 +13,8 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/auth-context";
 import { VoiceOrderModal } from "@/components/voice-order";
 import { apiRequest } from "@/lib/queryClient";
+import { friendlyStatus } from "@/lib/order-status";
 import type { Order, Vendor, Address } from "@shared/schema";
-
-const FRIENDLY_STATUS: Record<string, string> = {
-  pending: "Pending",
-  confirmed: "Confirmed",
-  driver_assigned: "Driver assigned",
-  driver_en_route_pickup: "Driver picking up",
-  pickup_in_progress: "Picking up",
-  picked_up: "Picked up",
-  at_laundromat: "At laundromat",
-  washing: "Being washed",
-  wash_complete: "Wash complete",
-  folded_packaged: "Folded & Packaged",
-  final_weight_verified: "Final Weight Verified",
-  packing: "Packing",
-  ready_for_delivery: "Ready for delivery",
-  out_for_delivery: "Out for delivery",
-  driver_en_route_delivery: "Driver delivering",
-  delivered: "Delivered",
-  cancelled: "Cancelled",
-  disputed: "Disputed",
-};
-
-function friendlyStatus(s: string) {
-  return FRIENDLY_STATUS[s] || s.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-}
 
 // Landing view for logged-out users
 function LandingView() {
@@ -176,7 +152,7 @@ export default function HomePage() {
         <Link href="/order/new">
           <Card
             data-testid="card-schedule-pickup"
-            className="relative overflow-hidden bg-gradient-to-br from-primary to-primary/70 text-primary-foreground p-6 cursor-pointer group transition-all duration-300 hover:shadow-[0_0_40px_rgba(123,92,246,0.25)]"
+            className="relative overflow-hidden bg-gradient-to-br from-primary to-primary/70 text-primary-foreground p-6 cursor-pointer group transition-all duration-300 hover:shadow-[0_0_40px_rgba(124,58,237,0.25)]"
           >
             {/* Decorative orbs */}
             <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full -mr-10 -mt-10 blur-sm" />
@@ -202,7 +178,7 @@ export default function HomePage() {
       {activeOrder && (
         <div className="px-5 mb-6">
           <Link href={`/orders/${activeOrder.id}`}>
-            <Card className="p-4 border-primary/20 bg-primary/5 cursor-pointer transition-all duration-200 hover:border-primary/40 hover:shadow-[0_0_20px_rgba(123,92,246,0.08)]" data-testid="card-active-order">
+            <Card className="p-4 border-primary/20 bg-primary/5 cursor-pointer transition-all duration-200 hover:border-primary/40 hover:shadow-[0_0_20px_rgba(124,58,237,0.08)]" data-testid="card-active-order">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center relative">
                   <Truck className="w-5 h-5 text-primary" />

@@ -17,11 +17,18 @@ export function WizardProgress({ currentStep, skipStep3 }: WizardProgressProps) 
   const progress = totalSteps > 0 ? ((currentIndex + 1) / totalSteps) * 100 : 0;
 
   return (
-    <div className="px-5 pt-4 pb-2">
+    <div
+      className="px-5 pt-4 pb-2"
+      role="progressbar"
+      aria-valuemin={1}
+      aria-valuemax={totalSteps}
+      aria-valuenow={currentIndex + 1}
+      aria-label={`Step ${currentIndex + 1} of ${totalSteps}`}
+    >
       {/* Progress bar */}
       <div className="relative h-1.5 bg-muted rounded-full overflow-hidden mb-3">
         <div
-          className="absolute inset-y-0 left-0 bg-primary rounded-full transition-all duration-500 ease-out"
+          className="absolute inset-y-0 left-0 bg-primary rounded-full transition-all duration-300 ease-out"
           style={{ width: `${progress}%` }}
         />
       </div>

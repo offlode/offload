@@ -3,8 +3,8 @@
 
 export const colors = {
   // Brand
-  primaryPurple: "#7C3AED",
-  primaryPurpleHsl: "263 70% 58%",
+  primary: "#7C3AED",
+  primaryHsl: "262 83% 58%",
 
   // Surfaces (dark theme)
   surfaceBase: "#1C1C1C",
@@ -67,7 +67,7 @@ export const ORDER_PROGRESS_LABELS = [
   { key: "at_facility", label: "At Facility" },
   { key: "washing", label: "Washing" },
   { key: "wash_complete", label: "Wash Complete" },
-  { key: "folded_packaged", label: "Laundry Folded & Packaged" },
+  { key: "folded_packaged", label: "Folded & Packaged" },
   { key: "final_weight_verified", label: "Final Weight Verified" },
   { key: "ready_for_delivery", label: "Ready for Delivery" },
   { key: "out_for_delivery", label: "Out for Delivery" },

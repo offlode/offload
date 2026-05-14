@@ -341,11 +341,11 @@ export function StepAddress({
           <Calendar className="w-3.5 h-3.5" /> Pickup Date
         </Label>
         <div className="grid grid-cols-3 gap-2">
-          {dateOptions.slice(0, 6).map(opt => (
+          {dateOptions.slice(0, 7).map(opt => (
             <button
               key={opt.value}
               onClick={() => onDateChange(opt.value)}
-              className={`p-2.5 rounded-xl text-xs font-medium text-center transition-all ${
+              className={`p-2.5 rounded-xl text-xs font-medium text-center min-h-[44px] flex items-center justify-center transition-all ${
                 pickupDate === opt.value
                   ? "bg-primary text-primary-foreground ring-1 ring-primary/30"
                   : "bg-card border border-border hover:border-primary/30"
@@ -368,7 +368,7 @@ export function StepAddress({
             <button
               key={w}
               onClick={() => onTimeChange(w)}
-              className={`p-2.5 rounded-xl text-xs font-medium text-center transition-all ${
+              className={`p-2.5 rounded-xl text-xs font-medium text-center min-h-[44px] flex items-center justify-center transition-all ${
                 pickupTimeWindow === w
                   ? "bg-primary text-primary-foreground ring-1 ring-primary/30"
                   : "bg-card border border-border hover:border-primary/30"

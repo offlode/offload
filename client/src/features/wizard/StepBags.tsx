@@ -51,11 +51,15 @@ export function StepBags({ bags, onChange }: StepBagsProps) {
           return (
             <Card
               key={size}
-              className={`p-4 transition-all duration-200 ${
+              className={`p-4 transition-all duration-200 cursor-pointer ${
                 isSelected
                   ? "border-primary ring-1 ring-primary/20"
                   : "hover:border-primary/30"
               }`}
+              onClick={() => { if (qty === 0) updateQuantity(size, 1); }}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === "Enter" && qty === 0) updateQuantity(size, 1); }}
             >
               <div className="flex items-center gap-4">
                 <div className={`w-12 h-12 rounded-xl flex items-center justify-center font-bold text-sm ${
@@ -78,7 +82,7 @@ export function StepBags({ bags, onChange }: StepBagsProps) {
                 <Button
                   variant="outline"
                   size="icon"
-                  className="h-8 w-8 rounded-full"
+                  className="h-11 w-11 rounded-full"
                   onClick={() => updateQuantity(size, -1)}
                   disabled={qty === 0}
                   data-testid={`bag-${size}-minus`}
@@ -91,7 +95,7 @@ export function StepBags({ bags, onChange }: StepBagsProps) {
                 <Button
                   variant="outline"
                   size="icon"
-                  className="h-8 w-8 rounded-full"
+                  className="h-11 w-11 rounded-full"
                   onClick={() => updateQuantity(size, 1)}
                   data-testid={`bag-${size}-plus`}
                 >
