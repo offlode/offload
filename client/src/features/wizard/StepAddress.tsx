@@ -1,0 +1,193 @@
+import { useEffect, useRef, useState } from "react";
+import { MapPin, Calendar, Clock, AlertCircle } from "lucide-react";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+
+interface StepAddressProps {
+  address: string;
+  addressPlaceId: string;
+  pickupDate: string;
+  pickupTimeWindow: string;
+  specialInstructions: string;
+  onAddressChange: (address: string, placeId: string) => void;
+  onDateChange: (date: string) => void;
+  onTimeChange: (window: string) => void;
+  onInstructionsChange: (instructions: string) => void;
+}
+
+const TIME_WINDOWS = [
+  "8:00 AM - 10:00 AM",
+  "10:00 AM - 12:00 PM",
+  "12:00 PM - 2:00 PM",
+  "2:00 PM - 4:00 PM",
+  "4:00 PM - 6:00 PM",
+  "6:00 PM - 8:00 PM",
+];
+
+export function StepAddress({
+  address,
+  addressPlaceId,
+  pickupDate,
+  pickupTimeWindow,
+  specialInstructions,
+  onAddressChange,
+  onDateChange,
+  onTimeChange,
+  onInstructionsChange,
+}: StepAddressProps) {
+  const autocompleteRef = useRef<HTMLInputElement>(null);
+  const [hasGoogleMaps, setHasGoogleMaps] = useState(false);
+
+  useEffect(() => {
+    const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+    if (!apiKey || !autocompleteRef.current) return;
+
+    const g = window as any;
+
+    // Check if google maps Places is available
+    if (g.google?.maps?.places) {
+      initAutocomplete();
+      return;
+    }
+
+    // Load the script if not already loaded
+    const existing = document.querySelector('script[src*="maps.googleapis.com"]');
+    if (existing) {
+      existing.addEventListener("load", initAutocomplete);
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`;
+    script.async = true;
+    script.onload = initAutocomplete;
+    document.head.appendChild(script);
+
+    function initAutocomplete() {
+      if (!autocompleteRef.current) return;
+      try {
+        const gm = (window as any).google;
+        const ac = new gm.maps.places.Autocomplete(autocompleteRef.current, {
+          types: ["address"],
+          componentRestrictions: { country: "us" },
+        });
+        ac.addListener("place_changed", () => {
+          const place = ac.getPlace();
+          if (place.formatted_address && place.place_id) {
+            onAddressChange(place.formatted_address, place.place_id);
+          }
+        });
+        setHasGoogleMaps(true);
+      } catch {
+        // Google Maps not available — fall back to plain text
+      }
+    }
+  }, [onAddressChange]);
+
+  // Generate date options for next 7 days
+  const dateOptions = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() + i);
+    const value = d.toISOString().split("T")[0];
+    const label = i === 0
+      ? "Today"
+      : i === 1
+      ? "Tomorrow"
+      : d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+    return { value, label };
+  });
+
+  return (
+    <div className="px-5 space-y-4">
+      <div>
+        <h2 className="text-lg font-bold mb-1">Pickup Details</h2>
+        <p className="text-sm text-muted-foreground">
+          Where and when should we pick up your laundry?
+        </p>
+      </div>
+
+      {/* Address */}
+      <div>
+        <Label className="text-xs text-muted-foreground mb-1.5 flex items-center gap-1.5">
+          <MapPin className="w-3.5 h-3.5" /> Pickup Address
+        </Label>
+        <Input
+          ref={autocompleteRef}
+          value={address}
+          onChange={e => onAddressChange(e.target.value, addressPlaceId)}
+          placeholder="Enter your address"
+          className="h-12 rounded-xl"
+          data-testid="input-address"
+        />
+        {!hasGoogleMaps && address && !addressPlaceId && (
+          <p className="text-xs text-amber-500 mt-1 flex items-center gap-1">
+            <AlertCircle className="w-3 h-3" />
+            We'll verify your address
+          </p>
+        )}
+      </div>
+
+      {/* Date picker */}
+      <div>
+        <Label className="text-xs text-muted-foreground mb-1.5 flex items-center gap-1.5">
+          <Calendar className="w-3.5 h-3.5" /> Pickup Date
+        </Label>
+        <div className="grid grid-cols-3 gap-2">
+          {dateOptions.slice(0, 6).map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => onDateChange(opt.value)}
+              className={`p-2.5 rounded-xl text-xs font-medium text-center transition-all ${
+                pickupDate === opt.value
+                  ? "bg-primary text-primary-foreground ring-1 ring-primary/30"
+                  : "bg-card border border-border hover:border-primary/30"
+              }`}
+              data-testid={`date-${opt.value}`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Time window */}
+      <div>
+        <Label className="text-xs text-muted-foreground mb-1.5 flex items-center gap-1.5">
+          <Clock className="w-3.5 h-3.5" /> Pickup Window
+        </Label>
+        <div className="grid grid-cols-2 gap-2">
+          {TIME_WINDOWS.map(w => (
+            <button
+              key={w}
+              onClick={() => onTimeChange(w)}
+              className={`p-2.5 rounded-xl text-xs font-medium text-center transition-all ${
+                pickupTimeWindow === w
+                  ? "bg-primary text-primary-foreground ring-1 ring-primary/30"
+                  : "bg-card border border-border hover:border-primary/30"
+              }`}
+              data-testid={`time-${w.replace(/\s/g, "-")}`}
+            >
+              {w}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Special instructions */}
+      <div>
+        <Label className="text-xs text-muted-foreground mb-1.5 block">
+          Special Instructions (optional)
+        </Label>
+        <Textarea
+          value={specialInstructions}
+          onChange={e => onInstructionsChange(e.target.value)}
+          placeholder="e.g. Leave with doorman, ring buzzer #3..."
+          className="min-h-[80px] text-sm rounded-xl"
+          data-testid="input-instructions"
+        />
+      </div>
+    </div>
+  );
+}

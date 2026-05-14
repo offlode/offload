@@ -5,8 +5,9 @@ import {
   User, Package, DollarSign, Star, Heart, MapPin, CreditCard,
   Bell, Shield, Settings, HelpCircle, LogOut, ChevronRight,
   Truck, Sun, Moon, LayoutDashboard, X, Check, ChevronDown, ArrowLeft,
-  Trash2
+  Trash2, Lock, Smartphone, QrCode, Copy, Loader2
 } from "lucide-react";
+import { CertifiedPanel } from "@/components/ui/certified-panel";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -81,6 +82,10 @@ export default function ProfilePage() {
   const [signOutOpen, setSignOutOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [accountDeleted, setAccountDeleted] = useState(false);
+  const [twoFAOpen, setTwoFAOpen] = useState(false);
+  const [twoFASecret, setTwoFASecret] = useState<{ qrUrl: string; secret: string; backupCodes: string[] } | null>(null);
+  const [twoFACode, setTwoFACode] = useState("");
+  const [twoFASetupDone, setTwoFASetupDone] = useState(false);
   const [editName, setEditName] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [editPhone, setEditPhone] = useState("");
@@ -221,6 +226,47 @@ export default function ProfilePage() {
     },
   });
 
+  // 2FA setup
+  const twoFASetupMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("/api/2fa/setup", { method: "POST" });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      setTwoFASecret({
+        qrUrl: data.qrUrl || data.otpauth_url || "",
+        secret: data.secret || data.base32 || "",
+        backupCodes: data.backupCodes || [],
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "2FA setup failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const twoFAVerifyMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("/api/2fa/verify", {
+        method: "POST",
+        body: JSON.stringify({ code: twoFACode }),
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      setTwoFASetupDone(true);
+      toast({ title: "2FA enabled", description: "Your account is now protected with two-factor authentication." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Invalid code", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // Favorite vendor = most-used or highest-rated from order history
+  const favoriteVendor = vendors?.reduce((best: any, v: any) => {
+    if (!best) return v;
+    return (v.rating || 0) > (best.rating || 0) ? v : best;
+  }, null);
+
   // Use authoritative user account data, fallback to computed from orders
   const totalOrders = user?.totalOrders || orders?.length || 0;
   const completedOrders = orders?.filter(o => o.status === "delivered") || [];
@@ -306,6 +352,24 @@ export default function ProfilePage() {
           </div>
         </Card>
       </div>
+
+      {/* Favorite Vendor Badge */}
+      {favoriteVendor && (
+        <div className="px-5 mb-4">
+          <Card className="p-4 border-amber-500/20 bg-amber-500/5">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-amber-500/10 flex items-center justify-center">
+                <Star className="w-5 h-5 text-amber-500" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-amber-500 font-semibold">Favorite Vendor</p>
+                <p className="text-sm font-bold">{favoriteVendor.name}</p>
+                <p className="text-xs text-muted-foreground">{favoriteVendor.rating?.toFixed(1)}★ · {favoriteVendor.reviewCount || 0} reviews</p>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
 
       {/* Quick Actions */}
       <div className="px-5 mb-4">
@@ -416,6 +480,35 @@ export default function ProfilePage() {
         </Card>
       </div>
 
+      {/* Two-Factor Authentication */}
+      <div className="px-5 mb-4">
+        <h3 className="text-sm font-semibold mb-2">Security</h3>
+        <Card className="px-4 divide-y divide-border">
+          <SettingsRow
+            icon={<Lock className="w-4 h-4" />}
+            label="Two-Factor Authentication"
+            value={twoFASetupDone ? "Enabled" : "Protect your account"}
+            color={twoFASetupDone ? "bg-emerald-500/15 text-emerald-400" : "bg-primary/15 text-primary"}
+            onClick={() => {
+              if (!twoFASetupDone) {
+                setTwoFAOpen(true);
+                twoFASetupMutation.mutate();
+              } else {
+                toast({ title: "2FA is enabled", description: "Your account is protected." });
+              }
+            }}
+            rightElement={twoFASetupDone ? (
+              <Badge variant="secondary" className="bg-emerald-500/15 text-emerald-400 text-[10px]">Active</Badge>
+            ) : undefined}
+          />
+        </Card>
+      </div>
+
+      {/* Offload Certified Education Panel */}
+      <div className="px-5 mb-4">
+        <CertifiedPanel />
+      </div>
+
       {/* Support */}
       <div className="px-5 mb-4">
         <h3 className="text-sm font-semibold mb-2">Support</h3>
@@ -434,7 +527,7 @@ export default function ProfilePage() {
             label="Help Center"
             value="FAQs and support"
             color="bg-muted text-muted-foreground"
-            onClick={() => navigate("/support")}
+            onClick={() => navigate("/help")}
           />
           <SettingsRow
             icon={<LogOut className="w-4 h-4" />}
@@ -670,6 +763,96 @@ export default function ProfilePage() {
                 </AccordionContent>
               </AccordionItem>
             </Accordion>
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      {/* 2FA Setup Sheet */}
+      <Sheet open={twoFAOpen} onOpenChange={setTwoFAOpen}>
+        <SheetContent side="bottom" className="max-h-[80vh] rounded-t-2xl">
+          <SheetHeader>
+            <SheetTitle>Enable Two-Factor Authentication</SheetTitle>
+          </SheetHeader>
+          <div className="mt-4 space-y-4">
+            {twoFASetupMutation.isPending ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                <span className="ml-2 text-sm text-muted-foreground">Setting up...</span>
+              </div>
+            ) : twoFASecret ? (
+              <>
+                <div className="text-center">
+                  <p className="text-sm text-muted-foreground mb-3">
+                    Scan this QR code with your authenticator app (Google Authenticator, Authy, etc.)
+                  </p>
+                  {twoFASecret.qrUrl ? (
+                    <div className="flex justify-center mb-3">
+                      <img
+                        src={twoFASecret.qrUrl}
+                        alt="2FA QR Code"
+                        className="w-48 h-48 rounded-lg bg-white p-2"
+                      />
+                    </div>
+                  ) : (
+                    <Card className="p-4 mb-3">
+                      <div className="flex items-center justify-center gap-2">
+                        <QrCode className="w-5 h-5 text-muted-foreground" />
+                        <p className="text-xs text-muted-foreground">QR code unavailable — use manual entry</p>
+                      </div>
+                    </Card>
+                  )}
+                  {twoFASecret.secret && (
+                    <div className="flex items-center justify-center gap-2 mb-4">
+                      <code className="text-xs bg-muted px-2 py-1 rounded font-mono">{twoFASecret.secret}</code>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(twoFASecret.secret);
+                          toast({ title: "Copied!", description: "Secret key copied to clipboard." });
+                        }}
+                        className="p-1 rounded hover:bg-muted"
+                      >
+                        <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Backup codes */}
+                {twoFASecret.backupCodes.length > 0 && (
+                  <Card className="p-4">
+                    <p className="text-xs font-semibold mb-2">Backup Codes — save these somewhere safe</p>
+                    <div className="grid grid-cols-2 gap-1">
+                      {twoFASecret.backupCodes.map((code, i) => (
+                        <code key={i} className="text-xs font-mono text-muted-foreground bg-muted px-2 py-1 rounded text-center">{code}</code>
+                      ))}
+                    </div>
+                  </Card>
+                )}
+
+                {/* Verify */}
+                <div>
+                  <Label className="text-xs text-muted-foreground mb-1.5 block">Enter the 6-digit code from your app</Label>
+                  <Input
+                    value={twoFACode}
+                    onChange={e => setTwoFACode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    placeholder="000000"
+                    className="h-12 text-center text-lg font-mono tracking-widest"
+                    maxLength={6}
+                    data-testid="input-2fa-code"
+                  />
+                </div>
+                <Button
+                  className="w-full"
+                  disabled={twoFACode.length !== 6 || twoFAVerifyMutation.isPending}
+                  onClick={() => twoFAVerifyMutation.mutate()}
+                  data-testid="button-verify-2fa"
+                >
+                  {twoFAVerifyMutation.isPending ? "Verifying..." : "Enable 2FA"}
+                </Button>
+              </>
+            ) : (
+              <p className="text-sm text-destructive text-center">Failed to initialize 2FA setup. Please try again.</p>
+            )}
           </div>
         </SheetContent>
       </Sheet>

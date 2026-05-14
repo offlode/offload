@@ -61,6 +61,10 @@ import SupportPage from "@/pages/support";
 import NotFound from "@/pages/not-found";
 import ForgotPasswordPage from "@/pages/forgot-password";
 import ResetPasswordPage from "@/pages/reset-password";
+import OrderNewPage from "@/features/wizard/OrderNewPage";
+import NotificationsPage from "@/features/notifications/NotificationsPage";
+import HelpPage from "@/features/help/HelpPage";
+import OrderTrackingPage from "@/features/tracking/OrderTrackingPage";
 
 function RequireAuth({ children, allowedRoles }: { children: React.ReactNode; allowedRoles?: string[] }) {
   const { user, isAuthenticated } = useAuth();
@@ -104,8 +108,11 @@ function AppRouter() {
       <Route path="/orders">
         {() => <RequireAuth allowedRoles={["customer"]}><OrdersPage /></RequireAuth>}
       </Route>
+      <Route path="/order/new">
+        {() => <RequireAuth allowedRoles={["customer"]}><OrderNewPage /></RequireAuth>}
+      </Route>
       <Route path="/orders/:id">
-        {() => <RequireAuth allowedRoles={["customer"]}><OrderDetailPage /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["customer"]}><OrderTrackingPage /></RequireAuth>}
       </Route>
       <Route path="/profile">
         {() => <RequireAuth><ProfilePage /></RequireAuth>}
@@ -141,6 +148,12 @@ function AppRouter() {
       </Route>
       <Route path="/track">
         {() => <RequireAuth allowedRoles={["customer"]}><TrackEntryPage /></RequireAuth>}
+      </Route>
+      <Route path="/notifications">
+        {() => <RequireAuth allowedRoles={["customer"]}><NotificationsPage /></RequireAuth>}
+      </Route>
+      <Route path="/help">
+        {() => <RequireAuth allowedRoles={["customer"]}><HelpPage /></RequireAuth>}
       </Route>
       <Route path="/support">
         {() => <RequireAuth allowedRoles={["customer"]}><SupportPage /></RequireAuth>}

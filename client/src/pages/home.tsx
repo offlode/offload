@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import {
   MapPin, ArrowRight, Star, Shield, Sparkles, Settings2,
-  ClipboardList, ChevronRight, Truck, Clock, Shirt, Zap, Package, Bell, Mic
+  ClipboardList, ChevronRight, Truck, Clock, Shirt, Package, Mic, Gift
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,8 @@ const FRIENDLY_STATUS: Record<string, string> = {
   at_laundromat: "At laundromat",
   washing: "Being washed",
   wash_complete: "Wash complete",
+  folded_packaged: "Folded & Packaged",
+  final_weight_verified: "Weight Verified",
   packing: "Packing",
   ready_for_delivery: "Ready for delivery",
   out_for_delivery: "Out for delivery",
@@ -36,41 +38,6 @@ const FRIENDLY_STATUS: Record<string, string> = {
 
 function friendlyStatus(s: string) {
   return FRIENDLY_STATUS[s] || s.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-}
-
-function WashStyleCard({
-  icon, title, description, badge, badgeColor, cta, onClick
-}: {
-  icon: React.ReactNode; title: string; description: string;
-  badge?: string; badgeColor?: string; cta?: string; onClick?: () => void;
-}) {
-  return (
-    <Card
-      className="p-4 flex gap-3 cursor-pointer min-w-[240px] max-w-[260px] shrink-0 snap-start transition-all duration-200 hover:border-primary/30 hover:shadow-[0_0_20px_rgba(123,92,246,0.08)] active:scale-[0.98]"
-      onClick={onClick}
-      data-testid={`card-wash-${title.toLowerCase().replace(/\s+/g, "-")}`}
-    >
-      <div className="shrink-0 w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
-        {icon}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-1">
-          <h4 className="font-semibold text-sm">{title}</h4>
-          {badge && (
-            <Badge variant="secondary" className={`text-[10px] px-1.5 py-0 ${badgeColor || ""}`}>
-              {badge}
-            </Badge>
-          )}
-        </div>
-        <p className="text-xs text-muted-foreground leading-relaxed">{description}</p>
-        {cta && (
-          <span className="text-xs text-primary font-medium mt-2 flex items-center gap-1">
-            {cta} <ChevronRight className="w-3 h-3" />
-          </span>
-        )}
-      </div>
-    </Card>
-  );
 }
 
 // Landing view for logged-out users
@@ -134,6 +101,18 @@ function LandingView() {
   );
 }
 
+// Nearby vendor skeleton card
+function VendorSkeleton() {
+  return (
+    <Card className="p-4 min-w-[200px] max-w-[220px] shrink-0 snap-start">
+      <Skeleton className="w-10 h-10 rounded-full mb-3" />
+      <Skeleton className="h-4 w-3/4 mb-2" />
+      <Skeleton className="h-3 w-full mb-1" />
+      <Skeleton className="h-3 w-2/3" />
+    </Card>
+  );
+}
+
 export default function HomePage() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -161,11 +140,13 @@ export default function HomePage() {
   }
 
   const defaultAddr = addressList?.find(a => a.isDefault) || addressList?.[0];
-  const topVendor = vendors?.find(v => v.certified && v.rating && v.rating >= 4.7);
   const activeOrders = recentOrders?.filter(o =>
     !["delivered", "cancelled"].includes(o.status)
   ) || [];
   const activeOrder = activeOrders[0];
+
+  // Loyalty points (from user object if available)
+  const loyaltyPoints = (user as any)?.loyaltyPoints ?? 0;
 
   const greeting = () => {
     const hour = new Date().getHours();
@@ -190,9 +171,9 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* Hero CTA Card */}
+      {/* Hero CTA Card — "Schedule a Pickup" with primary purple CTA → /order/new */}
       <div className="px-5 mb-6">
-        <Link href="/schedule">
+        <Link href="/order/new">
           <Card
             data-testid="card-schedule-pickup"
             className="relative overflow-hidden bg-gradient-to-br from-primary bg-primary text-primary-foreground p-6 cursor-pointer group transition-all duration-300 hover:shadow-[0_0_40px_rgba(123,92,246,0.25)]"
@@ -200,11 +181,10 @@ export default function HomePage() {
             {/* Decorative orbs */}
             <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full -mr-10 -mt-10 blur-sm" />
             <div className="absolute bottom-0 left-0 w-24 h-24 bg-white/5 rounded-full -ml-8 -mb-8 blur-sm" />
-            <div className="absolute top-1/2 right-1/4 w-16 h-16 bg-white/3 rounded-full blur-md" />
 
-            <h2 className="text-lg font-bold mb-1.5 relative z-10">Ready for fresh laundry?</h2>
+            <h2 className="text-lg font-bold mb-1.5 relative z-10">Schedule a Pickup</h2>
             <p className="text-sm text-white/80 mb-4 relative z-10 leading-relaxed max-w-[280px]">
-              We'll pick it up, wash it with care, and deliver it back — fresh and folded.
+              Customize your wash, choose a time, and we'll handle the rest.
             </p>
             <Button
               variant="secondary"
@@ -212,7 +192,7 @@ export default function HomePage() {
               className="bg-white/15 border border-white/20 text-white no-default-hover-elevate no-default-active-elevate hover:bg-white/25 transition-colors"
               data-testid="button-schedule"
             >
-              Schedule Pickup <ArrowRight className="w-4 h-4 ml-1 group-hover:translate-x-0.5 transition-transform" />
+              Start Your Order <ArrowRight className="w-4 h-4 ml-1 group-hover:translate-x-0.5 transition-transform" />
             </Button>
           </Card>
         </Link>
@@ -226,7 +206,6 @@ export default function HomePage() {
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center relative">
                   <Truck className="w-5 h-5 text-primary" />
-                  {/* Pulse indicator */}
                   <span className="absolute -top-0.5 -right-0.5 w-3 h-3 bg-emerald-400 rounded-full animate-pulse" />
                 </div>
                 <div className="flex-1 min-w-0">
@@ -247,114 +226,105 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* Top Vendor */}
-      {vendorsLoading ? (
-        <div className="px-5 mb-6"><Skeleton className="h-20 w-full rounded-lg" /></div>
-      ) : topVendor && (
-        <div className="px-5 mb-6">
-          <Card
-            className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 hover:shadow-[0_0_20px_rgba(123,92,246,0.08)] active:scale-[0.99]"
-            data-testid="card-top-vendor"
-            onClick={() => {
-              toast({
-                title: topVendor.name,
-                description: `${topVendor.address}, ${topVendor.city} — ${topVendor.rating}★ (${topVendor.reviewCount} reviews). ${topVendor.performanceTier === "elite" ? "Elite" : topVendor.performanceTier === "premium" ? "Premium" : "Standard"} tier vendor.`,
-              });
-            }}
-          >
-            <div className="flex items-start gap-3">
-              <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center shrink-0">
-                <Shield className="w-5 h-5 text-emerald-500" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <p className="text-sm font-semibold text-emerald-400">Top-Rated Vendor Near You</p>
+      {/* Nearby Vendors Carousel */}
+      <div className="mb-6">
+        <h3 className="text-sm font-semibold px-5 mb-3">Nearby Vendors</h3>
+        <div className="flex gap-3 px-5 overflow-x-auto snap-x snap-mandatory pb-2 scrollbar-none" style={{ scrollbarWidth: 'none' }}>
+          {vendorsLoading ? (
+            <>
+              <VendorSkeleton />
+              <VendorSkeleton />
+              <VendorSkeleton />
+            </>
+          ) : vendors && vendors.length > 0 ? (
+            vendors.slice(0, 6).map(vendor => (
+              <Card
+                key={vendor.id}
+                className="p-4 min-w-[200px] max-w-[220px] shrink-0 snap-start cursor-pointer transition-all duration-200 hover:border-primary/30"
+                onClick={() => toast({
+                  title: vendor.name,
+                  description: `${vendor.address}, ${vendor.city} — ${vendor.rating}★`,
+                })}
+                data-testid={`vendor-card-${vendor.id}`}
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-8 h-8 rounded-full bg-emerald-500/10 flex items-center justify-center">
+                    <Shield className="w-4 h-4 text-emerald-500" />
+                  </div>
+                  {vendor.certified && (
+                    <Badge variant="secondary" className="text-[9px] bg-emerald-500/15 text-emerald-400 px-1 py-0">
+                      Certified
+                    </Badge>
+                  )}
                 </div>
-                <div className="flex items-center gap-1 mb-1.5">
-                  {[...Array(5)].map((_, i) => (
-                    <Star key={i} className="w-3 h-3 fill-amber-400 text-amber-400" />
-                  ))}
-                  <span className="text-xs text-muted-foreground ml-1">
-                    {topVendor.reviewCount} reviews
+                <p className="text-sm font-semibold truncate">{vendor.name}</p>
+                <div className="flex items-center gap-1 mt-1">
+                  <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
+                  <span className="text-xs text-muted-foreground">
+                    {vendor.rating?.toFixed(1)} ({vendor.reviewCount || 0})
                   </span>
                 </div>
-                <p className="text-xs text-muted-foreground italic leading-relaxed">
-                  "Clothes folded perfectly, quick and friendly service"
+                <p className="text-[10px] text-muted-foreground mt-1 truncate">
+                  {vendor.city || vendor.address}
                 </p>
-                <p className="text-[10px] text-primary mt-1">{topVendor.name} — Tap for details</p>
-              </div>
-            </div>
-          </Card>
-        </div>
-      )}
-
-      {/* Wash Styles */}
-      <div className="mb-6">
-        <h3 className="text-sm font-semibold px-5 mb-3">Choose Your Wash Style</h3>
-        <div className="flex gap-3 px-5 overflow-x-auto snap-x snap-mandatory pb-2 scrollbar-none" style={{ scrollbarWidth: 'none' }}>
-          <WashStyleCard
-            icon={<Shirt className="w-5 h-5" />}
-            title="Standard Wash"
-            description="Quick, reliable wash with Offload Certified quality."
-            onClick={() => {
-              (window as any).__offload_wash_type = "standard";
-              navigate("/schedule");
-            }}
-          />
-          <WashStyleCard
-            icon={<Sparkles className="w-5 h-5" />}
-            title="Signature Wash"
-            badge="Premium"
-            badgeColor="bg-amber-500/15 text-amber-400"
-            description="Extra love — premium detergent, careful folding, and packaging."
-            onClick={() => {
-              (window as any).__offload_wash_type = "signature";
-              navigate("/schedule");
-            }}
-          />
-          <WashStyleCard
-            icon={<Settings2 className="w-5 h-5" />}
-            title="Your Custom Wash"
-            badge="Saved"
-            description="Your personalized wash settings are ready to go."
-            cta="Use My Custom Preferences"
-            onClick={() => {
-              (window as any).__offload_wash_type = "custom";
-              navigate("/schedule");
-            }}
-          />
+              </Card>
+            ))
+          ) : (
+            <>
+              {/* Honest skeleton placeholders — no fake vendor names */}
+              <Card className="p-4 min-w-[200px] max-w-[220px] shrink-0 snap-start">
+                <Skeleton className="w-8 h-8 rounded-full mb-2" />
+                <Skeleton className="h-4 w-3/4 mb-1" />
+                <Skeleton className="h-3 w-full mb-1" />
+                <p className="text-[10px] text-muted-foreground mt-2">Finding vendors near you...</p>
+              </Card>
+              <Card className="p-4 min-w-[200px] max-w-[220px] shrink-0 snap-start">
+                <Skeleton className="w-8 h-8 rounded-full mb-2" />
+                <Skeleton className="h-4 w-3/4 mb-1" />
+                <Skeleton className="h-3 w-full mb-1" />
+                <p className="text-[10px] text-muted-foreground mt-2">Finding vendors near you...</p>
+              </Card>
+              <Card className="p-4 min-w-[200px] max-w-[220px] shrink-0 snap-start">
+                <Skeleton className="w-8 h-8 rounded-full mb-2" />
+                <Skeleton className="h-4 w-3/4 mb-1" />
+                <Skeleton className="h-3 w-full mb-1" />
+                <p className="text-[10px] text-muted-foreground mt-2">Finding vendors near you...</p>
+              </Card>
+            </>
+          )}
         </div>
       </div>
 
       {/* Quick Actions */}
       <div className="px-5 mb-6">
         <div className="grid grid-cols-2 gap-3">
-          <Link href="/profile">
-            <Card className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 hover:shadow-[0_0_20px_rgba(123,92,246,0.08)] active:scale-[0.98]" data-testid="card-modify-wash">
-              <Settings2 className="w-5 h-5 text-primary mb-2" />
-              <p className="text-sm font-medium">Wash Preferences</p>
-              <p className="text-xs text-muted-foreground mt-0.5">Cold wash, hypoallergenic detergent</p>
-              <p className="text-[10px] text-primary mt-1">Edit preferences →</p>
-            </Card>
-          </Link>
           <Link href="/orders">
-            <Card className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 hover:shadow-[0_0_20px_rgba(123,92,246,0.08)] active:scale-[0.98] relative" data-testid="card-track-orders">
+            <Card className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.98] relative" data-testid="card-track-orders">
               <ClipboardList className="w-5 h-5 text-primary mb-2" />
               <p className="text-sm font-medium">Track Orders</p>
               {activeOrders.length > 0 ? (
-                <p className="text-xs text-muted-foreground mt-0.5">{activeOrders.length} active order{activeOrders.length !== 1 ? 's' : ''}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{activeOrders.length} active</p>
               ) : (
                 <p className="text-xs text-muted-foreground mt-0.5">No active orders</p>
               )}
               {activeOrders.length > 0 && (
-                <span className="absolute top-3 right-3 w-5 h-5 rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center" data-testid="badge-active-orders">
+                <span className="absolute top-3 right-3 w-5 h-5 rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center">
                   {activeOrders.length}
                 </span>
               )}
             </Card>
           </Link>
+          <Link href="/loyalty">
+            <Card className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.98]" data-testid="card-loyalty">
+              <Gift className="w-5 h-5 text-amber-400 mb-2" />
+              <p className="text-sm font-medium">Loyalty Points</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {loyaltyPoints > 0 ? `${loyaltyPoints} pts` : "Start earning"}
+              </p>
+            </Card>
+          </Link>
           <Card
-            className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 hover:shadow-lg active:scale-[0.98] col-span-2 bg-gradient-to-r from-primary/10 to-primary/5 border-primary/20"
+            className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.98] col-span-2 bg-gradient-to-r from-primary/10 to-primary/5 border-primary/20"
             onClick={() => setVoiceOrderOpen(true)}
             data-testid="card-talk-to-offload"
           >
@@ -372,9 +342,9 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* Recent Orders */}
+      {/* Recent Orders (last 3) */}
       <div className="px-5">
-        <h3 className="text-sm font-semibold mb-3">Recent Activity</h3>
+        <h3 className="text-sm font-semibold mb-3">Recent Orders</h3>
         {ordersLoading ? (
           <div className="space-y-3">
             <Skeleton className="h-20 w-full rounded-lg" />
@@ -393,7 +363,7 @@ export default function HomePage() {
 
               return (
                 <Link key={order.id} href={`/orders/${order.id}`}>
-                  <Card className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 hover:shadow-[0_0_20px_rgba(123,92,246,0.08)] active:scale-[0.99]" data-testid={`card-order-${order.id}`}>
+                  <Card className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.99]" data-testid={`card-order-${order.id}`}>
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
                         <div className="relative">
@@ -437,7 +407,7 @@ export default function HomePage() {
             </div>
             <p className="text-sm font-medium mb-1">No orders yet</p>
             <p className="text-xs text-muted-foreground mb-4">Schedule your first pickup and we'll take care of the rest.</p>
-            <Link href="/schedule">
+            <Link href="/order/new">
               <Button size="sm" data-testid="button-first-pickup">Schedule First Pickup</Button>
             </Link>
           </Card>
