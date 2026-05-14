@@ -41,6 +41,8 @@ export const users = pgTable("users", {
   credits: integer("credits").default(0),
   // Wave L: force password change for temp-password employees
   mustChangePassword: boolean("must_change_password").default(false),
+  // Wave L: wash preferences JSON
+  preferences: text("preferences"),
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({ id: true });

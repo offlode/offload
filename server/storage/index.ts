@@ -549,7 +549,9 @@ async function ensureIntegrityConstraints() {
     ["orders", "signature_data TEXT"],
     ["orders", "bag_count INTEGER"],
     ["orders", "pickup_notes TEXT"],
+    ["orders", "separation_fee_cents INTEGER DEFAULT 0"],
     ["users", "must_change_password BOOLEAN DEFAULT FALSE"],
+    ["users", "preferences TEXT"],
     ["vendors", "is_demo BOOLEAN DEFAULT FALSE"],
   ];
   for (const [table, colDef] of wave2Cols) {
