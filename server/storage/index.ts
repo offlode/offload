@@ -535,6 +535,7 @@ async function ensureIntegrityConstraints() {
   // The original migration (0000_high_redwing.sql) created several columns as INTEGER DEFAULT 0/1
   // but the Drizzle schema + bootstrap seed code use proper booleans.
   const boolFixups: Array<[string, string, boolean]> = [
+    // Wave 1 (commit 0e5e8b0)
     ["pricing_tiers", "is_active", true],
     ["add_ons", "is_active", true],
     ["promo_codes", "is_active", true],
@@ -549,6 +550,51 @@ async function ensureIntegrityConstraints() {
     ["orders", "payout_recorded", false],
     ["vendors", "certified", true],
     ["stripe_accounts", "payouts_enabled", false],
+    // Wave 2: payment_methods + full audit of all remaining boolean-in-integer columns
+    ["payment_methods", "is_default", false],
+    ["addresses", "is_default", false],
+    // vendors (service flags + toggles)
+    ["vendors", "admin_override_open", false],
+    ["vendors", "offers_dry_cleaning", false],
+    ["vendors", "offers_alterations", false],
+    ["vendors", "offers_comforters", false],
+    ["vendors", "offers_commercial", false],
+    ["vendors", "offers_stain_treatment", false],
+    ["vendors", "offers_steam_press", false],
+    ["vendors", "offers_hang_dry", false],
+    ["vendors", "owns_drivers", false],
+    ["vendors", "pause_order_intake", false],
+    // stripe_accounts (remaining)
+    ["stripe_accounts", "onboarding_complete", false],
+    ["stripe_accounts", "charges_enabled", false],
+    // notification_rules
+    ["notification_rules", "is_active", true],
+    // partner_applications
+    ["partner_applications", "has_clean_driving_record", false],
+    ["partner_applications", "owns_smartphone", false],
+    ["partner_applications", "consent_background_check", false],
+    ["partner_applications", "accepts_commercial", false],
+    ["partner_applications", "accepts_rush_same_day", false],
+    ["partner_applications", "has_dry_cleaning_on_site", false],
+    ["partner_applications", "accepts_hypoallergenic", false],
+    ["partner_applications", "has_insurance", false],
+    ["partner_applications", "agrees_to_quality_standards", false],
+    ["partner_applications", "agrees_to_pricing", false],
+    ["partner_applications", "agrees_to_terms_of_service", false],
+    ["partner_applications", "agrees_to_background_check", false],
+    // messages / disputes / reviews / notifications
+    ["messages", "is_ai_generated", false],
+    ["disputes", "ai_auto_resolvable", false],
+    ["reviews", "ai_actionable", false],
+    ["notifications", "read", false],
+    // wave-l tables
+    ["wash_runs", "separation_required", false],
+    ["vendor_employees", "active", true],
+    ["performance_bonus_rules", "active", true],
+    ["notification_preferences", "push", true],
+    ["notification_preferences", "email", true],
+    ["notification_preferences", "sms", false],
+    ["user_2fa", "enabled", false],
   ];
   for (const [table, col, defaultVal] of boolFixups) {
     try {
