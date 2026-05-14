@@ -22,25 +22,27 @@ interface QuoteResponse {
 export function StepReview({ state, onEdit }: StepReviewProps) {
   const { user } = useAuth();
 
+  // Build the full quote payload per the backend contract
+  const quotePayload = {
+    bag_counts: state.bags.filter(b => b.quantity > 0).map(b => ({ size: b.size, quantity: b.quantity })),
+    separated: state.separateByType,
+    clothing_types: state.clothingTypes,
+    wash_preferences: state.specialInstructions,
+    address: state.address,
+    pickup_window: state.pickupTimeWindow,
+    service_type: state.serviceType,
+    delivery_speed: state.deliverySpeed,
+  };
+
   // Attempt to get real quote from backend
   const { data: quote, isLoading: quoteLoading } = useQuery<QuoteResponse>({
-    queryKey: ["/api/quote", JSON.stringify({
-      bags: state.bags,
-      separated: state.separateByType,
-      deliverySpeed: state.deliverySpeed,
-      serviceType: state.serviceType,
-    })],
+    queryKey: ["/api/quote", JSON.stringify(quotePayload)],
     queryFn: async () => {
       const res = await fetch("/api/quote", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({
-          bags: state.bags,
-          separated: state.separateByType,
-          deliverySpeed: state.deliverySpeed,
-          serviceType: state.serviceType,
-        }),
+        body: JSON.stringify(quotePayload),
       });
       if (!res.ok) throw new Error("Quote unavailable");
       return res.json();
@@ -181,10 +183,15 @@ export function StepReview({ state, onEdit }: StepReviewProps) {
           </div>
         ) : (
           <div className="space-y-1.5">
-            <div className="flex justify-between text-xs">
-              <span className="text-muted-foreground">Bags total</span>
-              <span>${display.bagsTotal.toFixed(2)}</span>
-            </div>
+            {/* Itemized bag lines */}
+            {state.bags.filter(b => b.quantity > 0).map(b => (
+              <div key={b.size} className="flex justify-between text-xs">
+                <span className="text-muted-foreground">
+                  {b.quantity}x {PRICING[b.size].label}
+                </span>
+                <span>${(b.quantity * PRICING[b.size].price).toFixed(2)}</span>
+              </div>
+            ))}
             {display.separationFee > 0 && (
               <div className="flex justify-between text-xs">
                 <span className="text-muted-foreground">Separation fee</span>

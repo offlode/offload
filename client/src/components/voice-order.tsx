@@ -206,83 +206,130 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
 
   async function processAudio(blob: Blob) {
     setStep("processing");
-    setProcessingLabel("Transcribing your voice…");
+    setProcessingLabel("Processing your voice…");
+
+    const formData = new FormData();
+    const ext = blob.type.includes("mp4") ? "mp4"
+      : blob.type.includes("ogg") ? "ogg"
+      : blob.type.includes("webm") ? "webm"
+      : "webm";
+    formData.append("audio", blob, `voice.${ext}`);
+    formData.append("language", lang);
 
     try {
-      // 1. Transcribe
-      const formData = new FormData();
-      const ext = blob.type.includes("mp4") ? "mp4"
-        : blob.type.includes("ogg") ? "ogg"
-        : blob.type.includes("webm") ? "webm"
-        : "webm";
-      formData.append("audio", blob, `voice.${ext}`);
+      let extractedData: ExtractedOrder | null = null;
+      let text = "";
+      let detectedLang: "en" | "es" = lang;
 
-      const transcribeController = new AbortController();
-      const transcribeTimeout = setTimeout(() => transcribeController.abort(), 30_000);
-
-      let transcribeRes: Response;
+      // Try the unified parse endpoint first
+      // TODO: Once POST /api/voice/parse is live, remove the fallback transcribe+extract path
+      let usedParse = false;
       try {
-        transcribeRes = await fetch("/api/voice/transcribe", {
-          method: "POST",
-          body: formData,
-          credentials: "include",
-          signal: transcribeController.signal,
-        });
-      } finally {
-        clearTimeout(transcribeTimeout);
+        const parseController = new AbortController();
+        const parseTimeout = setTimeout(() => parseController.abort(), 30_000);
+
+        let parseRes: Response;
+        try {
+          parseRes = await fetch("/api/voice/parse", {
+            method: "POST",
+            body: formData,
+            credentials: "include",
+            signal: parseController.signal,
+          });
+        } finally {
+          clearTimeout(parseTimeout);
+        }
+
+        if (parseRes.ok) {
+          const parseData = await parseRes.json();
+          extractedData = parseData as ExtractedOrder;
+          text = parseData.transcript || "";
+          detectedLang = parseData.language || lang;
+          setTranscript(text);
+          usedParse = true;
+        } else if (parseRes.status !== 404) {
+          // Non-404 error — still fall back but log the issue
+          console.warn("[VoiceOrder] /api/voice/parse returned", parseRes.status, "— falling back to transcribe+extract");
+        }
+      } catch (parseErr: any) {
+        // Parse endpoint not available — fall back silently
+        console.warn("[VoiceOrder] /api/voice/parse unavailable — falling back to transcribe+extract", parseErr?.message);
       }
 
-      if (!transcribeRes.ok) {
-        const err = await transcribeRes.json().catch(() => ({}));
-        if (transcribeRes.status === 429) {
-          toast({ title: "Too many requests", description: "Wait a moment and try again.", variant: "destructive" });
+      // Fallback: transcribe → extract (two-step flow)
+      if (!usedParse) {
+        setProcessingLabel("Transcribing your voice…");
+
+        const transcribeController = new AbortController();
+        const transcribeTimeout = setTimeout(() => transcribeController.abort(), 30_000);
+
+        let transcribeRes: Response;
+        try {
+          transcribeRes = await fetch("/api/voice/transcribe", {
+            method: "POST",
+            body: formData,
+            credentials: "include",
+            signal: transcribeController.signal,
+          });
+        } finally {
+          clearTimeout(transcribeTimeout);
+        }
+
+        if (!transcribeRes.ok) {
+          const err = await transcribeRes.json().catch(() => ({}));
+          if (transcribeRes.status === 429) {
+            toast({ title: "Too many requests", description: "Wait a moment and try again.", variant: "destructive" });
+            setStep("record");
+            return;
+          }
+          throw new Error(err.error || "Transcription failed");
+        }
+
+        const transcribeData = await transcribeRes.json();
+
+        if (transcribeData.warning === "language_unsupported") {
+          toast({
+            title: "Language not supported",
+            description: "Please speak in English or Spanish.",
+            variant: "destructive",
+          });
           setStep("record");
           return;
         }
-        throw new Error(err.error || "Transcription failed");
+
+        text = transcribeData.text || "";
+        detectedLang = transcribeData.language || "en";
+        setTranscript(text);
+
+        setProcessingLabel("Extracting order details…");
+
+        const extractController = new AbortController();
+        const extractTimeout = setTimeout(() => extractController.abort(), 30_000);
+
+        let extractRes: Response;
+        try {
+          extractRes = await fetch("/api/voice/extract", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ transcript: text, language: detectedLang }),
+            signal: extractController.signal,
+          });
+        } finally {
+          clearTimeout(extractTimeout);
+        }
+
+        if (!extractRes.ok) {
+          const err = await extractRes.json().catch(() => ({}));
+          throw new Error(err.error || "Extraction failed");
+        }
+
+        extractedData = await extractRes.json();
       }
 
-      const transcribeData = await transcribeRes.json();
-
-      if (transcribeData.warning === "language_unsupported") {
-        toast({
-          title: "Language not supported",
-          description: "Please speak in English or Spanish.",
-          variant: "destructive",
-        });
-        setStep("record");
-        return;
+      if (!extractedData) {
+        throw new Error("No extraction data returned");
       }
-
-      const text: string = transcribeData.text || "";
-      const detectedLang: "en" | "es" = transcribeData.language || "en";
-      setTranscript(text);
-
-      setProcessingLabel("Extracting order details…");
-
-      // 2. Extract
-      const extractController = new AbortController();
-      const extractTimeout = setTimeout(() => extractController.abort(), 30_000);
-
-      let extractRes: Response;
-      try {
-        extractRes = await fetch("/api/voice/extract", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript: text, language: detectedLang }),
-          signal: extractController.signal,
-        });
-      } finally {
-        clearTimeout(extractTimeout);
-      }
-
-      if (!extractRes.ok) {
-        const err = await extractRes.json().catch(() => ({}));
-        throw new Error(err.error || "Extraction failed");
-      }
-
-      const extractedData: ExtractedOrder = await extractRes.json();
 
       // Check Spanish low-confidence
       if (lang === "es" && isSpanishLowConfidence(extractedData, detectedLang)) {
@@ -334,7 +381,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
       serviceType: editServiceType || extracted?.serviceType,
     };
 
-    navigate("/schedule");
+    navigate("/order/new");
     onClose();
   }
 
@@ -419,8 +466,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
                 )}
                 data-testid="button-lang-es"
               >
-                Español
-                <span className="text-[9px] opacity-70">β</span>
+                Español <span className="text-[10px] font-semibold opacity-90">(beta)</span>
               </button>
             </div>
 
@@ -514,7 +560,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
               </div>
               {transcript && (
                 <p className="text-xs text-muted-foreground italic mb-2">
-                  "{transcript}"
+                  <span className="font-semibold not-italic">We heard:</span> "{transcript}"
                 </p>
               )}
               {showSpanishBeta && (
@@ -677,7 +723,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
                 data-testid="button-confirm-voice"
               >
                 <ArrowRight className="w-4 h-4 mr-2" />
-                Continue to Schedule
+                Continue to Order
               </Button>
               <Button
                 variant="ghost"

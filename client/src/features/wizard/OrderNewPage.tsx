@@ -25,7 +25,15 @@ function parseQueryParams(): Partial<WizardState> {
   const partial: Partial<WizardState> = {};
 
   const service = params.get("service");
-  if (service) partial.serviceType = service;
+  if (service) {
+    // "same_day" maps to delivery speed, not service type
+    if (service === "same_day") {
+      partial.deliverySpeed = "same_day" as DeliverySpeed;
+    } else {
+      // wash_fold, dry_cleaning, comforters, etc.
+      partial.serviceType = service;
+    }
+  }
 
   const speed = params.get("speed") || params.get("delivery");
   if (speed === "same_day") partial.deliverySpeed = "same_day" as DeliverySpeed;
@@ -104,7 +112,7 @@ export default function OrderNewPage() {
       case 1: return state.bags.length > 0 && state.bags.some(b => b.quantity > 0);
       case 2: return state.separateByType !== null;
       case 3: return state.clothingTypes.length > 0;
-      case 4: return !!state.address && !!state.pickupDate && !!state.pickupTimeWindow;
+      case 4: return !!state.address && !!state.pickupDate && !!state.pickupTimeWindow && state.serviceAreaAvailable !== false;
       case 5: return !!state.paymentMethodId;
       case 6: return true;
       default: return false;
@@ -209,6 +217,7 @@ export default function OrderNewPage() {
             <StepSeparation
               value={state.separateByType}
               separationFee={state.separationFee}
+              bags={state.bags}
               onChange={v => {
                 update("separateByType", v);
                 if (!v) {
@@ -233,6 +242,8 @@ export default function OrderNewPage() {
               pickupDate={state.pickupDate}
               pickupTimeWindow={state.pickupTimeWindow}
               specialInstructions={state.specialInstructions}
+              serviceType={state.serviceType}
+              serviceAreaStatus={state.serviceAreaAvailable}
               onAddressChange={(addr, placeId) => {
                 update("address", addr);
                 update("addressPlaceId", placeId);
@@ -240,6 +251,7 @@ export default function OrderNewPage() {
               onDateChange={d => update("pickupDate", d)}
               onTimeChange={t => update("pickupTimeWindow", t)}
               onInstructionsChange={i => update("specialInstructions", i)}
+              onServiceAreaChange={available => update("serviceAreaAvailable", available)}
             />
           )}
           {step === 5 && (

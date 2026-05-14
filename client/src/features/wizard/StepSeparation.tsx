@@ -1,13 +1,68 @@
+import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
-import { Check, X, Shirt, AlertCircle } from "lucide-react";
+import { Check, X, Shirt, AlertCircle, Loader2 } from "lucide-react";
+import type { BagSelection } from "./types";
 
 interface StepSeparationProps {
   value: boolean | null;
   separationFee: number;
+  bags: BagSelection[];
   onChange: (separate: boolean) => void;
 }
 
-export function StepSeparation({ value, separationFee, onChange }: StepSeparationProps) {
+export function StepSeparation({ value, separationFee, bags, onChange }: StepSeparationProps) {
+  const [liveFee, setLiveFee] = useState<number | null>(null);
+  const [feeLoading, setFeeLoading] = useState(false);
+  const [feeFailed, setFeeFailed] = useState(false);
+
+  // Fetch live separation fee from vendor config when user selects "Yes, separate"
+  useEffect(() => {
+    if (value !== true) {
+      setLiveFee(null);
+      setFeeLoading(false);
+      setFeeFailed(false);
+      return;
+    }
+
+    let cancelled = false;
+    setFeeLoading(true);
+    setFeeFailed(false);
+
+    fetch("/api/quote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ separated: true, bags }),
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error("Quote unavailable");
+        return res.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        // The response may return separation_fee_cents (cents) or separationFee (dollars)
+        const feeCents = data.separation_fee_cents;
+        const feeDollars = data.separationFee;
+        if (typeof feeCents === "number") {
+          setLiveFee(feeCents / 100);
+        } else if (typeof feeDollars === "number") {
+          setLiveFee(feeDollars);
+        } else {
+          setLiveFee(0);
+        }
+        setFeeLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setFeeFailed(true);
+        setLiveFee(null);
+        setFeeLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [value, bags]);
+
+  const displayFee = liveFee !== null ? liveFee : separationFee;
   return (
     <div className="px-5 space-y-4">
       <div>
@@ -67,9 +122,18 @@ export function StepSeparation({ value, separationFee, onChange }: StepSeparatio
             <div>
               <p className="text-sm font-semibold">Separation Fee</p>
               <p className="text-xs text-muted-foreground mt-0.5">
-                {separationFee > 0
-                  ? `$${separationFee.toFixed(2)} separation fee will be added to your order.`
-                  : "(no extra charge)"}
+                {feeLoading ? (
+                  <span className="flex items-center gap-1">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    (checking...)
+                  </span>
+                ) : feeFailed ? (
+                  "(no extra charge)"
+                ) : displayFee > 0 ? (
+                  `$${displayFee.toFixed(2)} separation fee will be added to your order.`
+                ) : (
+                  "(no extra charge)"
+                )}
               </p>
             </div>
           </div>
