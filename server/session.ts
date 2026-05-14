@@ -64,6 +64,8 @@ const BEARER_EXEMPT_PATHS: string[] = [
   "/api/auth/logout",
   "/api/webhooks/stripe",
   "/api/stripe/webhook",
+  "/api/service-area-requests",
+  "/api/auth/2fa-challenge",
 ];
 
 export function requireBearerToken(req: Request, res: Response, next: NextFunction) {

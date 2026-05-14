@@ -199,3 +199,37 @@ export async function checkCoverage(q: CoverageQuery): Promise<CoverageResult> {
     failures,
   };
 }
+
+// ──────────────────────────────────────────────────────────────
+// Wave L: Simplified service area check (spec item 6)
+// Returns { available, vendor_id?, reason? } for use in checkout gating.
+// ──────────────────────────────────────────────────────────────
+
+export interface ServiceAreaCheckResult {
+  available: boolean;
+  vendor_id?: number;
+  reason?: string;
+}
+
+export async function checkServiceArea(input: {
+  lat?: number;
+  lng?: number;
+  zip?: string;
+  service_type?: string;
+}): Promise<ServiceAreaCheckResult> {
+  const result = await checkCoverage({
+    lat: input.lat,
+    lng: input.lng,
+    zip: input.zip,
+    service: input.service_type,
+  });
+
+  if (result.eligible && !result.checkoutGated && result.matchedVendors.length > 0) {
+    return { available: true, vendor_id: result.matchedVendors[0] };
+  }
+
+  return {
+    available: false,
+    reason: result.reason || "outside_service_area",
+  };
+}

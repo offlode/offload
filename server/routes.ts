@@ -18,6 +18,7 @@ import { registerOrdersOpsRoutes } from "./routes/orders-ops";
 import { registerAdminRoutes } from "./routes/admin";
 import { registerPaymentRoutes } from "./routes/payments";
 import { registerPlatformRoutes } from "./routes/platform";
+import { registerWaveLRoutes } from "./routes/wave-l";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -229,6 +230,7 @@ export async function registerRoutes(
   registerAdminRoutes(app);
   registerPaymentRoutes(app);
   registerPlatformRoutes(app);
+  registerWaveLRoutes(app);
 
   // ── API versioning header ──
   app.use((_req, res, next) => {

@@ -39,6 +39,8 @@ export const users = pgTable("users", {
   lastActiveAt: timestamptz("last_active_at"),
   // Account credits (e.g. from SLA breach refunds)
   credits: integer("credits").default(0),
+  // Wave L: force password change for temp-password employees
+  mustChangePassword: boolean("must_change_password").default(false),
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({ id: true });
@@ -136,6 +138,10 @@ export const vendors = pgTable("vendors", {
   // Demand forecasting
   avgDailyOrders: doublePrecision("avg_daily_orders").default(10),
   peakDayOfWeek: text("peak_day_of_week").default("Monday"),
+  // Wave L: separation fee per order (cents, admin-configurable)
+  separationFeeCents: integer("separation_fee_cents").default(0),
+  // Wave L: demo vendor flag — production excludes is_demo=true vendors
+  isDemo: boolean("is_demo").default(true),
 });
 
 // ─── Service Area Requests — unserved-area demand capture ───
@@ -270,6 +276,11 @@ export const orders = pgTable("orders", {
   bags: text("bags").notNull(), // JSON
   preferences: text("preferences"), // JSON
   serviceType: text("service_type").default("wash_fold"), // wash_fold | dry_cleaning | comforters | mixed
+  // Wave L: wash wizard fields
+  clothingTypes: text("clothing_types"), // postgres text[] stored as text in drizzle
+  separated: boolean("separated").default(false),
+  separationFeeCents: integer("separation_fee_cents").default(0),
+  washPreferences: text("wash_preferences"), // jsonb: {detergent, water_temp, drying, stain, extra_rinse, special_instructions}
   subtotal: doublePrecision("subtotal").default(0),
   tax: doublePrecision("tax").default(0),
   deliveryFee: doublePrecision("delivery_fee").default(0),

@@ -129,6 +129,9 @@ export async function calculateQuotePrice(input: {
   pickupAddress?: string;
   tierFlatPriceCents?: number;
   vendorChoiceMode?: string;              // auto | nearest | preferred | rated
+  // Wave L: separation fee
+  separated?: boolean;
+  separationFeeCents?: number;
 }): Promise<QuotePriceBreakdown> {
   // 1. Resolve tier
   const normalizedTier = TIER_NAME_MAP[input.tierName] || input.tierName;
@@ -180,6 +183,24 @@ export async function calculateQuotePrice(input: {
         addOnItems.push({ id: addon.id, name: addon.displayName, price: addon.price, qty: ao.qty });
       }
     }
+  }
+
+  // 6a-wave-l. Separation fee — if order has separated=true and vendor charges a fee
+  let separationFee = 0;
+  if (input.separated && input.separationFeeCents && input.separationFeeCents > 0) {
+    separationFee = Math.round(input.separationFeeCents) / 100;
+  } else if (input.separated && input.vendorId) {
+    // Try to look up vendor's separation fee
+    try {
+      const v = await storage.getVendor(input.vendorId);
+      if (v && (v as any).separation_fee_cents > 0) {
+        separationFee = (v as any).separation_fee_cents / 100;
+      }
+    } catch { /* skip */ }
+  }
+  if (separationFee > 0) {
+    addOnsTotal += separationFee;
+    addOnItems.push({ id: -1, name: "Separation fee", price: separationFee, qty: 1 });
   }
 
   // 6b. Resolve recommended vendor (for logistics distance + traffic)
