@@ -7,7 +7,7 @@
  */
 import { useEffect } from "react";
 import { useLocation } from "wouter";
-import { Loader2 } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export default function CheckoutPage() {
   const [, navigate] = useLocation();
@@ -20,9 +20,10 @@ export default function CheckoutPage() {
   }, [navigate]);
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center gap-4 text-center px-6">
-      <Loader2 className="w-8 h-8 text-primary animate-spin" />
-      <p className="text-sm text-muted-foreground">Taking you to checkout…</p>
+    <div className="min-h-screen flex flex-col items-center justify-center gap-4 text-center px-6 max-w-lg mx-auto">
+      <Skeleton className="h-8 w-48 rounded-lg" />
+      <Skeleton className="h-4 w-32 rounded" />
+      <p className="text-sm text-muted-foreground">Taking you to checkout...</p>
     </div>
   );
 }

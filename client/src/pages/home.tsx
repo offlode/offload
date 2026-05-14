@@ -83,7 +83,7 @@ function LandingView() {
           {[
             { icon: <Truck className="w-5 h-5 text-primary" />, title: "Free Pickup & Delivery", desc: "We come to you — same day, 24h, or scheduled." },
             { icon: <Shield className="w-5 h-5 text-emerald-400" />, title: "Offload Certified", desc: "All vendors are verified for quality and reliability." },
-            { icon: <Star className="w-5 h-5 text-amber-400" />, title: "Top-Rated Service", desc: "4.9★ average from thousands of happy customers." },
+            { icon: <Star className="w-5 h-5 text-amber-400" />, title: "Top-Rated Service", desc: "Our vendors are vetted and rated by real customers." },
           ].map((f, i) => (
             <Card key={i} className="p-4 flex items-start gap-3" data-testid={`feature-card-${i}`}>
               <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center shrink-0">

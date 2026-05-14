@@ -329,12 +329,12 @@ export default function OrdersPage() {
             </p>
             <p className="text-sm text-muted-foreground mb-4">
               {filter === "all"
-                ? "Schedule your first pickup and we'll take it from here."
-                : "Nothing to show for this filter."}
+                ? "Schedule your first pickup and we'll take care of the rest. Choose your bag size, customize your wash, and pick a time that works for you."
+                : "Nothing to show for this filter. Try switching to a different tab."}
             </p>
             {filter === "all" && (
-              <Link href="/schedule">
-                <Button data-testid="button-schedule-first">Schedule Pickup</Button>
+              <Link href="/order/new">
+                <Button data-testid="button-schedule-first">Schedule a Pickup</Button>
               </Link>
             )}
           </Card>

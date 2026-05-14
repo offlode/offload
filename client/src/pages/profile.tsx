@@ -424,7 +424,7 @@ export default function ProfilePage() {
             <StatCard
               icon={<Star className="w-5 h-5" />}
               label="Rating"
-              value={String(user?.rating || 5.0)}
+              value={user?.rating != null ? String(user.rating) : "--"}
               color="bg-amber-500/15 text-amber-400"
             />
           </div>

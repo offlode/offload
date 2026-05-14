@@ -9,7 +9,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRoute, useLocation, Link } from "wouter";
 import {
-  MapPin, Package, Clock, Search, ArrowRight, Truck, Loader2,
+  MapPin, Package, Clock, Search, ArrowRight, Truck,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -49,8 +49,9 @@ export default function TrackEntryPage() {
   if (paramsWithId?.orderId) {
     navigate(`/tracking/${paramsWithId.orderId}`, { replace: true });
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-primary animate-spin" />
+      <div className="min-h-screen flex flex-col items-center justify-center gap-3 max-w-lg mx-auto px-5">
+        <Skeleton className="h-8 w-48 rounded-lg" />
+        <Skeleton className="h-4 w-32 rounded" />
       </div>
     );
   }
