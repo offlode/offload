@@ -531,20 +531,40 @@ async function ensureIntegrityConstraints() {
     }
   }
 
-  // Fix: convert pricing_tiers.is_active from integer to boolean (original migration created it as INTEGER DEFAULT 1)
-  try {
-    const { rows } = await pool.query(`
-      SELECT data_type FROM information_schema.columns
-      WHERE table_name = 'pricing_tiers' AND column_name = 'is_active'
-    `);
-    if (rows.length > 0 && rows[0].data_type !== 'boolean') {
-      await pool.query(`ALTER TABLE pricing_tiers ALTER COLUMN is_active DROP DEFAULT`);
-      await pool.query(`ALTER TABLE pricing_tiers ALTER COLUMN is_active TYPE boolean USING CASE WHEN is_active::text IN ('1','t','true','yes','y') THEN true ELSE false END`);
-      await pool.query(`ALTER TABLE pricing_tiers ALTER COLUMN is_active SET DEFAULT true`);
-      console.log("[integrity] Converted pricing_tiers.is_active from integer to boolean");
+  // Fix: convert integer-encoded booleans to actual BOOLEAN type.
+  // The original migration (0000_high_redwing.sql) created several columns as INTEGER DEFAULT 0/1
+  // but the Drizzle schema + bootstrap seed code use proper booleans.
+  const boolFixups: Array<[string, string, boolean]> = [
+    ["pricing_tiers", "is_active", true],
+    ["add_ons", "is_active", true],
+    ["promo_codes", "is_active", true],
+    ["service_types", "is_active", true],
+    ["quotes", "is_preferred_vendor", false],
+    ["quotes", "pickup_has_elevator", true],
+    ["orders", "is_reorder", false],
+    ["orders", "pickup_has_elevator", true],
+    ["orders", "delivery_has_elevator", true],
+    ["orders", "weight_discrepancy", false],
+    ["orders", "certified_only", true],
+    ["orders", "payout_recorded", false],
+    ["vendors", "certified", true],
+    ["stripe_accounts", "payouts_enabled", false],
+  ];
+  for (const [table, col, defaultVal] of boolFixups) {
+    try {
+      const { rows } = await pool.query(
+        `SELECT data_type FROM information_schema.columns WHERE table_name = $1 AND column_name = $2`,
+        [table, col],
+      );
+      if (rows.length > 0 && rows[0].data_type !== 'boolean') {
+        await pool.query(`ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT`);
+        await pool.query(`ALTER TABLE ${table} ALTER COLUMN ${col} TYPE boolean USING CASE WHEN ${col}::text IN ('1','t','true','yes','y') THEN true ELSE false END`);
+        await pool.query(`ALTER TABLE ${table} ALTER COLUMN ${col} SET DEFAULT ${defaultVal}`);
+        console.log(`[integrity] Converted ${table}.${col} from integer to boolean`);
+      }
+    } catch (e: any) {
+      console.warn(`[integrity] ${table}.${col} conversion:`, e?.message);
     }
-  } catch (e: any) {
-    console.warn("[integrity] pricing_tiers.is_active conversion:", e?.message);
   }
 
   // Wave 2: vehicle profile columns on drivers
@@ -571,6 +591,23 @@ async function ensureIntegrityConstraints() {
     ["vendors", "is_demo BOOLEAN DEFAULT FALSE"],
     ["orders", "pickup_distance_fee_cents INTEGER DEFAULT 0"],
     ["quotes", "pickup_distance_fee_cents INTEGER DEFAULT 0"],
+    // Wave 3: missing _cents columns for quotes (required by Drizzle schema insert)
+    ["quotes", "laundry_service_price_cents INTEGER DEFAULT 0"],
+    ["quotes", "speed_surcharge_cents INTEGER DEFAULT 0"],
+    ["quotes", "preferred_vendor_surcharge_cents INTEGER DEFAULT 0"],
+    ["quotes", "add_ons_total_cents INTEGER DEFAULT 0"],
+    ["quotes", "floor_fee_cents INTEGER DEFAULT 0"],
+    ["quotes", "handoff_fee_cents INTEGER DEFAULT 0"],
+    ["quotes", "window_discount_cents INTEGER DEFAULT 0"],
+    ["quotes", "promo_discount_cents INTEGER DEFAULT 0"],
+    // Wave 3: missing _cents columns for orders
+    ["orders", "floor_fee_cents INTEGER DEFAULT 0"],
+    ["orders", "handoff_fee_cents INTEGER DEFAULT 0"],
+    ["orders", "window_discount_cents INTEGER DEFAULT 0"],
+    ["orders", "tip_cents INTEGER DEFAULT 0"],
+    ["orders", "overage_charge_cents INTEGER DEFAULT 0"],
+    ["orders", "platform_fee_cents INTEGER DEFAULT 0"],
+    ["orders", "pickup_wait_fee_cents INTEGER DEFAULT 0"],
   ];
   for (const [table, colDef] of wave2Cols) {
     try {
