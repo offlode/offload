@@ -93,6 +93,7 @@ export async function registerRoutes(
       // Render hostnames — sandbox
       "https://offload-admin-sandbox.onrender.com",
       "https://offload-api-sandbox.onrender.com",
+      "https://offload-customer-sandbox.onrender.com",
       // Capacitor native shells (iOS/Android)
       "capacitor://localhost",
       "ionic://localhost",
