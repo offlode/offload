@@ -104,7 +104,7 @@ export function scoreVendor(vendor: Vendor, order: Order, pickupLat: number, pic
   let prefs: any = {};
   try { prefs = order.preferences ? JSON.parse(order.preferences) : {}; } catch (e) { console.warn("[vendor-match] Failed to parse order preferences:", e); }
   let caps: any[] = [];
-  try { caps = vendor.capabilities ? JSON.parse(vendor.capabilities) : []; } catch (e) { console.warn("[vendor-match] Failed to parse vendor capabilities:", e); }
+  try { const parsed = vendor.capabilities ? JSON.parse(vendor.capabilities) : []; caps = Array.isArray(parsed) ? parsed : []; } catch (e) { console.warn("[vendor-match] Failed to parse vendor capabilities:", e); }
   if (!prefs.washType || caps.includes(prefs.washType) || caps.includes("custom")) {
     score += 5;
   }
@@ -162,7 +162,7 @@ export async function findBestVendor(order: Order, pickupLat: number, pickupLng:
     .filter(v => {
       if (!requiredWashType) return true;
       let caps: string[] = [];
-      try { caps = v.capabilities ? JSON.parse(v.capabilities) : []; } catch { caps = []; }
+      try { const parsed = v.capabilities ? JSON.parse(v.capabilities) : []; caps = Array.isArray(parsed) ? parsed : []; } catch { caps = []; }
       if (caps.includes("custom") || caps.includes(requiredWashType)) return true;
       if (requiredWashType === "dry_cleaning" && v.offersDryCleaning === true) return true;
       if (requiredWashType === "comforters" && v.offersComforters === true) return true;
