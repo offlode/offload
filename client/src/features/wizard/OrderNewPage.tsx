@@ -297,14 +297,26 @@ export default function OrderNewPage() {
   // P0-4: Ensure address is persisted before submitting order
   async function ensureAddressId(): Promise<number> {
     if (state.pickupAddressId) return state.pickupAddressId;
+
+    // Parse city/state/zip from the full address string
+    const addr = state.address;
+    const zipMatch = addr.match(/\b\d{5}(?:-\d{4})?\b/);
+    const zip = zipMatch?.[0].slice(0, 5) ?? "";
+    const csMatch = addr.match(/,\s*([^,]+),\s*([A-Z]{2})\s+\d{5}/i);
+    const city = csMatch?.[1]?.trim() ?? "";
+    const addrState = csMatch?.[2]?.toUpperCase() ?? "";
+    // Street is everything before the first city/state/zip portion
+    const street = csMatch ? addr.slice(0, csMatch.index).replace(/,\s*$/, "").trim() : addr.trim();
+
     const res = await apiRequest("/api/addresses", {
       method: "POST",
       body: JSON.stringify({
-        street: state.address,
-        city: "",
-        state: "",
-        zip: "",
-        isDefault: false,
+        label: "Home",
+        street,
+        city,
+        state: addrState,
+        zip,
+        isDefault: true,
       }),
     });
     const data = await res.json();
