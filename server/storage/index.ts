@@ -549,6 +549,8 @@ async function ensureIntegrityConstraints() {
     ["orders", "signature_data TEXT"],
     ["orders", "bag_count INTEGER"],
     ["orders", "pickup_notes TEXT"],
+    ["users", "must_change_password BOOLEAN DEFAULT FALSE"],
+    ["vendors", "is_demo BOOLEAN DEFAULT FALSE"],
   ];
   for (const [table, colDef] of wave2Cols) {
     try {
@@ -677,7 +679,8 @@ async function ensureIntegrityConstraints() {
   console.log("[integrity] FK constraints, indexes, and shadow cents columns applied.");
 }
 
-ensureIntegrityConstraints().catch((err) => {
+// Export a promise that bootstrap can await before running queries that need new columns/tables.
+export const integrityReady = ensureIntegrityConstraints().catch((err) => {
   console.error("[storage] ensureIntegrityConstraints error:", err);
 });
 
