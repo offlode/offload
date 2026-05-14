@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MapPin, Calendar, Clock, AlertCircle, Bell } from "lucide-react";
+import { MapPin, Calendar, Clock, AlertCircle, Bell, RefreshCw } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -7,6 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/contexts/auth-context";
+import { useToast } from "@/hooks/use-toast";
 
 interface StepAddressProps {
   address: string;
@@ -114,12 +115,14 @@ export function StepAddress({
       const result = await res.json();
       onServiceAreaChangeRef.current(result.available === true);
     } catch {
-      // On error, allow proceeding (null = not checked)
-      onServiceAreaChangeRef.current(null);
+      // P1-1: On error, block and show retry instead of silently allowing
+      onServiceAreaChangeRef.current(false);
     } finally {
       setCheckingArea(false);
     }
   }
+
+  const { toast } = useToast();
 
   async function handleNotifyMe() {
     setNotifyLoading(true);
@@ -133,7 +136,6 @@ export function StepAddress({
       const contactPhone = user?.phone ?? "";
       await apiRequest("/api/service-area-requests", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           address,
           addressPlaceId,
@@ -152,8 +154,9 @@ export function StepAddress({
         }),
       });
       setNotifyRequested(true);
-    } catch {
-      // silently fail
+      toast({ title: "Request submitted", description: "We'll notify you when we expand to your area." });
+    } catch (err: any) {
+      toast({ title: "Request failed", description: err.message || "Please try again.", variant: "destructive" });
     } finally {
       setNotifyLoading(false);
     }
@@ -295,17 +298,31 @@ export function StepAddress({
           <div className="mt-2 rounded-xl bg-red-500/10 border border-red-500/30 p-3">
             <p className="text-sm text-red-500 font-medium flex items-center gap-1.5">
               <AlertCircle className="w-4 h-4 flex-shrink-0" />
-              We don't service your area yet
+              Couldn't verify coverage
             </p>
+            <div className="mt-2 ml-[22px] flex items-center gap-3">
+              <button
+                className="text-xs text-primary font-medium flex items-center gap-1 hover:underline"
+                onClick={() => {
+                  const zip = addressMeta.zip || extractZip(address);
+                  if (zip || (addressMeta.lat != null && addressMeta.lng != null)) {
+                    checkServiceArea(addressMeta);
+                  }
+                }}
+              >
+                <RefreshCw className="w-3 h-3" />
+                Retry
+              </button>
+            </div>
             {notifyRequested ? (
-              <p className="text-xs text-muted-foreground mt-2 ml-5.5">
+              <p className="text-xs text-muted-foreground mt-2 ml-[22px]">
                 We'll notify you when we expand to your area.
               </p>
             ) : (
               <Button
                 variant="outline"
                 size="sm"
-                className="mt-2 ml-5.5 text-xs"
+                className="mt-2 ml-[22px] text-xs"
                 disabled={notifyLoading}
                 onClick={handleNotifyMe}
                 data-testid="button-notify-service-area"

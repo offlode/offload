@@ -30,6 +30,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { apiRequest } from "@/lib/queryClient";
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -173,12 +174,15 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
       setExtracted(null);
       setShowSpanishBeta(false);
       chunksRef.current = [];
-      // Check whether the live voice endpoint is available
+      // P1-11: Health check is advisory only — if it fails, leave mic enabled
       setVoiceAvailable(null);
-      fetch("/api/voice/health", { credentials: "include" })
+      apiRequest("/api/voice/health")
         .then((r) => r.json())
         .then((data) => setVoiceAvailable(!!data.available))
-        .catch(() => setVoiceAvailable(false));
+        .catch(() => {
+          // Advisory: don't block recording on health failure
+          setVoiceAvailable(true);
+        });
     }
   }, [open]);
 
@@ -257,29 +261,20 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
     try {
       let detectedLang: "en" | "es" = lang;
 
-      const transcribeController = new AbortController();
-      const transcribeTimeout = setTimeout(() => transcribeController.abort(), 30_000);
-
+      // P0-10: Use apiRequest with FormData (auto-detects and skips JSON Content-Type)
       let transcribeRes: Response;
       try {
-        transcribeRes = await fetch("/api/voice/transcribe", {
+        transcribeRes = await apiRequest("/api/voice/transcribe", {
           method: "POST",
           body: formData,
-          credentials: "include",
-          signal: transcribeController.signal,
         });
-      } finally {
-        clearTimeout(transcribeTimeout);
-      }
-
-      if (!transcribeRes.ok) {
-        const err = await transcribeRes.json().catch(() => ({}));
-        if (transcribeRes.status === 429) {
+      } catch (err: any) {
+        if (err.message?.includes("429")) {
           toast({ title: "Too many requests", description: "Wait a moment and try again.", variant: "destructive" });
           setStep("record");
           return;
         }
-        throw new Error(err.error || "Transcription failed");
+        throw err;
       }
 
       const transcribeData = await transcribeRes.json();
@@ -297,28 +292,21 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
       const text = transcribeData.text || "";
       detectedLang = transcribeData.language === "es" ? "es" : "en";
       setTranscript(text);
+
+      // P1-10: Guard empty transcription
+      if (!text.trim()) {
+        toast({ title: "We didn't catch that — try again", variant: "destructive" });
+        setStep("record");
+        return;
+      }
+
       setProcessingLabel("Extracting order details…");
 
-      const parseController = new AbortController();
-      const parseTimeout = setTimeout(() => parseController.abort(), 30_000);
-
-      let parseRes: Response;
-      try {
-        parseRes = await fetch("/api/voice/parse", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcription: text, language: detectedLang }),
-          signal: parseController.signal,
-        });
-      } finally {
-        clearTimeout(parseTimeout);
-      }
-
-      if (!parseRes.ok) {
-        const err = await parseRes.json().catch(() => ({}));
-        throw new Error(err.error || "Voice parsing failed");
-      }
+      // P0-10: Use apiRequest for parse endpoint
+      const parseRes = await apiRequest("POST", "/api/voice/parse", {
+        transcription: text,
+        language: detectedLang,
+      });
 
       const parseData = await parseRes.json();
       detectedLang = parseData.language === "es" ? "es" : detectedLang;

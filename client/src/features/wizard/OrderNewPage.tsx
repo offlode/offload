@@ -129,6 +129,7 @@ export default function OrderNewPage() {
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
   const [orderSuccess, setOrderSuccess] = useState(false);
   const [createdOrderId, setCreatedOrderId] = useState<number | null>(null);
+  const [quoteValid, setQuoteValid] = useState(false);
 
   // Persist state to sessionStorage on change
   useEffect(() => {
@@ -177,24 +178,56 @@ export default function OrderNewPage() {
     }
   };
 
-  // Submit order
+  // P0-4: Ensure address is persisted before submitting order
+  async function ensureAddressId(): Promise<number> {
+    if (state.pickupAddressId) return state.pickupAddressId;
+    // Save the address to the backend and get an ID
+    const res = await apiRequest("/api/addresses", {
+      method: "POST",
+      body: JSON.stringify({
+        street: state.address,
+        city: "",
+        state: "",
+        zip: "",
+        isDefault: false,
+      }),
+    });
+    const data = await res.json();
+    const id = data.id ?? data.addressId;
+    update("pickupAddressId", id);
+    return id;
+  }
+
+  // Infer primary tier name from bags (highest count)
+  function inferTierName(): string {
+    const active = state.bags.filter(b => b.quantity > 0);
+    if (active.length === 0) return "small";
+    active.sort((a, b) => b.quantity - a.quantity);
+    return active[0].size;
+  }
+
+  // Submit order — P0-4: body matches backend schema
   const submitMutation = useMutation({
     mutationFn: async () => {
+      const addressId = await ensureAddressId();
+      // Build ISO scheduledPickup from date + time window
+      const scheduledPickup = state.pickupDate
+        ? new Date(`${state.pickupDate}T08:00:00`).toISOString()
+        : undefined;
+
       const body = {
-        bags: JSON.stringify(state.bags.filter(b => b.quantity > 0).map(b => ({
-          type: b.size,
-          quantity: b.quantity,
-          bagSize: b.size,
-        }))),
+        pickupAddressId: addressId,
+        pickupAddress: state.address,
+        tierName: inferTierName(),
         serviceType: state.serviceType,
         deliverySpeed: state.deliverySpeed,
-        separated: state.separateByType,
-        clothingTypes: state.separateByType ? state.clothingTypes : [],
-        address: state.address,
-        pickupDate: state.pickupDate,
+        separated: state.separateByType ?? false,
+        clothing_types: state.separateByType ? state.clothingTypes : [],
+        wash_preferences: state.specialInstructions ? { notes: state.specialInstructions } : {},
+        scheduledPickup,
         pickupTimeWindow: state.pickupTimeWindow,
-        specialInstructions: state.specialInstructions,
         paymentMethodId: state.paymentMethodId ? Number(state.paymentMethodId) : undefined,
+        specialInstructions: state.specialInstructions || undefined,
       };
       const res = await apiRequest("/api/orders", {
         method: "POST",
@@ -305,6 +338,7 @@ export default function OrderNewPage() {
               onAddressChange={(addr, placeId) => {
                 update("address", addr);
                 update("addressPlaceId", placeId);
+                update("pickupAddressId", null);
               }}
               onDateChange={d => update("pickupDate", d)}
               onTimeChange={t => update("pickupTimeWindow", t)}
@@ -322,6 +356,7 @@ export default function OrderNewPage() {
             <StepReview
               state={state}
               onEdit={goToStep}
+              onQuoteStatus={setQuoteValid}
             />
           )}
         </div>
@@ -333,7 +368,7 @@ export default function OrderNewPage() {
           {step === 6 ? (
             <Button
               className="w-full h-12 text-base font-semibold"
-              disabled={submitMutation.isPending}
+              disabled={submitMutation.isPending || !quoteValid}
               onClick={() => submitMutation.mutate()}
               data-testid="button-place-order"
             >

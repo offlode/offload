@@ -26,7 +26,7 @@ const FRIENDLY_STATUS: Record<string, string> = {
   washing: "Being washed",
   wash_complete: "Wash complete",
   folded_packaged: "Folded & Packaged",
-  final_weight_verified: "Weight Verified",
+  final_weight_verified: "Final Weight Verified",
   packing: "Packing",
   ready_for_delivery: "Ready for delivery",
   out_for_delivery: "Out for delivery",

@@ -17,6 +17,7 @@ export interface WizardState {
   // Step 4: Address & pickup
   address: string;
   addressPlaceId: string;
+  pickupAddressId: number | null;
   pickupDate: string;
   pickupTimeWindow: string;
   specialInstructions: string;
@@ -36,6 +37,7 @@ export const INITIAL_WIZARD_STATE: WizardState = {
   customTypes: [],
   address: "",
   addressPlaceId: "",
+  pickupAddressId: null,
   pickupDate: "",
   pickupTimeWindow: "",
   specialInstructions: "",

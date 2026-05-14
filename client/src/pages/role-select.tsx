@@ -31,9 +31,7 @@ export default function RoleSelectPage() {
 
   const handleContinue = () => {
     if (!selectedRole) return;
-    // Store role in sessionStorage-like approach via window — wouter hash routing
-    // doesn't support query params in hash paths reliably
-    (window as any).__offload_register_role = selectedRole;
+    sessionStorage.setItem("offload_register_role", selectedRole);
     navigate("/register");
   };
 

@@ -521,7 +521,7 @@ export default function ProfilePage() {
             label="Notifications"
             value="Manage alerts"
             color="bg-primary/15 text-primary"
-            onClick={() => setNotifOpen(true)}
+            onClick={() => navigate("/notifications")}
           />
           <SettingsRow
             icon={<Shield className="w-4 h-4" />}
@@ -689,63 +689,6 @@ export default function ProfilePage() {
             >
               {updateUserMutation.isPending ? "Saving..." : "Save Changes"}
             </button>
-          </div>
-        </SheetContent>
-      </Sheet>
-
-      {/* Notifications Sheet */}
-      <Sheet open={notifOpen} onOpenChange={setNotifOpen}>
-        <SheetContent side="bottom" className="max-h-[60vh] rounded-t-2xl">
-          <SheetHeader>
-            <SheetTitle>Notification Preferences</SheetTitle>
-          </SheetHeader>
-          <div className="mt-4 space-y-5">
-            {/* Channel toggles */}
-            <div>
-              <p className="text-xs font-semibold text-muted-foreground mb-3 uppercase tracking-wide">Channels</p>
-              <div className="space-y-4">
-                {[
-                  { key: "pushEnabled" as const, label: "Push Notifications", desc: "Real-time mobile alerts" },
-                  { key: "emailEnabled" as const, label: "Email Notifications", desc: "Receive updates by email" },
-                  { key: "smsEnabled" as const, label: "SMS Notifications", desc: "Receive updates by text message" },
-                ].map(item => (
-                  <div key={item.key} className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium">{item.label}</p>
-                      <p className="text-xs text-muted-foreground">{item.desc}</p>
-                    </div>
-                    <Switch
-                      checked={notifPrefs?.[item.key] ?? false}
-                      onCheckedChange={(v) => handleNotifToggle(item.key, v)}
-                      data-testid={`toggle-notif-${item.key}`}
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
-            {/* Category toggles */}
-            <div>
-              <p className="text-xs font-semibold text-muted-foreground mb-3 uppercase tracking-wide">Categories</p>
-              <div className="space-y-4">
-                {[
-                  { key: "orderUpdates" as const, label: "Order Updates", desc: "Status changes and delivery alerts" },
-                  { key: "promotions" as const, label: "Promotions", desc: "Deals and special offers" },
-                  { key: "weeklyDigest" as const, label: "Weekly Digest", desc: "Weekly summary of activity" },
-                ].map(item => (
-                  <div key={item.key} className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium">{item.label}</p>
-                      <p className="text-xs text-muted-foreground">{item.desc}</p>
-                    </div>
-                    <Switch
-                      checked={notifPrefs?.[item.key] ?? false}
-                      onCheckedChange={(v) => handleNotifToggle(item.key, v)}
-                      data-testid={`toggle-notif-${item.key}`}
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
           </div>
         </SheetContent>
       </Sheet>

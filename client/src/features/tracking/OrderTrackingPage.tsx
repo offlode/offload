@@ -9,9 +9,11 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { useState } from "react";
-import { ORDER_PROGRESS_LABELS } from "@/lib/design-tokens";
+import { useState, useEffect } from "react";
+import { ORDER_PROGRESS_LABELS, ORDER_PROGRESS_ORDER, TERMINAL_STATUSES, friendlyStatus } from "@/lib/order-status";
 import { useAuth } from "@/contexts/auth-context";
+import { queryClient } from "@/lib/queryClient";
+import { getSocket, joinOrderRoom, leaveOrderRoom } from "@/lib/socket";
 
 interface OrderProgressStep {
   label: string;
@@ -70,11 +72,15 @@ function formatDate(iso: string) {
 }
 
 export default function OrderTrackingPage() {
-  const [, params] = useRoute("/orders/:id");
+  const [, orderParams] = useRoute("/orders/:id");
+  const [, trackingParams] = useRoute("/tracking/:id");
   const [, navigate] = useLocation();
   const { user } = useAuth();
-  const orderId = params?.id;
+  const orderId = orderParams?.id || trackingParams?.id;
   const [summaryOpen, setSummaryOpen] = useState(false);
+
+  const isTerminal = (status?: string) =>
+    !!status && (TERMINAL_STATUSES as readonly string[]).includes(status);
 
   // Fetch order details
   const { data: order, isLoading } = useQuery<OrderDetail>({
@@ -82,13 +88,32 @@ export default function OrderTrackingPage() {
     enabled: !!orderId,
   });
 
-  // Fetch progress labels from backend
+  // P0-8: Fetch progress with 20s polling, stop on terminal states
   const { data: progress } = useQuery<OrderProgress>({
     queryKey: [`/api/orders/${orderId}/progress`],
     enabled: !!orderId,
+    refetchInterval: isTerminal(order?.status) ? false : 20_000,
   });
 
-  // Map backend progress steps, or fall back to client-side mapping from ORDER_PROGRESS_LABELS
+  // P1-D2: WebSocket for real-time updates (merged from pages/tracking.tsx)
+  useEffect(() => {
+    if (!user || !orderId) return;
+    const socket = getSocket(user.id, user.role);
+    joinOrderRoom(Number(orderId));
+
+    const handleStatusChange = () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/orders/${orderId}`] });
+      queryClient.invalidateQueries({ queryKey: [`/api/orders/${orderId}/progress`] });
+    };
+
+    socket.on("order_status_changed", handleStatusChange);
+    return () => {
+      socket.off("order_status_changed", handleStatusChange);
+      leaveOrderRoom(Number(orderId));
+    };
+  }, [user, orderId]);
+
+  // Map backend progress steps, or fall back to client-side mapping from canonical labels
   const progressLabels: { key: string; label: string; completed: boolean; current: boolean; timestamp?: string }[] =
     progress?.steps && progress.steps.length > 0
       ? (() => {
@@ -101,23 +126,18 @@ export default function OrderTrackingPage() {
             timestamp: step.timestamp || undefined,
           }));
         })()
-      : ORDER_PROGRESS_LABELS.map(l => {
-          const orderStatusIdx = ORDER_PROGRESS_LABELS.findIndex(p => p.key === order?.status);
-          const thisIdx = ORDER_PROGRESS_LABELS.findIndex(p => p.key === l.key);
+      : ORDER_PROGRESS_ORDER.map(key => {
+          const orderStatusIdx = ORDER_PROGRESS_ORDER.indexOf(order?.status as any);
+          const thisIdx = ORDER_PROGRESS_ORDER.indexOf(key);
           return {
-            key: l.key,
-            label: l.label,
-            completed: thisIdx < orderStatusIdx,
+            key,
+            label: ORDER_PROGRESS_LABELS[key] || key,
+            completed: orderStatusIdx >= 0 && thisIdx < orderStatusIdx,
             current: thisIdx === orderStatusIdx,
           };
         });
 
-  const currentLabel =
-    (progress?.currentStatus
-      ? progress.currentStatus.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())
-      : null)
-    || order?.status?.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())
-    || "Processing";
+  const currentLabel = friendlyStatus(progress?.currentStatus || order?.status || "order_placed");
 
   if (isLoading) {
     return (
@@ -197,7 +217,7 @@ export default function OrderTrackingPage() {
                 <p className="text-sm font-semibold">{order.driver.name}</p>
                 <p className="text-xs text-muted-foreground">
                   Your Driver
-                  {order.driver.rating && ` &middot; ${order.driver.rating} ★`}
+                  {order.driver.rating && ` · ${order.driver.rating} ★`}
                 </p>
                 {order.driver.vehicleInfo && (
                   <p className="text-xs text-muted-foreground">{order.driver.vehicleInfo}</p>

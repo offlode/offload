@@ -52,7 +52,6 @@ import StaffQueue from "@/pages/staff/queue";
 import StaffQuality from "@/pages/staff/quality";
 import ManagerOrders from "@/pages/manager/orders";
 import ManagerPayouts from "@/pages/manager/payouts";
-import TrackingPage from "@/pages/tracking";
 import DashboardPage from "@/pages/dashboard";
 import CheckoutPage from "@/pages/checkout";
 import TrackEntryPage from "@/pages/track";
@@ -66,8 +65,17 @@ import HelpPage from "@/features/help/HelpPage";
 import OrderTrackingPage from "@/features/tracking/OrderTrackingPage";
 
 function RequireAuth({ children, allowedRoles }: { children: React.ReactNode; allowedRoles?: string[] }) {
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, bootstrapping } = useAuth();
   const [, navigate] = useLocation();
+
+  // P0-5: Wait for auth hydration before redirecting
+  if (bootstrapping) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return <Redirect to="/login" />;
@@ -136,7 +144,7 @@ function AppRouter() {
         {() => <RequireAuth allowedRoles={["customer"]}><ChatPage /></RequireAuth>}
       </Route>
       <Route path="/tracking/:id">
-        {() => <RequireAuth allowedRoles={["customer"]}><TrackingPage /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["customer"]}><OrderTrackingPage /></RequireAuth>}
       </Route>
 
       {/* D4: additional customer routes */}

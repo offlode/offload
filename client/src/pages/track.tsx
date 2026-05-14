@@ -1,11 +1,11 @@
 /**
  * /track and /track/:orderId — Order tracking entry point
  *
- * - If an orderId param is present, redirect to /tracking/:orderId (existing full page).
+ * - If an orderId param is present, redirect to /orders/:orderId (consolidated tracking page).
  * - If no orderId, show the user's active orders so they can pick one to track,
  *   or enter an order ID manually.
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRoute, useLocation, Link } from "wouter";
 import {
@@ -18,26 +18,14 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/contexts/auth-context";
 import { apiRequest } from "@/lib/queryClient";
+import { ORDER_PROGRESS_LABELS } from "@/lib/order-status";
 import type { Order } from "@shared/schema";
 
 const ACTIVE_STATUSES = [
-  "confirmed", "driver_assigned", "pickup_in_progress", "picked_up",
-  "at_laundromat", "washing", "wash_complete", "packing",
-  "ready_for_delivery", "out_for_delivery",
+  "order_placed", "confirmed", "driver_assigned", "picked_up",
+  "at_facility", "washing", "wash_complete", "folded_packaged",
+  "final_weight_verified", "ready_for_delivery", "out_for_delivery",
 ];
-
-const STATUS_LABELS: Record<string, string> = {
-  confirmed: "Confirmed",
-  driver_assigned: "Driver Assigned",
-  pickup_in_progress: "Picking Up",
-  picked_up: "Picked Up",
-  at_laundromat: "At Laundromat",
-  washing: "Being Washed",
-  wash_complete: "Wash Complete",
-  packing: "Packing",
-  ready_for_delivery: "Ready for Delivery",
-  out_for_delivery: "Out for Delivery",
-};
 
 export default function TrackEntryPage() {
   const [, paramsWithId] = useRoute("/track/:orderId");
@@ -45,9 +33,15 @@ export default function TrackEntryPage() {
   const { user } = useAuth();
   const [manualId, setManualId] = useState("");
 
-  // If a direct orderId is in the URL, redirect immediately to the full tracking page
+  // P1-5: Move navigate() into useEffect to avoid calling during render
+  useEffect(() => {
+    if (paramsWithId?.orderId) {
+      navigate(`/orders/${paramsWithId.orderId}`, { replace: true });
+    }
+  }, [paramsWithId?.orderId, navigate]);
+
+  // Show loading while redirecting
   if (paramsWithId?.orderId) {
-    navigate(`/tracking/${paramsWithId.orderId}`, { replace: true });
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-3 max-w-lg mx-auto px-5">
         <Skeleton className="h-8 w-48 rounded-lg" />
@@ -72,9 +66,8 @@ export default function TrackEntryPage() {
   function handleManualTrack() {
     const id = manualId.trim();
     if (!id) return;
-    // Strip # prefix if customer pastes the order number like #ORD-123
     const numericId = id.replace(/^#/, "").replace(/^ORD-/i, "");
-    navigate(`/tracking/${numericId}`);
+    navigate(`/orders/${numericId}`);
   }
 
   return (
@@ -126,7 +119,7 @@ export default function TrackEntryPage() {
           ) : activeOrders.length > 0 ? (
             <div className="space-y-3">
               {activeOrders.map((order) => (
-                <Link key={order.id} href={`/tracking/${order.id}`}>
+                <Link key={order.id} href={`/orders/${order.id}`}>
                   <Card
                     className="p-4 cursor-pointer hover:border-primary/30 transition-all active:scale-[0.99]"
                     data-testid={`track-order-card-${order.id}`}
@@ -141,7 +134,7 @@ export default function TrackEntryPage() {
                           variant="secondary"
                           className="text-[10px] mt-1 bg-blue-500/15 text-blue-400"
                         >
-                          {STATUS_LABELS[order.status] || order.status}
+                          {ORDER_PROGRESS_LABELS[order.status] || order.status}
                         </Badge>
                       </div>
                       <div className="flex items-center gap-1 text-primary">
@@ -172,7 +165,7 @@ export default function TrackEntryPage() {
               <p className="text-xs text-muted-foreground mb-4">
                 Once you place an order, you'll be able to track it here.
               </p>
-              <Link href="/schedule">
+              <Link href="/order/new">
                 <Button size="sm" data-testid="button-schedule-from-track">
                   Schedule Pickup
                 </Button>

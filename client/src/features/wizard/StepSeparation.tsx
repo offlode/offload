@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Check, X, Shirt, AlertCircle, Loader2 } from "lucide-react";
+import { apiRequest } from "@/lib/queryClient";
 import type { BagSelection } from "./types";
 
 interface StepSeparationProps {
@@ -15,7 +16,7 @@ export function StepSeparation({ value, separationFee, bags, onChange }: StepSep
   const [feeLoading, setFeeLoading] = useState(false);
   const [feeFailed, setFeeFailed] = useState(false);
 
-  // Fetch live separation fee from vendor config when user selects "Yes, separate"
+  // Fetch live separation fee when user selects "Yes, separate"
   useEffect(() => {
     if (value !== true) {
       setLiveFee(null);
@@ -28,25 +29,26 @@ export function StepSeparation({ value, separationFee, bags, onChange }: StepSep
     setFeeLoading(true);
     setFeeFailed(false);
 
-    fetch("/api/quote", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ separated: true, bags }),
+    // Infer primary tier from bags
+    const activeBags = bags.filter(b => b.quantity > 0);
+    activeBags.sort((a, b) => b.quantity - a.quantity);
+    const tierName = activeBags[0]?.size || "small";
+
+    apiRequest("POST", "/api/quotes", {
+      tierName,
+      pickupAddress: "",
+      separated: true,
     })
-      .then((res) => {
-        if (!res.ok) throw new Error("Quote unavailable");
-        return res.json();
-      })
+      .then((res) => res.json())
       .then((data) => {
         if (cancelled) return;
-        // The response may return separation_fee_cents (cents) or separationFee (dollars)
-        const feeCents = data.separation_fee_cents;
-        const feeDollars = data.separationFee;
-        if (typeof feeCents === "number") {
-          setLiveFee(feeCents / 100);
-        } else if (typeof feeDollars === "number") {
-          setLiveFee(feeDollars);
+        // Look for a separation line item in the response
+        const sepItem = data.lineItems?.find((li: any) =>
+          li.type === "separation" || li.label?.toLowerCase().includes("separat")
+        );
+        if (sepItem) {
+          const fee = sepItem.amount ?? (sepItem.amountCents != null ? sepItem.amountCents / 100 : 0);
+          setLiveFee(fee);
         } else {
           setLiveFee(0);
         }
@@ -128,7 +130,7 @@ export function StepSeparation({ value, separationFee, bags, onChange }: StepSep
                     (checking...)
                   </span>
                 ) : feeFailed ? (
-                  "(no extra charge)"
+                  "Surcharge unavailable — refresh to retry"
                 ) : displayFee > 0 ? (
                   `$${displayFee.toFixed(2)} separation fee will be added to your order.`
                 ) : (

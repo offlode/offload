@@ -3,58 +3,70 @@ import { Package, Shirt, MapPin, CreditCard, Truck, DollarSign, Loader2, AlertCi
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { BAG_OPTIONS, DELIVERY_SPEEDS } from "@/lib/design-tokens";
+import { apiRequest } from "@/lib/queryClient";
 import type { WizardState } from "./types";
 
 interface StepReviewProps {
   state: WizardState;
   onEdit: (step: number) => void;
+  onQuoteStatus?: (valid: boolean) => void;
 }
 
 interface QuoteLineItem {
   label: string;
-  amount_cents: number;
+  amountCents?: number;
+  amount?: number;
   type?: string;
 }
 
 interface QuoteResponse {
-  line_items: QuoteLineItem[];
-  total_cents: number;
+  lineItems: QuoteLineItem[];
+  total: number;
+  tierName?: string;
 }
 
-function formatCents(cents: number) {
+function formatDollars(dollars: number) {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
-  }).format(cents / 100);
+  }).format(dollars);
 }
 
-export function StepReview({ state, onEdit }: StepReviewProps) {
+// Pick the primary tier from bags (highest count)
+function inferPrimaryTier(bags: WizardState["bags"]): string {
+  const active = bags.filter(b => b.quantity > 0);
+  if (active.length === 0) return "small";
+  active.sort((a, b) => b.quantity - a.quantity);
+  return active[0].size;
+}
+
+export function StepReview({ state, onEdit, onQuoteStatus }: StepReviewProps) {
+  const primaryTier = inferPrimaryTier(state.bags);
+
   const quotePayload = {
-    bag_counts: state.bags.filter(b => b.quantity > 0).map(b => ({ size: b.size, quantity: b.quantity })),
-    separated: state.separateByType,
+    tierName: primaryTier,
+    pickupAddress: state.address,
+    deliverySpeed: state.deliverySpeed,
+    serviceType: state.serviceType,
+    separated: state.separateByType ?? false,
     clothing_types: state.clothingTypes,
-    wash_preferences: state.specialInstructions,
-    address: state.address,
-    pickup_window: state.pickupTimeWindow,
-    service_type: state.serviceType,
-    delivery_speed: state.deliverySpeed,
+    wash_preferences: state.specialInstructions ? { notes: state.specialInstructions } : {},
   };
 
   const { data: quote, isLoading: quoteLoading, isError: quoteError } = useQuery<QuoteResponse>({
-    queryKey: ["/api/quote", JSON.stringify(quotePayload)],
+    queryKey: ["/api/quotes", JSON.stringify(quotePayload)],
     queryFn: async () => {
-      const res = await fetch("/api/quote", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(quotePayload),
-      });
-      if (!res.ok) throw new Error("Quote unavailable");
+      const res = await apiRequest("POST", "/api/quotes", quotePayload);
       return res.json();
     },
     retry: false,
     staleTime: 60_000,
   });
+
+  // Bubble quote validity up to parent
+  if (onQuoteStatus) {
+    onQuoteStatus(!quoteLoading && !quoteError && !!quote);
+  }
 
   const totalBags = state.bags.reduce((sum, b) => sum + b.quantity, 0);
 
@@ -170,16 +182,24 @@ export function StepReview({ state, onEdit }: StepReviewProps) {
           </div>
         ) : (
           <div className="space-y-1.5">
-            {quote.line_items.map((item, idx) => (
-              <div key={`${item.type ?? item.label}-${idx}`} className="flex justify-between text-xs">
-                <span className="text-muted-foreground">{item.label}</span>
-                <span>{formatCents(item.amount_cents)}</span>
-              </div>
-            ))}
+            {quote.lineItems
+              .filter(item => {
+                const amt = item.amount ?? (item.amountCents != null ? item.amountCents / 100 : 0);
+                return amt !== 0 || item.type !== "separation";
+              })
+              .map((item, idx) => {
+                const amt = item.amount ?? (item.amountCents != null ? item.amountCents / 100 : 0);
+                return (
+                  <div key={`${item.type ?? item.label}-${idx}`} className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">{item.label}</span>
+                    <span>{formatDollars(amt)}</span>
+                  </div>
+                );
+              })}
             <div className="border-t border-border my-2" />
             <div className="flex justify-between">
               <span className="text-sm font-bold">Total</span>
-              <span className="text-lg font-bold text-primary">{formatCents(quote.total_cents)}</span>
+              <span className="text-lg font-bold text-primary">{formatDollars(quote.total)}</span>
             </div>
           </div>
         )}

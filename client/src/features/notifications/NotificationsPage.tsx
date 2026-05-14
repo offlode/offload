@@ -1,9 +1,7 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Bell, Settings, Check, Trash2, Filter, Inbox } from "lucide-react";
+import { Bell, Settings, Inbox } from "lucide-react";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -19,28 +17,24 @@ interface Notification {
   createdAt: string;
 }
 
+// P0-7: Flat 6-field shape matching backend + profile.tsx
 interface NotifPreferences {
-  orderUpdates: { push: boolean; email: boolean; sms: boolean };
-  pickupReminders: { push: boolean; email: boolean; sms: boolean };
-  deliveryAlerts: { push: boolean; email: boolean; sms: boolean };
-  promotions: { push: boolean; email: boolean; sms: boolean };
+  emailEnabled: boolean;
+  smsEnabled: boolean;
+  pushEnabled: boolean;
+  orderUpdates: boolean;
+  promotions: boolean;
+  weeklyDigest: boolean;
 }
 
 const DEFAULT_PREFS: NotifPreferences = {
-  orderUpdates: { push: true, email: true, sms: false },
-  pickupReminders: { push: true, email: false, sms: true },
-  deliveryAlerts: { push: true, email: true, sms: true },
-  promotions: { push: false, email: true, sms: false },
+  emailEnabled: true,
+  smsEnabled: false,
+  pushEnabled: true,
+  orderUpdates: true,
+  promotions: true,
+  weeklyDigest: false,
 };
-
-const CATEGORIES = [
-  { key: "orderUpdates" as const, label: "Order Updates", desc: "Status changes for your orders" },
-  { key: "pickupReminders" as const, label: "Pickup Reminders", desc: "Reminders before scheduled pickups" },
-  { key: "deliveryAlerts" as const, label: "Delivery Alerts", desc: "Notifications when delivery is near" },
-  { key: "promotions" as const, label: "Promotions", desc: "Deals, offers, and loyalty rewards" },
-];
-
-const CHANNELS = ["push", "email", "sms"] as const;
 
 const FILTER_OPTIONS = ["All", "Order", "Delivery", "Promo"] as const;
 
@@ -73,8 +67,8 @@ export default function NotificationsPage() {
     enabled: !!user,
   });
 
-  // Fetch preferences
-  const { data: prefs } = useQuery<NotifPreferences>({
+  // Fetch preferences (flat shape)
+  const { data: serverPrefs } = useQuery<NotifPreferences>({
     queryKey: ["/api/notification-preferences"],
     enabled: !!user && tab === "settings",
   });
@@ -82,8 +76,12 @@ export default function NotificationsPage() {
   const [localPrefs, setLocalPrefs] = useState<NotifPreferences>(DEFAULT_PREFS);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
-  // Sync server prefs to local
-  const effectivePrefs = prefs || localPrefs;
+  // P1-8: Hydrate localPrefs from server on first load
+  useEffect(() => {
+    if (serverPrefs) setLocalPrefs(serverPrefs);
+  }, [serverPrefs]);
+
+  const effectivePrefs = localPrefs;
 
   // Save preferences (debounced)
   const saveMutation = useMutation({
@@ -98,23 +96,19 @@ export default function NotificationsPage() {
     },
   });
 
-  const togglePref = useCallback((category: keyof NotifPreferences, channel: typeof CHANNELS[number]) => {
+  const togglePref = useCallback((key: keyof NotifPreferences) => {
     setLocalPrefs(prev => {
-      const updated = {
-        ...prev,
-        [category]: { ...prev[category], [channel]: !prev[category][channel] },
-      };
-      // Debounced save
+      const updated = { ...prev, [key]: !prev[key] };
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => saveMutation.mutate(updated), 800);
       return updated;
     });
   }, [saveMutation]);
 
-  // Mark read
+  // P1-15: Mark read uses PATCH, matching notification-bell.tsx
   const markReadMutation = useMutation({
     mutationFn: async (id: number) => {
-      await apiRequest(`/api/notifications/${id}/read`, { method: "POST" });
+      await apiRequest(`/api/notifications/${id}/read`, { method: "PATCH" });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/notifications"] });
@@ -231,40 +225,59 @@ export default function NotificationsPage() {
           </div>
         </>
       ) : (
-        /* Settings tab */
+        /* Settings tab — flat 6 booleans */
         <div className="px-5 space-y-4">
           <p className="text-xs text-muted-foreground">
-            Choose how you'd like to be notified for each category.
+            Choose how you'd like to be notified.
           </p>
 
-          {/* Header row */}
-          <div className="flex items-center justify-end gap-6 px-4 text-[10px] font-semibold text-muted-foreground uppercase">
-            <span className="w-10 text-center">Push</span>
-            <span className="w-10 text-center">Email</span>
-            <span className="w-10 text-center">SMS</span>
+          {/* Channels section */}
+          <div>
+            <p className="text-xs font-semibold text-muted-foreground mb-3 uppercase tracking-wide">Channels</p>
+            <Card className="p-4 space-y-4">
+              {([
+                { key: "pushEnabled" as const, label: "Push Notifications", desc: "Real-time mobile alerts" },
+                { key: "emailEnabled" as const, label: "Email Notifications", desc: "Receive updates by email" },
+                { key: "smsEnabled" as const, label: "SMS Notifications", desc: "Receive updates by text message" },
+              ] as const).map(item => (
+                <div key={item.key} className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium">{item.label}</p>
+                    <p className="text-xs text-muted-foreground">{item.desc}</p>
+                  </div>
+                  <Switch
+                    checked={effectivePrefs[item.key]}
+                    onCheckedChange={() => togglePref(item.key)}
+                    data-testid={`pref-${item.key}`}
+                  />
+                </div>
+              ))}
+            </Card>
           </div>
 
-          {CATEGORIES.map(cat => (
-            <Card key={cat.key} className="p-4">
-              <div className="flex items-center justify-between">
-                <div className="flex-1 min-w-0 mr-4">
-                  <p className="text-sm font-semibold">{cat.label}</p>
-                  <p className="text-xs text-muted-foreground">{cat.desc}</p>
+          {/* What to receive section */}
+          <div>
+            <p className="text-xs font-semibold text-muted-foreground mb-3 uppercase tracking-wide">What to Receive</p>
+            <Card className="p-4 space-y-4">
+              {([
+                { key: "orderUpdates" as const, label: "Order Updates", desc: "Status changes and delivery alerts" },
+                { key: "promotions" as const, label: "Promotions", desc: "Deals and special offers" },
+                { key: "weeklyDigest" as const, label: "Weekly Digest", desc: "Weekly summary of activity" },
+              ] as const).map(item => (
+                <div key={item.key} className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium">{item.label}</p>
+                    <p className="text-xs text-muted-foreground">{item.desc}</p>
+                  </div>
+                  <Switch
+                    checked={effectivePrefs[item.key]}
+                    onCheckedChange={() => togglePref(item.key)}
+                    data-testid={`pref-${item.key}`}
+                  />
                 </div>
-                <div className="flex items-center gap-6">
-                  {CHANNELS.map(ch => (
-                    <div key={ch} className="w-10 flex justify-center">
-                      <Switch
-                        checked={effectivePrefs[cat.key]?.[ch] ?? false}
-                        onCheckedChange={() => togglePref(cat.key, ch)}
-                        data-testid={`pref-${cat.key}-${ch}`}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </div>
+              ))}
             </Card>
-          ))}
+          </div>
         </div>
       )}
     </div>

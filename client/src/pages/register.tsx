@@ -13,9 +13,7 @@ export default function RegisterPage() {
   const { register: authRegister, setUser } = useAuth();
   const { toast } = useToast();
 
-  // Read role from window (set by role-select page) — wouter hash routing
-  // doesn't support query params in hash paths reliably
-  const role = (window as any).__offload_register_role || "customer";
+  const role = sessionStorage.getItem("offload_register_role") || "customer";
 
   const roleLabelMap: Record<string, string> = {
     customer: "Customer",
@@ -63,8 +61,8 @@ export default function RegisterPage() {
         role: role === "staff" ? "laundromat" : role,
       });
 
-      // Clean up role from window
-      delete (window as any).__offload_register_role;
+      // Clean up role from sessionStorage
+      sessionStorage.removeItem("offload_register_role");
 
       toast({ title: `Welcome to Offload, ${user.name.split(" ")[0]}!`, description: "Your account is ready. Let's get started." });
 
