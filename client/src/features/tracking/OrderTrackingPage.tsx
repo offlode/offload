@@ -14,6 +14,7 @@ import { ORDER_PROGRESS_LABELS, ORDER_PROGRESS_ORDER, TERMINAL_STATUSES, friendl
 import { useAuth } from "@/contexts/auth-context";
 import { queryClient } from "@/lib/queryClient";
 import { getSocket, joinOrderRoom, leaveOrderRoom } from "@/lib/socket";
+import EmbeddedTrackingMap from "@/components/embedded-tracking-map";
 
 interface OrderProgressStep {
   label: string;
@@ -83,7 +84,7 @@ export default function OrderTrackingPage() {
     !!status && (TERMINAL_STATUSES as readonly string[]).includes(status);
 
   // Fetch order details
-  const { data: order, isLoading } = useQuery<OrderDetail>({
+  const { data: order, isLoading, isError, refetch } = useQuery<OrderDetail>({
     queryKey: [`/api/orders/${orderId}`],
     enabled: !!orderId,
   });
@@ -118,21 +119,24 @@ export default function OrderTrackingPage() {
     progress?.steps && progress.steps.length > 0
       ? (() => {
           const firstNonCompleted = progress.steps.findIndex(s => !s.completed);
+          // If all steps are completed, mark the last step as current
+          const currentIdx = firstNonCompleted === -1 ? progress.steps.length - 1 : firstNonCompleted;
           return progress.steps.map((step, idx) => ({
             key: step.fsmState,
             label: step.label,
             completed: step.completed,
-            current: idx === firstNonCompleted,
+            current: idx === currentIdx,
             timestamp: step.timestamp || undefined,
           }));
         })()
       : ORDER_PROGRESS_ORDER.map(key => {
           const orderStatusIdx = ORDER_PROGRESS_ORDER.indexOf(order?.status as any);
           const thisIdx = ORDER_PROGRESS_ORDER.indexOf(key);
+          const isTerminalState = orderStatusIdx === ORDER_PROGRESS_ORDER.length - 1;
           return {
             key,
             label: ORDER_PROGRESS_LABELS[key] || key,
-            completed: orderStatusIdx >= 0 && thisIdx < orderStatusIdx,
+            completed: orderStatusIdx >= 0 && (thisIdx < orderStatusIdx || (isTerminalState && thisIdx <= orderStatusIdx)),
             current: thisIdx === orderStatusIdx,
           };
         });
@@ -147,6 +151,23 @@ export default function OrderTrackingPage() {
           <Skeleton className="h-12 w-full rounded-xl" />
           <Skeleton className="h-24 w-full rounded-xl" />
           <Skeleton className="h-64 w-full rounded-xl" />
+        </div>
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div className="pb-24 max-w-lg mx-auto px-5 pt-12 text-center">
+        <p className="text-sm font-medium mb-1">Something went wrong</p>
+        <p className="text-xs text-muted-foreground mb-4">We couldn't load this order. Please try again.</p>
+        <div className="flex gap-2 justify-center">
+          <Button variant="outline" onClick={() => refetch()} data-testid="button-retry-order">
+            Retry
+          </Button>
+          <Button variant="ghost" onClick={() => navigate("/orders")}>
+            Back to Orders
+          </Button>
         </div>
       </div>
     );
@@ -172,7 +193,7 @@ export default function OrderTrackingPage() {
       {/* Header */}
       <div className="sticky top-0 z-40 bg-background/95 backdrop-blur-xl border-b border-border px-4 py-3">
         <div className="flex items-center gap-3">
-          <button onClick={() => navigate("/orders")} className="p-1 -ml-1 rounded-lg hover:bg-muted transition-colors">
+          <button onClick={() => navigate("/orders")} className="h-11 w-11 -ml-2 rounded-lg hover:bg-muted transition-colors flex items-center justify-center">
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div className="flex-1 min-w-0">
@@ -196,6 +217,9 @@ export default function OrderTrackingPage() {
               <p className="text-xs text-muted-foreground mt-1">
                 Updated {order.createdAt ? formatDate(order.createdAt) : "recently"}
               </p>
+              {(order as any).eta && (
+                <p className="text-xs text-muted-foreground mt-1">ETA: {new Date((order as any).eta).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}</p>
+              )}
             </div>
           </div>
         </Card>
@@ -226,7 +250,7 @@ export default function OrderTrackingPage() {
               <div className="flex gap-2">
                 {order.driver.phone && (
                   <a href={`tel:${order.driver.phone}`}>
-                    <Button variant="outline" size="icon" className="h-9 w-9 rounded-full" data-testid="button-call-driver">
+                    <Button variant="outline" size="icon" className="h-11 w-11 rounded-full" data-testid="button-call-driver">
                       <Phone className="w-4 h-4" />
                     </Button>
                   </a>
@@ -234,7 +258,7 @@ export default function OrderTrackingPage() {
                 <Button
                   variant="outline"
                   size="icon"
-                  className="h-9 w-9 rounded-full"
+                  className="h-11 w-11 rounded-full"
                   onClick={() => navigate("/chat")}
                   data-testid="button-message-driver"
                 >
@@ -269,7 +293,7 @@ export default function OrderTrackingPage() {
               </div>
               {order.vendor.phone && (
                 <a href={`tel:${order.vendor.phone}`}>
-                  <Button variant="outline" size="icon" className="h-9 w-9 rounded-full" data-testid="button-call-vendor">
+                  <Button variant="outline" size="icon" className="h-11 w-11 rounded-full" data-testid="button-call-vendor">
                     <Phone className="w-4 h-4" />
                   </Button>
                 </a>
@@ -279,18 +303,14 @@ export default function OrderTrackingPage() {
         </div>
       )}
 
-      {/* Map placeholder */}
+      {/* Tracking map */}
       <div className="px-5 mb-4">
-        <Card className="h-48 flex items-center justify-center bg-muted/30">
-          <div className="text-center">
-            <MapPin className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
-            <p className="text-xs text-muted-foreground">
-              {order.driver?.location
-                ? "Live tracking available"
-                : "Driver location not available yet"}
-            </p>
-          </div>
-        </Card>
+        <EmbeddedTrackingMap
+          driverPos={order.driver?.location ?? null}
+          pickup={{ lat: 0, lng: 0, address: order.address || "" }}
+          delivery={{ lat: 0, lng: 0, address: order.address || "" }}
+          isDriverPhase={!!(order.driver && ["driver_assigned", "en_route_pickup", "arrived_pickup", "en_route_delivery", "arrived_delivery"].includes(order.status))}
+        />
       </div>
 
       {/* Order progress timeline */}

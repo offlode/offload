@@ -1,13 +1,14 @@
-import { ExternalLink, Phone, Mail, HelpCircle, Shield, Settings, MapPin, CreditCard } from "lucide-react";
+import { useState } from "react";
+import { Mail, HelpCircle, Shield, Settings, MapPin, CreditCard } from "lucide-react";
 import { Link } from "wouter";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Accordion, AccordionContent, AccordionItem, AccordionTrigger,
 } from "@/components/ui/accordion";
 
 const SUPPORT_EMAIL = "support@offloadusa.com";
-const SUPPORT_PHONE = import.meta.env.VITE_SUPPORT_PHONE || "(800) 555-WASH";
 
 const FAQ_ITEMS = [
   {
@@ -16,7 +17,7 @@ const FAQ_ITEMS = [
   },
   {
     q: "What bag sizes are available?",
-    a: "We offer Small (up to 10 lbs, $24.99), Medium (up to 20 lbs, $44.99), Large (up to 30 lbs, $59.99), and XL (up to 50 lbs, $89.99) bags. If your laundry goes slightly over, it's just $2.50 per additional pound.",
+    a: "We offer Small, Medium, Large, and XL bags. Pricing varies by bag size \u2014 check the order wizard for current rates.",
   },
   {
     q: "What is Offload Certified?",
@@ -24,7 +25,7 @@ const FAQ_ITEMS = [
   },
   {
     q: "How long does delivery take?",
-    a: "Standard delivery takes up to 48 hours (free). Next Day delivery is available for $5.99, and Same Day delivery for $12.99. Times may vary based on your location and vendor availability.",
+    a: "Standard delivery takes up to 48 hours. Next Day and Same Day options are also available. Pricing varies by bag size \u2014 check the order wizard for current rates. Times may vary based on your location and vendor availability.",
   },
   {
     q: "Can I customize how my clothes are washed?",
@@ -65,13 +66,22 @@ const FAQ_ITEMS = [
 ];
 
 const QUICK_LINKS = [
-  { label: "About Offload Certified", icon: Shield, href: "/profile" },
-  { label: "Custom Wash Preferences", icon: Settings, href: "/profile" },
+  { label: "About Offload Certified", icon: Shield, href: "/profile#certified" },
+  { label: "Custom Wash Preferences", icon: Settings, href: "/profile#wash-prefs" },
   { label: "Manage Addresses", icon: MapPin, href: "/addresses" },
   { label: "Payment Methods", icon: CreditCard, href: "/payments" },
 ];
 
 export default function HelpPage() {
+  const [faqSearch, setFaqSearch] = useState("");
+
+  const filteredFaq = faqSearch.trim()
+    ? FAQ_ITEMS.filter(item => {
+        const term = faqSearch.toLowerCase();
+        return item.q.toLowerCase().includes(term) || item.a.toLowerCase().includes(term);
+      })
+    : FAQ_ITEMS;
+
   return (
     <div className="pb-24 max-w-lg mx-auto">
       {/* Header */}
@@ -98,9 +108,16 @@ export default function HelpPage() {
       {/* FAQ */}
       <div className="px-5 mb-6">
         <h3 className="text-sm font-semibold mb-3">Frequently Asked Questions</h3>
+        <Input
+          placeholder="Search FAQ..."
+          className="mb-4"
+          value={faqSearch}
+          onChange={e => setFaqSearch(e.target.value)}
+          data-testid="input-faq-search"
+        />
         <Card className="px-4">
           <Accordion type="single" collapsible>
-            {FAQ_ITEMS.map((item, i) => (
+            {filteredFaq.map((item, i) => (
               <AccordionItem key={i} value={`faq-${i}`}>
                 <AccordionTrigger className="text-sm text-left" data-testid={`faq-${i}`}>
                   {item.q}
@@ -132,12 +149,9 @@ export default function HelpPage() {
                 Email Support
               </Button>
             </a>
-            <a href={`tel:${SUPPORT_PHONE.replace(/[^+\d]/g, "")}`} className="block">
-              <Button variant="outline" className="w-full" data-testid="button-call-support">
-                <Phone className="w-4 h-4 mr-2" />
-                Call {SUPPORT_PHONE}
-              </Button>
-            </a>
+            <p className="text-xs text-muted-foreground">
+              Or email us directly at {SUPPORT_EMAIL}
+            </p>
           </div>
         </Card>
       </div>

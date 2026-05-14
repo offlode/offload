@@ -1,7 +1,8 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Bell, Settings, Inbox } from "lucide-react";
+import { Bell, Settings, Check, Trash2, Inbox } from "lucide-react";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -48,6 +49,7 @@ function notifIcon(type: string) {
 function timeAgo(iso: string) {
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "Just now";
   if (mins < 60) return `${mins}m ago`;
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}h ago`;
@@ -62,7 +64,7 @@ export default function NotificationsPage() {
   const [filter, setFilter] = useState("All");
 
   // Fetch notifications
-  const { data: notifications, isLoading } = useQuery<Notification[]>({
+  const { data: notifications, isLoading, isError, refetch } = useQuery<Notification[]>({
     queryKey: ["/api/notifications"],
     enabled: !!user,
   });
@@ -156,13 +158,50 @@ export default function NotificationsPage() {
 
       {tab === "inbox" ? (
         <>
+          {/* Action buttons */}
+          <div className="px-5 mb-3 flex gap-2 justify-end">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-xs h-8"
+              onClick={() => {
+                const unread = notifications?.filter(n => !n.read) || [];
+                if (unread.length === 0) {
+                  toast({ title: "No unread notifications" });
+                  return;
+                }
+                unread.forEach(n => markReadMutation.mutate(n.id));
+                toast({ title: "Marked all as read" });
+              }}
+              data-testid="button-mark-all-read"
+            >
+              <Check className="w-3.5 h-3.5 mr-1" />
+              Mark all read
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-xs h-8 text-muted-foreground"
+              onClick={() => {
+                toast({ title: "Cleared read notifications" });
+                queryClient.setQueryData<Notification[]>(["/api/notifications"], old =>
+                  old ? old.filter(n => !n.read) : []
+                );
+              }}
+              data-testid="button-clear-read"
+            >
+              <Trash2 className="w-3.5 h-3.5 mr-1" />
+              Clear read
+            </Button>
+          </div>
+
           {/* Filter chips */}
           <div className="px-5 mb-4 flex gap-2">
             {FILTER_OPTIONS.map(f => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
-                className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
+                className={`px-3 py-2 rounded-full text-sm min-h-[44px] font-medium transition-all ${
                   filter === f
                     ? "bg-primary text-primary-foreground"
                     : "bg-muted text-muted-foreground hover:bg-muted/80"
@@ -180,6 +219,19 @@ export default function NotificationsPage() {
               Array.from({ length: 4 }).map((_, i) => (
                 <Skeleton key={i} className="h-16 rounded-xl" />
               ))
+            ) : isError ? (
+              <Card className="p-8 text-center">
+                <div className="w-14 h-14 rounded-full bg-destructive/10 flex items-center justify-center mx-auto mb-3">
+                  <Bell className="w-7 h-7 text-destructive" />
+                </div>
+                <p className="text-sm font-medium mb-1">Couldn't load notifications</p>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Something went wrong. Please try again.
+                </p>
+                <Button variant="outline" size="sm" onClick={() => refetch()} data-testid="button-retry-notifications">
+                  Retry
+                </Button>
+              </Card>
             ) : filteredNotifs && filteredNotifs.length > 0 ? (
               filteredNotifs.map(n => (
                 <Card
