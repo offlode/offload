@@ -182,16 +182,9 @@ export function registerOrdersCrudRoutes(app: Express) {
   // ── CREATE ORDER (the main flow) ──
   app.post("/api/orders", requireAuth(), async (req, res) => {
     try {
-      // P2-027: idempotency key support — accept from header or body
-      const idempotencyKey = req.headers["idempotency-key"] as string || req.body?.idempotencyKey;
-      if (idempotencyKey) {
-        // Check for existing order with this key via raw query
-        const [existingOrder] = await db.select().from(schema.orders)
-          .where(eq((schema.orders as any).idempotencyKey, idempotencyKey));
-        if (existingOrder) {
-          return res.status(200).json(existingOrder);
-        }
-      }
+      // P2-027: idempotency — handled by global middleware in routes.ts
+      // (orders table has no idempotency_key column; the previous per-route
+      //  check queried a non-existent column and crashed with a SQL syntax error)
 
       const currentUser = (req as any).currentUser;
       const customerId = currentUser.id;
@@ -214,7 +207,6 @@ export function registerOrdersCrudRoutes(app: Express) {
         pricingTierId: z.number().optional().nullable(),
         tierName: z.string().optional().nullable(),
         selectedAddOns: z.array(z.any()).optional(),
-        idempotencyKey: z.string().optional(),
       }).strip();
       const parsed = OrderBody.safeParse(req.body);
       if (!parsed.success) {
@@ -422,8 +414,6 @@ export function registerOrdersCrudRoutes(app: Express) {
           promoCode: promoCode || null,
           loyaltyPointsRedeemed,
           aiPricingTier: surge.tier,
-          // P2-027: store idempotency key on order for dedup
-          idempotencyKey: idempotencyKey || null,
           createdAt: ts_,
           updatedAt: ts_,
         });
