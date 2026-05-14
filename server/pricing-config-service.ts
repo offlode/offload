@@ -128,6 +128,11 @@ class PricingConfigService {
     return this.getJSON("dynamic_logistics", fallback);
   }
 
+  // B3: Signature Wash per-bag premium (in cents, default 500 = $5.00)
+  async getSignaturePremiumCents(bagSize: "small_bag" | "medium_bag" | "large_bag" | "xl_bag"): Promise<number> {
+    return this.getNumber(`signature_premium_cents_${bagSize}`, 500);
+  }
+
   // OD-8: Wait-fee configuration sourced from DB so the owner can tune the
   // grace period, per-minute rate, and cap without a code deploy. Falls back
   // to the canonical constants if any row is missing.

@@ -8,6 +8,7 @@ import rateLimit from "express-rate-limit";
 import { sanitizeMiddleware } from "./sanitize";
 import { scheduleBackups } from "./backup";
 import { bootstrapAccounts } from "./bootstrap";
+import { integrityReady } from "./storage";
 import { storage } from "./storage";
 import { errorHandler, AppError } from "./error-handler";
 
@@ -181,6 +182,9 @@ app.use((req, res, next) => {
   // Ensure critical accounts (Apple reviewer + admin) exist after every deploy
   // until persistent storage is wired up.
   try {
+    // Wait for all auto-migrations to complete before bootstrap queries
+    // (bootstrap reads vendors.separation_fee_cents, etc. which only exists after Wave L/2 ALTERs)
+    await integrityReady;
     await bootstrapAccounts();
   } catch (e) {
     console.error("[Bootstrap] Unhandled error:", (e as Error).message);

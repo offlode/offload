@@ -39,6 +39,10 @@ export const users = pgTable("users", {
   lastActiveAt: timestamptz("last_active_at"),
   // Account credits (e.g. from SLA breach refunds)
   credits: integer("credits").default(0),
+  // Wave L: force password change for temp-password employees
+  mustChangePassword: boolean("must_change_password").default(false),
+  // Wave L: wash preferences JSON
+  preferences: text("preferences"),
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({ id: true });
@@ -136,6 +140,12 @@ export const vendors = pgTable("vendors", {
   // Demand forecasting
   avgDailyOrders: doublePrecision("avg_daily_orders").default(10),
   peakDayOfWeek: text("peak_day_of_week").default("Monday"),
+  // Wave L: separation fee per order (cents, admin-configurable)
+  separationFeeCents: integer("separation_fee_cents").default(0),
+  // Wave L: demo vendor flag — production excludes is_demo=true vendors.
+  // Default flipped to false in Wave 3 (Opus P1 #13): real new vendors must NOT be excluded by accident.
+  // Existing seed/dev rows that should remain demo can be set explicitly.
+  isDemo: boolean("is_demo").default(false),
 });
 
 // ─── Service Area Requests — unserved-area demand capture ───
@@ -204,6 +214,9 @@ export const drivers = pgTable("drivers", {
   customerRatingAvg: doublePrecision("customer_rating_avg").default(4.8),
   // Availability preferences — JSON: { days: string[], timeStart: "HH:MM", timeEnd: "HH:MM" }
   workSchedule: text("work_schedule"),
+  // Wave 2: vehicle profile fields
+  vehicleColor: text("vehicle_color"),
+  vehiclePhotoUrl: text("vehicle_photo_url"),
 });
 
 export const insertDriverSchema = createInsertSchema(drivers).omit({ id: true });
@@ -270,6 +283,11 @@ export const orders = pgTable("orders", {
   bags: text("bags").notNull(), // JSON
   preferences: text("preferences"), // JSON
   serviceType: text("service_type").default("wash_fold"), // wash_fold | dry_cleaning | comforters | mixed
+  // Wave L: wash wizard fields
+  clothingTypes: text("clothing_types"), // postgres text[] stored as text in drizzle
+  separated: boolean("separated").default(false),
+  separationFeeCents: integer("separation_fee_cents").default(0),
+  washPreferences: text("wash_preferences"), // jsonb: {detergent, water_temp, drying, stain, extra_rinse, special_instructions}
   subtotal: doublePrecision("subtotal").default(0),
   tax: doublePrecision("tax").default(0),
   deliveryFee: doublePrecision("delivery_fee").default(0),

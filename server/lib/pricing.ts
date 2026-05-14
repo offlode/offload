@@ -108,6 +108,32 @@ export interface QuotePriceBreakdown {
   recommendedVendorName?: string | null;
 }
 
+// B1: Shared Signature Wash per-bag premium calculation.
+// Used by both calculateQuotePrice() and the order-create path so the
+// premium math lives in exactly one place.
+export function isSignatureService(serviceType: string | undefined | null): boolean {
+  return serviceType === "wash_fold_signature" || serviceType === "signature";
+}
+
+export async function calculateSignaturePremium(
+  serviceType: string | undefined | null,
+  bags: Array<{ size: string; quantity: number }> | undefined | null,
+): Promise<{ premiumDollars: number; bagCount: number }> {
+  if (!isSignatureService(serviceType) || !bags || bags.length === 0) {
+    return { premiumDollars: 0, bagCount: 0 };
+  }
+  let premiumDollars = 0;
+  let bagCount = 0;
+  for (const bagEntry of bags) {
+    const sizeKey = `${bagEntry.size}_bag` as "small_bag" | "medium_bag" | "large_bag" | "xl_bag";
+    const premiumCents = await pricingConfig.getSignaturePremiumCents(sizeKey);
+    premiumDollars += Math.round(premiumCents * bagEntry.quantity) / 100;
+    bagCount += bagEntry.quantity;
+  }
+  premiumDollars = Math.round(premiumDollars * 100) / 100;
+  return { premiumDollars, bagCount };
+}
+
 export async function calculateQuotePrice(input: {
   tierName: string;
   deliverySpeed: string;
@@ -129,6 +155,11 @@ export async function calculateQuotePrice(input: {
   pickupAddress?: string;
   tierFlatPriceCents?: number;
   vendorChoiceMode?: string;              // auto | nearest | preferred | rated
+  // Wave L: separation fee
+  separated?: boolean;
+  separationFeeCents?: number;
+  // B1: Signature Wash per-bag premium
+  bags?: Array<{ size: "small" | "medium" | "large" | "xl"; quantity: number }>;
 }): Promise<QuotePriceBreakdown> {
   // 1. Resolve tier
   const normalizedTier = TIER_NAME_MAP[input.tierName] || input.tierName;
@@ -181,6 +212,28 @@ export async function calculateQuotePrice(input: {
       }
     }
   }
+
+  // 6a-wave-l. Separation fee — if order has separated=true and vendor charges a fee
+  let separationFee = 0;
+  if (input.separated && input.separationFeeCents && input.separationFeeCents > 0) {
+    separationFee = Math.round(input.separationFeeCents) / 100;
+  } else if (input.separated && input.vendorId) {
+    // Try to look up vendor's separation fee
+    try {
+      const v = await storage.getVendor(input.vendorId);
+      if (v && (v as any).separation_fee_cents > 0) {
+        separationFee = (v as any).separation_fee_cents / 100;
+      }
+    } catch { /* skip */ }
+  }
+  if (separationFee > 0) {
+    addOnsTotal += separationFee;
+    addOnItems.push({ id: -1, name: "Separation fee", price: separationFee, qty: 1 });
+  }
+
+  // 6a2. B1: Signature Wash per-bag premium — taxable, added to addOnsTotal
+  const { premiumDollars: signaturePremiumDollars, bagCount: signaturePremiumBagCount } =
+    await calculateSignaturePremium(input.serviceType, input.bags);
 
   // 6b. Resolve recommended vendor (for logistics distance + traffic)
   // Used when caller didn't pass vendorLat/Lng directly.
@@ -261,14 +314,14 @@ export async function calculateQuotePrice(input: {
   const logisticsAfterDemand = Math.round(logisticsAfterSurge * rawDemandMultiplier * 100) / 100;
   const demandDelta = Math.round((logisticsAfterDemand - logisticsAfterSurge) * 100) / 100;
 
-  // 7. Subtotal (laundry + preferred surcharge + addons + dynamic logistics)
+  // 7. Subtotal (laundry + preferred surcharge + addons + dynamic logistics + signature premium)
   // Note: deliveryFee is intentionally EXCLUDED from the tax base — NY does not tax
   // separately stated delivery charges, and the direct /api/orders path uses the same rule.
   // This keeps the public-quote path and the direct-order path in sync.
   // Logistics fees (distance, floor, handoff) included in taxable base by default.
-  // Consult NY tax counsel to confirm exclusion eligibility before changing.
+  // Signature Wash premium IS taxable per NY. Consult NY tax counsel before changing.
   const taxableSubtotal = Math.round(
-    (laundryServicePrice + speedSurcharge + preferredVendorSurcharge + addOnsTotal + logisticsAfterDemand) * 100
+    (laundryServicePrice + speedSurcharge + preferredVendorSurcharge + addOnsTotal + logisticsAfterDemand + signaturePremiumDollars) * 100
   ) / 100;
   const subtotal = Math.round((taxableSubtotal + deliveryFee) * 100) / 100;
 
@@ -351,6 +404,14 @@ export async function calculateQuotePrice(input: {
   }
   for (const ao of addOnItems) {
     lineItems.push({ label: `${ao.name} x${ao.qty}`, amount: ao.price * ao.qty, type: "addon" });
+  }
+  // B1: Signature Wash premium line item
+  if (signaturePremiumDollars > 0) {
+    lineItems.push({
+      label: `Signature Wash premium (×${signaturePremiumBagCount} bag${signaturePremiumBagCount !== 1 ? "s" : ""})`,
+      amount: signaturePremiumDollars,
+      type: "signature_premium",
+    });
   }
   lineItems.push({ label: `Tax (${(dbTaxRate * 100).toFixed(3)}%)`, amount: finalTaxAmount, type: "tax" });
   if (discount > 0) {
