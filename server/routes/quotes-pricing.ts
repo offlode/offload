@@ -498,24 +498,24 @@ export function registerQuotesPricingRoutes(app: Express) {
         vendorChoiceMode: vendorChoiceMode || undefined,
       });
 
-      // Wave 2: compute separation fee if separated=true
+      // Wave 2 + D4 spec: compute separation fee if separated=true.
+      // Default is $0 per D4 owner decision — admin sets the per-vendor amount in pricing-config.
+      // Only attach a line item when the resolved fee is > 0.
       let separationFeeCents = 0;
       if (qSeparated) {
-        // Resolve vendor separation fee, or default 500 cents ($5)
         let resolvedVendor = vendorId ? await storage.getVendor(Number(vendorId)) : null;
-        if (resolvedVendor && (resolvedVendor as any).separationFeeCents > 0) {
-          separationFeeCents = (resolvedVendor as any).separationFeeCents;
-        } else {
-          separationFeeCents = 500; // default $5
+        const vendorFee = (resolvedVendor as any)?.separationFeeCents;
+        separationFeeCents = typeof vendorFee === "number" ? vendorFee : 0; // D4: platform default $0
+
+        if (separationFeeCents > 0) {
+          const sepFeeDollars = separationFeeCents / 100;
+          breakdown.subtotal = Math.round((breakdown.subtotal + sepFeeDollars) * 100) / 100;
+          breakdown.total = Math.round((breakdown.total + sepFeeDollars) * 100) / 100;
+          breakdown.lineItems = [
+            ...breakdown.lineItems,
+            { label: "Separation Fee", amount: sepFeeDollars, type: "separation_fee" },
+          ];
         }
-        // Add separation fee to breakdown
-        const sepFeeDollars = separationFeeCents / 100;
-        breakdown.subtotal = Math.round((breakdown.subtotal + sepFeeDollars) * 100) / 100;
-        breakdown.total = Math.round((breakdown.total + sepFeeDollars) * 100) / 100;
-        breakdown.lineItems = [
-          ...breakdown.lineItems,
-          { label: "Separation Fee", amount: sepFeeDollars, type: "separation_fee" },
-        ];
       }
 
       // Calculate expiry

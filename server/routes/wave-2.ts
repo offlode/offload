@@ -11,6 +11,7 @@ import { storage } from "../storage";
 import { requireAuth } from "../session";
 import { now } from "../engines";
 import { distanceMiles } from "../lib/pricing";
+import { validateTransition } from "../order-fsm";
 import {
   orders,
   users,
@@ -336,6 +337,13 @@ export function registerWave2Routes(app: Express): void {
       const washStatuses = ["at_vendor", "weighed", "sorted", "washing", "wash_complete", "folded_packaged"];
       const statusFilter = req.query.status ? String(req.query.status) : null;
 
+      // P2-17: reject status filter values outside the wash-relevant whitelist
+      if (statusFilter && !washStatuses.includes(statusFilter)) {
+        return res.status(400).json({
+          error: `Invalid status filter. Allowed: ${washStatuses.join(", ")}`,
+        });
+      }
+
       let conditions: any[];
       if (vendorId) {
         conditions = [eq(orders.vendorId, vendorId)];
@@ -444,9 +452,20 @@ export function registerWave2Routes(app: Express): void {
       const order = await storage.getOrder(orderId);
       if (!order) return res.status(404).json({ error: "Order not found" });
 
-      const { lat, lng } = req.body;
-      if (lat == null || lng == null) {
-        return res.status(400).json({ error: "lat and lng are required" });
+      // P0-1: driver ownership check — non-owning drivers cannot probe geofence
+      const currentUser = (req as any).currentUser;
+      if (currentUser.role === "driver") {
+        const driver = await storage.getDriverByUserId(currentUser.id);
+        if (!driver || order.driverId !== driver.id) {
+          return res.status(403).json({ error: "Not your order" });
+        }
+      }
+
+      // P1-12: numeric coercion for lat/lng
+      const lat = Number(req.body?.lat);
+      const lng = Number(req.body?.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return res.status(400).json({ error: "lat/lng must be numbers" });
       }
 
       // Get vendor's geofence radius or default 100m
@@ -489,6 +508,24 @@ export function registerWave2Routes(app: Express): void {
       const order = await storage.getOrder(orderId);
       if (!order) return res.status(404).json({ error: "Order not found" });
 
+      // P0-2: driver ownership check
+      const currentUser = (req as any).currentUser;
+      if (currentUser.role === "driver") {
+        const driver = await storage.getDriverByUserId(currentUser.id);
+        if (!driver || order.driverId !== driver.id) {
+          return res.status(403).json({ error: "Not your order" });
+        }
+      }
+
+      // P1-10: FSM gate — prevent jumping straight from pending to picked_up
+      const fsmCheck = validateTransition(order.status, "picked_up");
+      if (!fsmCheck.valid) {
+        return res.status(422).json({
+          error: fsmCheck.error,
+          currentStatus: order.status,
+        });
+      }
+
       const { bag_count, notes, photo_url } = req.body;
 
       const updateData: any = {
@@ -516,9 +553,29 @@ export function registerWave2Routes(app: Express): void {
       const order = await storage.getOrder(orderId);
       if (!order) return res.status(404).json({ error: "Order not found" });
 
-      const { lat, lng } = req.body;
-      if (lat == null || lng == null) {
-        return res.status(400).json({ error: "lat and lng are required" });
+      // P0-3: driver ownership check
+      const currentUser = (req as any).currentUser;
+      if (currentUser.role === "driver") {
+        const driver = await storage.getDriverByUserId(currentUser.id);
+        if (!driver || order.driverId !== driver.id) {
+          return res.status(403).json({ error: "Not your order" });
+        }
+      }
+
+      // P1-12: numeric coercion for lat/lng
+      const lat = Number(req.body?.lat);
+      const lng = Number(req.body?.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return res.status(400).json({ error: "lat/lng must be numbers" });
+      }
+
+      // P1-11: pull geofence radius from vendor row (same source as pickup)
+      let geofenceRadius = 100; // meters
+      if (order.vendorId) {
+        const vendor = await storage.getVendor(order.vendorId);
+        if (vendor && (vendor as any).pickupGeofenceRadiusM) {
+          geofenceRadius = (vendor as any).pickupGeofenceRadiusM;
+        }
       }
 
       // Calculate distance from driver to delivery location
@@ -531,7 +588,7 @@ export function registerWave2Routes(app: Express): void {
       if (deliveryLat && deliveryLng) {
         const distMiles = distanceMiles(lat, lng, deliveryLat, deliveryLng);
         distanceM = Math.round(distMiles * 1609.34);
-        withinGeofence = distanceM <= 100; // default 100m
+        withinGeofence = distanceM <= geofenceRadius;
       }
 
       res.json({
@@ -551,6 +608,24 @@ export function registerWave2Routes(app: Express): void {
 
       const order = await storage.getOrder(orderId);
       if (!order) return res.status(404).json({ error: "Order not found" });
+
+      // P0-4: driver ownership check
+      const currentUser = (req as any).currentUser;
+      if (currentUser.role === "driver") {
+        const driver = await storage.getDriverByUserId(currentUser.id);
+        if (!driver || order.driverId !== driver.id) {
+          return res.status(403).json({ error: "Not your order" });
+        }
+      }
+
+      // P1-10: FSM gate — prevent skipping straight to delivered
+      const fsmCheck = validateTransition(order.status, "delivered");
+      if (!fsmCheck.valid) {
+        return res.status(422).json({
+          error: fsmCheck.error,
+          currentStatus: order.status,
+        });
+      }
 
       const { notes, photo_url, signature_data } = req.body;
 
@@ -582,6 +657,11 @@ export function registerWave2Routes(app: Express): void {
         return res.status(400).json({ error: "transcription is required" });
       }
 
+      // P2-16: reject oversize transcriptions to protect regex from pathological input
+      if (transcription.length > 4096) {
+        return res.status(400).json({ error: "transcription exceeds maximum length (4096 chars)" });
+      }
+
       const lang = language || "en";
       if (lang !== "en" && lang !== "es") {
         return res.status(422).json({ error: "Unsupported language. Only 'en' and 'es' are supported." });
@@ -591,12 +671,12 @@ export function registerWave2Routes(app: Express): void {
       // Falls back to the full AI extraction via /api/voice/extract for complex cases
       const text = transcription.toLowerCase().trim();
 
-      // Extract tier/bag size
+      // P2-15: word-boundary tier matching to avoid collisions like "xls" -> xl_bag
       let tierName: string | null = null;
-      if (text.includes("xl") || text.includes("extra large")) tierName = "xl_bag";
-      else if (text.includes("large")) tierName = "large_bag";
-      else if (text.includes("medium")) tierName = "medium_bag";
-      else if (text.includes("small")) tierName = "small_bag";
+      if (/\b(xl|extra[\s-]?large)\b/i.test(transcription)) tierName = "xl_bag";
+      else if (/\blarge\b/i.test(transcription)) tierName = "large_bag";
+      else if (/\bmedium\b/i.test(transcription)) tierName = "medium_bag";
+      else if (/\bsmall\b/i.test(transcription)) tierName = "small_bag";
 
       // Extract separation preference
       const separated = text.includes("separat") || text.includes("sort");
@@ -675,6 +755,15 @@ export function registerWave2Routes(app: Express): void {
         .where(eq(washRuns.id, runId));
 
       if (!run) return res.status(404).json({ error: "Wash run not found" });
+
+      // P1-7: cross-vendor IDOR — reject when run.vendorId doesn't match caller's vendor (admin bypass)
+      const currentUser = (req as any).currentUser;
+      if (currentUser.role !== "admin") {
+        const callerVendorId = await resolveVendorId(currentUser);
+        if (!callerVendorId || run.vendorId !== callerVendorId) {
+          return res.status(403).json({ error: "Not your wash run" });
+        }
+      }
 
       // Compute elapsed time if still washing
       let elapsedMin: number | null = null;

@@ -140,8 +140,10 @@ export const vendors = pgTable("vendors", {
   peakDayOfWeek: text("peak_day_of_week").default("Monday"),
   // Wave L: separation fee per order (cents, admin-configurable)
   separationFeeCents: integer("separation_fee_cents").default(0),
-  // Wave L: demo vendor flag — production excludes is_demo=true vendors
-  isDemo: boolean("is_demo").default(true),
+  // Wave L: demo vendor flag — production excludes is_demo=true vendors.
+  // Default flipped to false in Wave 3 (Opus P1 #13): real new vendors must NOT be excluded by accident.
+  // Existing seed/dev rows that should remain demo can be set explicitly.
+  isDemo: boolean("is_demo").default(false),
 });
 
 // ─── Service Area Requests — unserved-area demand capture ───

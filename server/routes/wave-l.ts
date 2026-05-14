@@ -154,6 +154,14 @@ export function registerWaveLRoutes(app: Express): void {
       const order = await storage.getOrder(orderId);
       if (!order) return res.status(404).json({ error: "Order not found" });
 
+      // P1-8: cross-vendor IDOR — a non-admin cannot create wash-runs against another vendor's order
+      if (user.role !== "admin") {
+        const callerVendorId = await getManagerVendorId(user);
+        if (!callerVendorId || order.vendorId !== callerVendorId) {
+          return res.status(403).json({ error: "Order belongs to another vendor" });
+        }
+      }
+
       const vId = vendorId || order.vendorId;
       if (!vId) return res.status(400).json({ error: "vendor_id is required" });
 
@@ -185,6 +193,18 @@ export function registerWaveLRoutes(app: Express): void {
       const runId = parseInt(paramStr(req.params.id), 10);
       if (isNaN(runId)) return res.status(400).json({ error: "Invalid run ID" });
 
+      const currentUser = (req as any).currentUser;
+
+      // P1-9: cross-vendor IDOR — verify run.vendorId matches caller's vendor
+      const [existingRun] = await db.select().from(washRuns).where(eq(washRuns.id, runId));
+      if (!existingRun) return res.status(404).json({ error: "Wash run not found" });
+      if (currentUser.role !== "admin") {
+        const callerVendorId = await getManagerVendorId(currentUser);
+        if (!callerVendorId || existingRun.vendorId !== callerVendorId) {
+          return res.status(403).json({ error: "Wash run belongs to another vendor" });
+        }
+      }
+
       const { status, photo_urls, notes, duration_min } = req.body;
       const updates: Record<string, any> = {};
       if (status) updates.status = status;
@@ -215,6 +235,18 @@ export function registerWaveLRoutes(app: Express): void {
     try {
       const runId = parseInt(paramStr(req.params.id), 10);
       if (isNaN(runId)) return res.status(400).json({ error: "Invalid run ID" });
+
+      const currentUser = (req as any).currentUser;
+
+      // P1-9: cross-vendor IDOR — verify run.vendorId matches caller's vendor
+      const [existingRun] = await db.select().from(washRuns).where(eq(washRuns.id, runId));
+      if (!existingRun) return res.status(404).json({ error: "Wash run not found" });
+      if (currentUser.role !== "admin") {
+        const callerVendorId = await getManagerVendorId(currentUser);
+        if (!callerVendorId || existingRun.vendorId !== callerVendorId) {
+          return res.status(403).json({ error: "Wash run belongs to another vendor" });
+        }
+      }
 
       const { folded_photo_url, foldedPhotoUrl, weightAfterLbs, weight_after_lbs } = req.body;
       const photoUrl = folded_photo_url || foldedPhotoUrl;
@@ -272,6 +304,15 @@ export function registerWaveLRoutes(app: Express): void {
 
       const order = await storage.getOrder(orderId);
       if (!order) return res.status(404).json({ error: "Order not found" });
+
+      // P1-9: cross-vendor IDOR — verify order.vendorId matches caller's vendor
+      const currentUser = (req as any).currentUser;
+      if (currentUser.role !== "admin") {
+        const callerVendorId = await getManagerVendorId(currentUser);
+        if (!callerVendorId || order.vendorId !== callerVendorId) {
+          return res.status(403).json({ error: "Order belongs to another vendor" });
+        }
+      }
 
       const { output_weight } = req.body;
 
@@ -336,10 +377,24 @@ export function registerWaveLRoutes(app: Express): void {
       const tempPassword = randomBytes(6).toString("hex");
       const hashedPassword = hashPassword(tempPassword);
 
+      // P2-22: reject malformed permissions payloads (number or object only; undefined falls through to defaults)
+      if (permissions !== undefined && typeof permissions !== "number" && (typeof permissions !== "object" || permissions === null || Array.isArray(permissions))) {
+        return res.status(400).json({ error: "permissions must be a bitmask number or an object" });
+      }
+
       const username = email.toLowerCase().trim();
       const existingUser = await storage.getUserByEmail(username);
       let newUser;
       if (existingUser) {
+        // P0-5: privilege escalation guard
+        //   - never attach an admin account to a vendor
+        //   - never silently move a user out of an existing different vendor
+        if (existingUser.role === "admin") {
+          return res.status(403).json({ error: "Cannot attach an admin account as a vendor employee" });
+        }
+        if (existingUser.vendorId && existingUser.vendorId !== resolvedVendorId) {
+          return res.status(409).json({ error: "User already belongs to another vendor" });
+        }
         newUser = existingUser;
       } else {
         newUser = await storage.createUser({
@@ -976,6 +1031,12 @@ export function registerWaveLRoutes(app: Express): void {
     res.setHeader("Deprecation", "true");
     res.setHeader("Sunset", "2026-07-01");
     res.setHeader("Link", '</api/voice/parse>; rel="successor-version"');
+
+    // P1-14: feature flag to disable the deprecated endpoint entirely (default off; flip to "true" in production)
+    if (process.env.DISABLE_LEGACY_VOICE_ORDER === "true") {
+      return res.status(410).json({ error: "Endpoint removed. Use POST /api/voice/parse." });
+    }
+
     try {
       const { transcript, intent } = req.body;
 
