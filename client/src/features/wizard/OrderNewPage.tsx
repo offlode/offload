@@ -279,7 +279,15 @@ export default function OrderNewPage() {
       case 2: return state.bags.length > 0 && state.bags.some(b => b.quantity > 0);
       case 3: return state.separateByType !== null;
       case 4: return state.clothingTypes.length > 0;
-      case 5: return !!state.address && !!state.pickupDate && !!state.pickupTimeWindow && state.serviceAreaAvailable === true;
+      case 5: {
+        if (!state.address || !state.pickupDate || !state.pickupTimeWindow) return false;
+        // If service area is confirmed, allow proceeding
+        if (state.serviceAreaAvailable === true) return true;
+        // Allow free-text address (min 8 chars, at least 1 digit, 2+ words) even without Places API
+        const addr = state.address.trim();
+        const isValidFreeText = addr.length >= 8 && /\d/.test(addr) && addr.split(/\s+/).length >= 2;
+        return isValidFreeText;
+      }
       case 6: return !!state.paymentMethodId;
       case 7: return true;
       default: return false;

@@ -254,7 +254,7 @@ export function StepAddress({
     setSuggestions(results);
     setShowSuggestions(true);
     if (results.length === 0 && input.length >= 5) {
-      setAutocompleteError("No address suggestions found. You can still enter your address manually.");
+      setAutocompleteError("No address suggestions found. Type your full address (with street number) to continue manually.");
     }
   }, []);
 
@@ -418,9 +418,9 @@ export function StepAddress({
           </p>
         )}
         {!addressPlaceId && address && address.length >= 3 && !autocompleteError && !fetchingSuggestions && !showSuggestions && (
-          <p className="text-xs text-amber-500 mt-1 flex items-center gap-1">
+          <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
             <AlertCircle className="w-3 h-3" />
-            Enter a 5-digit ZIP so we can verify your service area
+            Include street number and ZIP for best results
           </p>
         )}
         {checkingArea && (
