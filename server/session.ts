@@ -64,6 +64,8 @@ const BEARER_EXEMPT_PATHS: string[] = [
   "/api/auth/logout",
   "/api/webhooks/stripe",
   "/api/stripe/webhook",
+  "/api/service-area-requests",
+  "/api/auth/2fa-challenge",
 ];
 
 export function requireBearerToken(req: Request, res: Response, next: NextFunction) {
@@ -74,7 +76,19 @@ export function requireBearerToken(req: Request, res: Response, next: NextFuncti
 
   // Public auth + webhook endpoints are exempt — callers have no token yet,
   // or (webhooks) authenticate via HMAC signature instead.
-  if (BEARER_EXEMPT_PATHS.includes(req.path)) return next();
+  // Note: when this middleware is mounted via app.use("/api/", ...), Express
+  // strips the mount point so req.path is e.g. "/auth/register" not
+  // "/api/auth/register". Match against both forms, and also fall back to
+  // req.originalUrl (which preserves the full path) for safety.
+  const fullPath = req.originalUrl.split("?")[0];
+  const strippedPath = req.path.startsWith("/api/") ? req.path : `/api${req.path}`;
+  if (
+    BEARER_EXEMPT_PATHS.includes(req.path) ||
+    BEARER_EXEMPT_PATHS.includes(strippedPath) ||
+    BEARER_EXEMPT_PATHS.includes(fullPath)
+  ) {
+    return next();
+  }
 
   const bearer = getBearerTokenFromRequest(req);
   const cookieToken = getCookieValue(req, SESSION_COOKIE);

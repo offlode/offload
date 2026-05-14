@@ -32,7 +32,12 @@ export function registerUserRoutes(app: Express) {
     }
     const user = await storage.getUser(Number(String(req.params.id)));
     if (!user) return res.status(404).json({ error: "User not found" });
-    res.json({ ...user, password: undefined });
+    // Parse preferences JSON text for client consumption
+    let parsedPrefs = null;
+    if (user.preferences) {
+      try { parsedPrefs = JSON.parse(user.preferences); } catch { parsedPrefs = null; }
+    }
+    res.json({ ...user, password: undefined, preferences: parsedPrefs });
   });
 
   app.patch("/api/users/:id", requireAuth(), async (req, res) => {
@@ -60,7 +65,11 @@ export function registerUserRoutes(app: Express) {
     for (const k of SELF_FIELDS) { if ((body as any)[k] !== undefined) updateData[k] = (body as any)[k]; }
     const updated = await storage.updateUser(targetId, updateData);
     if (!updated) return res.status(404).json({ error: "User not found" });
-    res.json({ ...updated, password: undefined });
+    let parsedPrefsU = null;
+    if (updated.preferences) {
+      try { parsedPrefsU = JSON.parse(updated.preferences); } catch { parsedPrefsU = null; }
+    }
+    res.json({ ...updated, password: undefined, preferences: parsedPrefsU });
   });
 
 

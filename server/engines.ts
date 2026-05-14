@@ -129,8 +129,14 @@ export function scoreDriver(driver: Driver, pickupLat: number, pickupLng: number
 }
 
 export async function findBestVendor(order: Order, pickupLat: number, pickupLng: number, scheduledAt?: Date): Promise<Vendor | null> {
-  const activeVendors = await storage.getActiveVendors();
+  let activeVendors = await storage.getActiveVendors();
   if (activeVendors.length === 0) return null;
+
+  // Wave 2: exclude demo vendors in production unless ALLOW_DEMO_VENDORS=true
+  if (process.env.NODE_ENV === "production" && process.env.ALLOW_DEMO_VENDORS !== "true") {
+    activeVendors = activeVendors.filter(v => (v as any).isDemo !== true);
+    if (activeVendors.length === 0) return null;
+  }
 
   let dispatchAt: Date = scheduledAt || new Date();
   if (!scheduledAt && (order as any).scheduledPickup) {

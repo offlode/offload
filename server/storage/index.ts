@@ -531,10 +531,158 @@ async function ensureIntegrityConstraints() {
     }
   }
 
+  // Wave 2: vehicle profile columns on drivers
+  const wave2Cols: Array<[string, string]> = [
+    ["drivers", "vehicle_color TEXT"],
+    ["drivers", "vehicle_photo_url TEXT"],
+    ["vendors", "separation_fee_cents INTEGER DEFAULT 0"],
+    ["vendors", "pickup_geofence_radius_m INTEGER DEFAULT 100"],
+    ["service_types", "separation_fee_cents INTEGER DEFAULT 0"],
+    ["orders", "separated BOOLEAN DEFAULT FALSE"],
+    ["orders", "clothing_types TEXT"],
+    ["orders", "wash_preferences JSONB"],
+    ["orders", "folded_packaged_at TIMESTAMPTZ"],
+    ["orders", "final_weight_verified_at TIMESTAMPTZ"],
+    ["orders", "final_weight_lbs DOUBLE PRECISION"],
+    ["orders", "pickup_photo_url TEXT"],
+    ["orders", "delivery_photo_url TEXT"],
+    ["orders", "signature_data TEXT"],
+    ["orders", "bag_count INTEGER"],
+    ["orders", "pickup_notes TEXT"],
+    ["orders", "separation_fee_cents INTEGER DEFAULT 0"],
+    ["users", "must_change_password BOOLEAN DEFAULT FALSE"],
+    ["users", "preferences TEXT"],
+    ["vendors", "is_demo BOOLEAN DEFAULT FALSE"],
+  ];
+  for (const [table, colDef] of wave2Cols) {
+    try {
+      await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${colDef}`);
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      if (!msg.includes("already exists") && !msg.includes("duplicate column")) {
+        console.warn(`[integrity] Wave 2 ${table} column:`, msg);
+      }
+    }
+  }
+
+  // Wave L / Wave 2: create new tables introduced by Loom/Figma parity
+  const newTables: Array<[string, string]> = [
+    ["wash_runs", `CREATE TABLE IF NOT EXISTS wash_runs (
+      id SERIAL PRIMARY KEY,
+      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE RESTRICT,
+      operator_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE RESTRICT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      duration_min INTEGER,
+      start_at TIMESTAMPTZ,
+      end_at TIMESTAMPTZ,
+      completed_at TIMESTAMPTZ,
+      photo_urls TEXT,
+      notes TEXT,
+      separation_required BOOLEAN DEFAULT FALSE,
+      clothing_types TEXT,
+      weight_before_lbs DOUBLE PRECISION,
+      weight_after_lbs DOUBLE PRECISION,
+      wash_type TEXT,
+      clothing_category TEXT,
+      weight_lbs DOUBLE PRECISION
+    )`],
+    ["vendor_employees", `CREATE TABLE IF NOT EXISTS vendor_employees (
+      id SERIAL PRIMARY KEY,
+      vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role TEXT NOT NULL,
+      permissions TEXT,
+      temp_password_hash TEXT,
+      active BOOLEAN DEFAULT TRUE,
+      joined_at TIMESTAMPTZ,
+      last_login_at TIMESTAMPTZ,
+      deactivated_at TIMESTAMPTZ,
+      deleted_at TIMESTAMPTZ
+    )`],
+    ["performance_bonus_rules", `CREATE TABLE IF NOT EXISTS performance_bonus_rules (
+      id SERIAL PRIMARY KEY,
+      vendor_id INTEGER REFERENCES vendors(id) ON DELETE CASCADE,
+      rule_type TEXT NOT NULL,
+      threshold INTEGER NOT NULL,
+      amount_cents INTEGER NOT NULL,
+      active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`],
+    ["performance_bonus_payouts", `CREATE TABLE IF NOT EXISTS performance_bonus_payouts (
+      id SERIAL PRIMARY KEY,
+      vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+      rule_id INTEGER NOT NULL REFERENCES performance_bonus_rules(id) ON DELETE CASCADE,
+      period_start TIMESTAMPTZ,
+      period_end TIMESTAMPTZ,
+      amount_cents INTEGER NOT NULL,
+      triggered_at TIMESTAMPTZ DEFAULT NOW(),
+      payout_status TEXT NOT NULL DEFAULT 'pending'
+    )`],
+    ["vendor_bank_accounts", `CREATE TABLE IF NOT EXISTS vendor_bank_accounts (
+      id SERIAL PRIMARY KEY,
+      vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+      bank_name TEXT NOT NULL,
+      last4 TEXT NOT NULL,
+      masked_routing TEXT,
+      status TEXT NOT NULL DEFAULT 'pending'
+    )`],
+    ["notification_preferences", `CREATE TABLE IF NOT EXISTS notification_preferences (
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      category TEXT NOT NULL,
+      push BOOLEAN DEFAULT TRUE,
+      email BOOLEAN DEFAULT TRUE,
+      sms BOOLEAN DEFAULT FALSE,
+      PRIMARY KEY (user_id, category)
+    )`],
+    ["user_2fa", `CREATE TABLE IF NOT EXISTS user_2fa (
+      user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      method TEXT NOT NULL DEFAULT 'totp',
+      totp_secret_enc TEXT,
+      backup_codes_hash TEXT,
+      enabled BOOLEAN DEFAULT FALSE,
+      verified_at TIMESTAMPTZ
+    )`],
+  ];
+  for (const [name, sqlDef] of newTables) {
+    try {
+      await pool.query(sqlDef);
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      if (!msg.includes("already exists")) {
+        console.warn(`[integrity] Wave L ${name} table:`, msg);
+      }
+    }
+  }
+
+  // Wave L indexes for new tables
+  const newIndexes = [
+    "CREATE INDEX IF NOT EXISTS idx_wash_runs_order ON wash_runs(order_id)",
+    "CREATE INDEX IF NOT EXISTS idx_wash_runs_vendor ON wash_runs(vendor_id)",
+    "CREATE INDEX IF NOT EXISTS idx_wash_runs_operator ON wash_runs(operator_id)",
+    "CREATE INDEX IF NOT EXISTS idx_vendor_employees_vendor ON vendor_employees(vendor_id)",
+    "CREATE INDEX IF NOT EXISTS idx_vendor_employees_user ON vendor_employees(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_perf_bonus_rules_vendor ON performance_bonus_rules(vendor_id)",
+    "CREATE INDEX IF NOT EXISTS idx_perf_bonus_payouts_vendor ON performance_bonus_payouts(vendor_id)",
+    "CREATE INDEX IF NOT EXISTS idx_vendor_bank_accounts_vendor ON vendor_bank_accounts(vendor_id)",
+  ];
+  for (const idxSql of newIndexes) {
+    try {
+      await pool.query(idxSql);
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      if (!msg.includes("already exists")) {
+        console.warn("[integrity] Wave L index:", msg);
+      }
+    }
+  }
+
   console.log("[integrity] FK constraints, indexes, and shadow cents columns applied.");
 }
 
-ensureIntegrityConstraints().catch((err) => {
+// Export a promise that bootstrap can await before running queries that need new columns/tables.
+export const integrityReady = ensureIntegrityConstraints().catch((err) => {
   console.error("[storage] ensureIntegrityConstraints error:", err);
 });
 

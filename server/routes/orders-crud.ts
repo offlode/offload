@@ -8,6 +8,7 @@ import { storage, db, addOrderCents } from "../storage";
 import { pricingConfig } from "../pricing-config-service";
 import {
   calculatePricing,
+  calculateSignaturePremium,
   getSurgePricingTierAsync, getDemandMultiplier,
 } from "../lib/pricing";
 import { requireAuth } from "../session";
@@ -297,17 +298,27 @@ export function registerOrdersCrudRoutes(app: Express) {
       let surgeTotal: number;
       let deliveryFee: number;
 
+      // B1: Signature Wash per-bag premium — reuse shared helper from pricing.ts.
+      // Build bags array from parsedBags (customer sends [{type:"medium",quantity:2}])
+      // or fall back to a single bag matching the tier when no bags array is present.
+      const premiumBags: Array<{ size: string; quantity: number }> = parsedBags.length > 0
+        ? parsedBags.map((b: any) => ({ size: b.type || b.size || "medium", quantity: b.quantity || 1 }))
+        : tierInfo
+          ? [{ size: tierInfo.name.replace(/_bag$/, ""), quantity: 1 }]
+          : [];
+      const { premiumDollars: signaturePremium } = await calculateSignaturePremium(serviceType, premiumBags);
+
       if (tierInfo) {
         // Tier-based flat rate pricing — the base price IS the flat rate
         const bagPriceInfo = await pricingConfig.getBagPrice(tierInfo.name || "small_bag");
-        surgeSubtotal = bagPriceInfo.flatPrice + addOnsTotal;
+        surgeSubtotal = bagPriceInfo.flatPrice + addOnsTotal + signaturePremium;
         surgeTax = Math.round(surgeSubtotal * (await pricingConfig.getTaxRate()) * 100) / 100;
         deliveryFee = await pricingConfig.getDeliveryFee((speed as "48h" | "24h" | "same_day") || "48h");
         surgeTotal = Math.round((surgeSubtotal + surgeTax + deliveryFee) * 100) / 100;
       } else {
         // Legacy bag-count-based pricing
         const pricing = await calculatePricing(parsedBags, speed);
-        surgeSubtotal = Math.round(pricing.subtotal * surge.multiplier * demandMultiplier * 100) / 100;
+        surgeSubtotal = Math.round((pricing.subtotal + signaturePremium) * surge.multiplier * demandMultiplier * 100) / 100;
         surgeTax = Math.round(surgeSubtotal * (await pricingConfig.getTaxRate()) * 100) / 100;
         deliveryFee = pricing.deliveryFee;
         surgeTotal = Math.round((surgeSubtotal + surgeTax + deliveryFee) * 100) / 100;
