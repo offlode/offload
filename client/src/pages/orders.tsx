@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "wouter";
 import {
   Clock, MessageSquare, ClipboardList, Package, Send, X,
-  Filter, RefreshCw, ArrowDownCircle
+  RefreshCw
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -136,7 +136,7 @@ export default function OrdersPage() {
       <div className="px-5 pt-6 pb-2">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold" data-testid="text-orders-title">My Orders</h1>
+            <h1 className="text-2xl font-bold tracking-tight" data-testid="text-orders-title">My Orders</h1>
             <p className="text-sm text-muted-foreground mt-1">Track and manage your laundry</p>
           </div>
           <Button
@@ -145,22 +145,22 @@ export default function OrdersPage() {
             onClick={() => refetch()}
             disabled={isRefetching}
             data-testid="button-refresh"
-            className="transition-all active:scale-90"
+            className="transition-all active:scale-90 rounded-xl w-10 h-10"
           >
             <RefreshCw className={`w-4 h-4 ${isRefetching ? "animate-spin" : ""}`} />
           </Button>
         </div>
       </div>
 
-      {/* Filter Tabs */}
+      {/* Filter Tabs — Figma pill-style */}
       <div className="px-5 mb-4">
-        <div className="flex bg-muted rounded-lg p-1 gap-1">
+        <div className="flex bg-muted rounded-xl p-1 gap-1">
           {tabs.map(t => (
             <button
               key={t.key}
               data-testid={`filter-${t.key}`}
               onClick={() => setFilter(t.key)}
-              className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-all ${
+              className={`flex-1 text-xs font-medium py-2 rounded-lg transition-all min-h-[36px] ${
                 filter === t.key
                   ? "bg-card text-foreground shadow-sm"
                   : "text-muted-foreground hover:text-foreground"
@@ -197,7 +197,7 @@ export default function OrdersPage() {
               <div key={order.id}>
                 <Link href={`/orders/${order.id}`}>
                   <Card
-                    className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 hover:shadow-[0_0_20px_rgba(124,58,237,0.08)] active:scale-[0.99]"
+                    className="p-4 rounded-2xl cursor-pointer transition-all duration-200 hover:border-primary/30 hover:shadow-[0_0_20px_rgba(124,58,237,0.08)] active:scale-[0.99]"
                     data-testid={`card-order-${order.id}`}
                   >
                     <div className="flex items-start gap-3">
@@ -250,7 +250,7 @@ export default function OrdersPage() {
                     <Button
                       variant="secondary"
                       size="sm"
-                      className="h-7 text-xs gap-1.5"
+                      className="h-9 text-xs gap-1.5 rounded-lg min-h-[36px]"
                       onClick={(e) => {
                         e.stopPropagation();
                         setMessageSheet(order.id);
@@ -264,7 +264,7 @@ export default function OrdersPage() {
                       <Button
                         variant="secondary"
                         size="sm"
-                        className="h-7 text-xs gap-1.5 text-red-400 hover:text-red-300"
+                        className="h-9 text-xs gap-1.5 text-red-400 hover:text-red-300 rounded-lg min-h-[36px]"
                         onClick={(e) => {
                           e.stopPropagation();
                           setCancelOrderId(order.id);
@@ -281,7 +281,7 @@ export default function OrdersPage() {
             );
           })
         ) : (
-          <Card className="p-12 text-center">
+          <Card className="p-12 text-center rounded-2xl">
             <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
               <ClipboardList className="w-8 h-8 text-primary/60" />
             </div>
@@ -295,7 +295,7 @@ export default function OrdersPage() {
             </p>
             {filter === "all" && (
               <Link href="/order/new">
-                <Button data-testid="button-schedule-first">Schedule a Pickup</Button>
+                <Button className="rounded-full" data-testid="button-schedule-first">Schedule a Pickup</Button>
               </Link>
             )}
           </Card>

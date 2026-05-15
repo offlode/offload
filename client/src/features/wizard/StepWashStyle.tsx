@@ -37,7 +37,7 @@ export function StepWashStyle({ value, onChange }: StepWashStyleProps) {
   return (
     <div className="px-5 space-y-4">
       <div>
-        <h2 className="text-lg font-bold mb-1">Choose Your Wash Style</h2>
+        <h2 className="text-xl font-bold mb-1 tracking-tight">Choose Your Wash Style</h2>
         <p className="text-sm text-muted-foreground">
           Select how you'd like your laundry cleaned.
         </p>

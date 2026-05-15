@@ -88,7 +88,7 @@ export function EstimatedTotalFooter({ state, currentStep }: EstimatedTotalFoote
   return (
     <div className="fixed bottom-[72px] left-0 right-0 z-30 pointer-events-none">
       <div className="max-w-lg mx-auto px-5">
-        <div className="bg-background/90 backdrop-blur border border-border rounded-xl px-4 py-2 flex items-center justify-between shadow-sm pointer-events-auto">
+        <div className="bg-background/90 backdrop-blur border border-border rounded-2xl px-4 py-3 flex items-center justify-between shadow-sm pointer-events-auto">
           <span className="text-xs text-muted-foreground font-medium">Estimated total</span>
           <span className="text-sm font-bold text-foreground tabular-nums">
             {displayTotal}
