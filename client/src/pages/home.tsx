@@ -3,7 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import {
   MapPin, ArrowRight, Star, Shield, Sparkles, Settings2,
-  ClipboardList, ChevronRight, Truck, Clock, Shirt, Package, Mic, Gift
+  ClipboardList, ChevronRight, Truck, Clock, Shirt, Package,
+  Mic, Gift, RefreshCw
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,9 +15,9 @@ import { useAuth } from "@/contexts/auth-context";
 import { VoiceOrderModal } from "@/components/voice-order";
 import { apiRequest } from "@/lib/queryClient";
 import { friendlyStatus } from "@/lib/order-status";
-import type { Order, Vendor, Address } from "@shared/schema";
+import type { Order, Vendor, Address, PaymentMethod } from "@shared/schema";
 
-// Landing view for logged-out users
+// ─── Landing view for logged-out users ───────────────────────
 function LandingView() {
   const [, navigate] = useLocation();
   return (
@@ -77,7 +78,7 @@ function LandingView() {
   );
 }
 
-// Nearby vendor skeleton card
+// ─── Vendor skeleton ─────────────────────────────────────────
 function VendorSkeleton() {
   return (
     <Card className="p-4 min-w-[200px] max-w-[220px] shrink-0 snap-start">
@@ -89,6 +90,36 @@ function VendorSkeleton() {
   );
 }
 
+// ─── Wash Style Quick-Order Tile ─────────────────────────────
+interface WashTileProps {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  priceHint: string;
+  href: string;
+}
+
+function WashTile({ icon, title, description, priceHint, href }: WashTileProps) {
+  return (
+    <Link href={href}>
+      <Card
+        className="p-4 min-w-[180px] max-w-[200px] shrink-0 snap-start cursor-pointer transition-all duration-200 hover:border-primary/40 hover:shadow-[0_0_20px_rgba(124,58,237,0.1)] active:scale-[0.97]"
+        data-testid={`tile-${title.toLowerCase().replace(/\s+/g, "-")}`}
+      >
+        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center mb-3 text-primary">
+          {icon}
+        </div>
+        <p className="text-sm font-semibold leading-tight">{title}</p>
+        <p className="text-[11px] text-muted-foreground mt-1 leading-snug line-clamp-2">
+          {description}
+        </p>
+        <p className="text-xs font-semibold text-primary mt-2">{priceHint}</p>
+      </Card>
+    </Link>
+  );
+}
+
+// ─── Main Home Page ──────────────────────────────────────────
 export default function HomePage() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -110,6 +141,15 @@ export default function HomePage() {
     enabled: !!user,
   });
 
+  const { data: paymentMethods } = useQuery<PaymentMethod[]>({
+    queryKey: [`/api/payment-methods?userId=${user?.id}`],
+    queryFn: async () => {
+      const res = await apiRequest(`/api/payment-methods?userId=${user?.id}`);
+      return res.json();
+    },
+    enabled: !!user,
+  });
+
   // If not logged in, show landing page
   if (!isAuthenticated) {
     return <LandingView />;
@@ -120,6 +160,13 @@ export default function HomePage() {
     !["delivered", "cancelled"].includes(o.status)
   ) || [];
   const activeOrder = activeOrders[0];
+  const hasAddress = !!defaultAddr;
+  const hasPayment = (paymentMethods?.length ?? 0) > 0;
+  const hasOrders = (recentOrders?.length ?? 0) > 0;
+  const canQuickReorder = hasAddress && hasPayment && hasOrders;
+
+  // Last completed order for reorder
+  const lastOrder = recentOrders?.find(o => o.status === "delivered") || recentOrders?.[0];
 
   // Loyalty points (from user object if available)
   const loyaltyPoints = (user as any)?.loyaltyPoints ?? 0;
@@ -131,36 +178,40 @@ export default function HomePage() {
     return "Good evening";
   };
 
+  // Top-rated vendor
+  const topVendor = vendors
+    ?.filter(v => v.certified && v.rating)
+    .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))[0];
+
   return (
     <div className="pb-28 max-w-lg mx-auto">
-      {/* Header */}
-      <div className="px-5 pt-6 pb-4">
-        <div className="flex items-start justify-between">
-          <div>
-            <p className="text-muted-foreground text-sm mb-1">{greeting()},</p>
-            <h1 className="text-xl font-bold" data-testid="text-greeting">{user?.name || "there"}</h1>
-            <div className="flex items-center gap-1.5 mt-2 text-muted-foreground text-xs">
-              <MapPin className="w-3.5 h-3.5 text-primary" />
-              <span data-testid="text-address">{defaultAddr ? `${defaultAddr.street}, ${defaultAddr.city}` : "No address set"}</span>
-            </div>
+      {/* ── Header / Greeting ── */}
+      <div className="px-5 pt-6 pb-2">
+        <p className="text-muted-foreground text-sm">{greeting()},</p>
+        <h1 className="text-2xl font-bold mt-0.5" data-testid="text-greeting">
+          {user?.name || "there"}
+        </h1>
+        {defaultAddr && (
+          <div className="flex items-center gap-1.5 mt-2 text-muted-foreground text-xs">
+            <MapPin className="w-3.5 h-3.5 text-primary" />
+            <span data-testid="text-address">{defaultAddr.street}, {defaultAddr.city}</span>
           </div>
-        </div>
+        )}
       </div>
 
-      {/* Hero CTA Card — "Schedule a Pickup" with primary purple CTA → /order/new */}
-      <div className="px-5 mb-6">
+      {/* ── Hero CTA — "Ready for fresh laundry?" ── */}
+      <div className="px-5 mt-4 mb-5">
         <Link href="/order/new">
           <Card
             data-testid="card-schedule-pickup"
             className="relative overflow-hidden bg-gradient-to-br from-primary to-primary/70 text-primary-foreground p-6 cursor-pointer group transition-all duration-300 hover:shadow-[0_0_40px_rgba(124,58,237,0.25)]"
           >
-            {/* Decorative orbs */}
             <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full -mr-10 -mt-10 blur-sm" />
             <div className="absolute bottom-0 left-0 w-24 h-24 bg-white/5 rounded-full -ml-8 -mb-8 blur-sm" />
 
-            <h2 className="text-lg font-bold mb-1.5 relative z-10">Schedule a Pickup</h2>
+            <h2 className="text-lg font-bold mb-1 relative z-10">Ready for fresh laundry?</h2>
             <p className="text-sm text-white/80 mb-4 relative z-10 leading-relaxed max-w-[280px]">
-              Customize your wash, choose a time, and we'll handle the rest.
+              We'll pick it up, wash it with care, and deliver it back — fresh and folded.
             </p>
             <Button
               variant="secondary"
@@ -168,15 +219,15 @@ export default function HomePage() {
               className="bg-white/15 border border-white/20 text-white no-default-hover-elevate no-default-active-elevate hover:bg-white/25 transition-colors"
               data-testid="button-schedule"
             >
-              Start Your Order <ArrowRight className="w-4 h-4 ml-1 group-hover:translate-x-0.5 transition-transform" />
+              Schedule Pickup <ArrowRight className="w-4 h-4 ml-1.5 group-hover:translate-x-0.5 transition-transform" />
             </Button>
           </Card>
         </Link>
       </div>
 
-      {/* Active Order Banner */}
+      {/* ── Active Order Banner ── */}
       {activeOrder && (
-        <div className="px-5 mb-6">
+        <div className="px-5 mb-5">
           <Link href={`/orders/${activeOrder.id}`}>
             <Card className="p-4 border-primary/20 bg-primary/5 cursor-pointer transition-all duration-200 hover:border-primary/40 hover:shadow-[0_0_20px_rgba(124,58,237,0.08)]" data-testid="card-active-order">
               <div className="flex items-center gap-3">
@@ -202,75 +253,125 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* Nearby Vendors Carousel */}
-      <div className="mb-6">
-        <h3 className="text-sm font-semibold px-5 mb-3">Nearby Vendors</h3>
-        <div className="flex gap-3 px-5 overflow-x-auto snap-x snap-mandatory pb-2 scrollbar-none" style={{ scrollbarWidth: 'none' }}>
-          {vendorsLoading ? (
-            <>
-              <VendorSkeleton />
-              <VendorSkeleton />
-              <VendorSkeleton />
-            </>
-          ) : vendorsError ? (
-            <Card className="p-4 min-w-[200px] max-w-[220px] shrink-0 snap-start text-center">
-              <p className="text-xs text-muted-foreground mb-2">Failed to load vendors</p>
-              <Button size="sm" variant="outline" onClick={() => refetchVendors()}>Retry</Button>
-            </Card>
-          ) : vendors && vendors.length > 0 ? (
-            vendors.slice(0, 6).map(vendor => (
-              <button
-                key={vendor.id}
-                className="text-left"
-                onClick={() => navigate(`/vendors/${vendor.id}`)}
-                data-testid={`vendor-card-${vendor.id}`}
-              >
-                <Card
-                  className="p-4 min-w-[200px] max-w-[220px] shrink-0 snap-start cursor-pointer transition-all duration-200 hover:border-primary/30"
-                >
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="w-8 h-8 rounded-full bg-emerald-500/10 flex items-center justify-center">
-                      <Shield className="w-4 h-4 text-emerald-500" />
-                    </div>
-                    {vendor.certified && (
-                      <Badge variant="secondary" className="text-[9px] bg-emerald-500/15 text-emerald-400 px-1 py-0">
-                        Certified
-                      </Badge>
-                    )}
-                  </div>
-                  <p className="text-sm font-semibold truncate">{vendor.name}</p>
-                  <div className="flex items-center gap-1 mt-1">
-                    <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
-                    <span className="text-xs text-muted-foreground">
-                      {vendor.rating?.toFixed(1)} ({vendor.reviewCount || 0})
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground mt-1 truncate">
-                    {vendor.city || vendor.address}
-                  </p>
-                </Card>
-              </button>
-            ))
-          ) : (
-            <Card className="p-4 min-w-[200px] max-w-[220px] shrink-0 snap-start text-center">
-              <p className="text-xs text-muted-foreground">No vendors found nearby</p>
-            </Card>
-          )}
+      {/* ── Top-Rated Vendor Nearby ── */}
+      {topVendor && (
+        <div className="px-5 mb-5">
+          <Card
+            className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30"
+            onClick={() => navigate(`/vendors/${topVendor.id}`)}
+            data-testid="card-top-vendor"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center">
+                <Shield className="w-5 h-5 text-emerald-500" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-emerald-400">Top-Rated Vendor Near You</p>
+                <div className="flex items-center gap-1 mt-0.5">
+                  <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
+                  <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
+                  <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
+                  <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
+                  <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
+                  <span className="text-xs text-muted-foreground ml-1">
+                    {topVendor.rating?.toFixed(1)} ({topVendor.reviewCount || 0} reviews)
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">{topVendor.name} — Tap for details</p>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* ── Quick Reorder Tile ── */}
+      {canQuickReorder && lastOrder && (
+        <div className="px-5 mb-5">
+          <Card
+            className="p-4 cursor-pointer border-emerald-500/20 bg-emerald-500/5 transition-all duration-200 hover:border-emerald-500/40 hover:shadow-[0_0_20px_rgba(34,197,94,0.08)] active:scale-[0.99]"
+            onClick={() => {
+              // Prefill wizard with last order's settings and navigate to review
+              const bags = (() => { try { return JSON.parse(lastOrder.bags || "[]"); } catch { return []; } })();
+              const serviceType = lastOrder.serviceType || "wash_fold";
+              const qs = `?service=${encodeURIComponent(serviceType)}`;
+              // Store reorder data for wizard
+              (window as any).__offload_reorder = {
+                bags,
+                serviceType,
+                deliverySpeed: lastOrder.deliverySpeed || "standard",
+                address: defaultAddr ? `${defaultAddr.street}, ${defaultAddr.city}, ${defaultAddr.state} ${defaultAddr.zip}` : "",
+                pickupAddressId: defaultAddr?.id,
+                paymentMethodId: paymentMethods?.[0]?.id ? String(paymentMethods[0].id) : "",
+              };
+              navigate(`/order/new${qs}`);
+            }}
+            data-testid="card-quick-reorder"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-emerald-500/15 flex items-center justify-center">
+                <RefreshCw className="w-5 h-5 text-emerald-500" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold">Reorder Last</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Same as last time — one tap to review & place
+                </p>
+              </div>
+              <ArrowRight className="w-4 h-4 text-emerald-500 shrink-0" />
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* ── Choose Your Wash Style — Quick Order Tiles ── */}
+      <div className="mb-5">
+        <h3 className="text-sm font-semibold px-5 mb-3">Choose Your Wash Style</h3>
+        <div className="flex gap-3 px-5 overflow-x-auto snap-x snap-mandatory pb-2 scrollbar-none" style={{ scrollbarWidth: "none" }}>
+          <WashTile
+            icon={<Shirt className="w-5 h-5" />}
+            title="Standard Wash"
+            description="Quick, reliable wash with Offload Certified quality."
+            priceHint="From $24.99/bag"
+            href="/order/new?service=wash_fold"
+          />
+          <WashTile
+            icon={<Sparkles className="w-5 h-5" />}
+            title="Signature Wash"
+            description="Extra love — premium detergent, type-by-type separation & packaging."
+            priceHint="+$5/bag"
+            href="/order/new?service=wash_fold_signature"
+          />
+          <WashTile
+            icon={<Settings2 className="w-5 h-5" />}
+            title="Custom Wash"
+            description="Your saved preferences applied automatically."
+            priceHint="Your prefs"
+            href="/order/new?service=wash_fold_custom"
+          />
         </div>
       </div>
 
-      {/* Quick Actions */}
-      <div className="px-5 mb-6">
+      {/* ── Quick Action Cards — 2-up grid ── */}
+      <div className="px-5 mb-5">
         <div className="grid grid-cols-2 gap-3">
+          {/* Wash Preferences */}
+          <Link href="/profile#wash-prefs">
+            <Card className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.98]" data-testid="card-wash-preferences">
+              <Settings2 className="w-5 h-5 text-primary mb-2" />
+              <p className="text-sm font-medium">Wash Preferences</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Cold wash, hypoallergenic detergent</p>
+              <p className="text-xs text-primary mt-1.5 font-medium">Edit preferences →</p>
+            </Card>
+          </Link>
+
+          {/* Track Orders */}
           <Link href="/orders">
             <Card className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.98] relative" data-testid="card-track-orders">
               <ClipboardList className="w-5 h-5 text-primary mb-2" />
               <p className="text-sm font-medium">Track Orders</p>
-              {activeOrders.length > 0 ? (
-                <p className="text-xs text-muted-foreground mt-0.5">{activeOrders.length} active</p>
-              ) : (
-                <p className="text-xs text-muted-foreground mt-0.5">No active orders</p>
-              )}
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {activeOrders.length > 0 ? `${activeOrders.length} active order${activeOrders.length > 1 ? "s" : ""}` : "No active orders"}
+              </p>
               {activeOrders.length > 0 && (
                 <span className="absolute top-3 right-3 w-5 h-5 rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center">
                   {activeOrders.length}
@@ -278,37 +379,32 @@ export default function HomePage() {
               )}
             </Card>
           </Link>
-          <Link href="/loyalty">
-            <Card className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.98]" data-testid="card-loyalty">
-              <Gift className="w-5 h-5 text-amber-400 mb-2" />
-              <p className="text-sm font-medium">Loyalty Points</p>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                {loyaltyPoints > 0 ? `${loyaltyPoints} pts` : "Start earning"}
-              </p>
-            </Card>
-          </Link>
-          <Card
-            className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.98] col-span-2 bg-gradient-to-r from-primary/10 to-primary/5 border-primary/20"
-            onClick={() => setVoiceOrderOpen(true)}
-            data-testid="card-talk-to-offload"
-          >
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                <Mic className="w-6 h-6 text-primary" />
-              </div>
-              <div className="flex-1">
-                <p className="text-sm font-semibold text-primary">Talk to Offload</p>
-                <p className="text-xs text-muted-foreground mt-0.5">Order by voice — just tell us what you need</p>
-              </div>
-              <ChevronRight className="w-4 h-4 text-primary/60 shrink-0" />
-            </div>
-          </Card>
         </div>
       </div>
 
-      {/* Recent Orders (last 3) */}
+      {/* ── Talk to Offload — Voice/AI CTA ── */}
+      <div className="px-5 mb-5">
+        <Card
+          className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.99] bg-gradient-to-r from-primary/10 to-primary/5 border-primary/20"
+          onClick={() => setVoiceOrderOpen(true)}
+          data-testid="card-talk-to-offload"
+        >
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+              <Mic className="w-6 h-6 text-primary" />
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-primary">Talk to Offload</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Order by voice — just tell us what you need</p>
+            </div>
+            <ChevronRight className="w-4 h-4 text-primary/60 shrink-0" />
+          </div>
+        </Card>
+      </div>
+
+      {/* ── Recent Activity ── */}
       <div className="px-5">
-        <h3 className="text-sm font-semibold mb-3">Recent Orders</h3>
+        <h3 className="text-sm font-semibold mb-3">Recent Activity</h3>
         {ordersLoading ? (
           <div className="space-y-3">
             <Skeleton className="h-20 w-full rounded-lg" />

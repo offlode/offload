@@ -49,7 +49,7 @@ export function WizardProgress({ currentStep, skippedSteps, skipStep3 }: WizardP
           return (
             <div key={step.id} className="flex flex-col items-center gap-1">
               <div
-                className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all duration-300 ${
+                className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all duration-300 ${
                   isCompleted
                     ? "bg-primary text-primary-foreground"
                     : isCurrent

@@ -51,7 +51,7 @@ export default function RoleSelectPage() {
         {/* Logo */}
         <h1
           data-testid="text-app-name"
-          className="text-3xl font-extrabold text-white tracking-tight mb-3"
+          className="text-3xl font-extrabold text-primary tracking-tight mb-3"
         >
           Offload
         </h1>
