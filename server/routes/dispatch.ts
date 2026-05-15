@@ -24,13 +24,13 @@ export function registerDispatchRoutes(app: Express) {
       if (["admin", "super_admin"].includes(user.role)) {
         // Admins see all pending offers
         query = `
-          SELECT do.*, o.order_number, o.service_type, o.pickup_address, o.status as order_status,
+          SELECT d.*, o.order_number, o.service_type, o.pickup_address, o.status as order_status,
                  l.name as laundromat_name, l.certified as laundromat_certified
-          FROM dispatch_offers do
-          JOIN orders o ON o.id = do.order_id
-          JOIN laundromats l ON l.id = do.laundromat_id
-          WHERE do.status = 'pending'
-          ORDER BY do.offered_at DESC
+          FROM dispatch_offers d
+          JOIN orders o ON o.id = d.order_id
+          JOIN laundromats l ON l.id = d.laundromat_id
+          WHERE d.status = 'pending'
+          ORDER BY d.offered_at DESC
         `;
         params = [];
       } else {
@@ -44,27 +44,27 @@ export function registerDispatchRoutes(app: Express) {
         if (isCertified) {
           // Certified laundromats see all pending offers for them
           query = `
-            SELECT do.*, o.order_number, o.service_type, o.pickup_address, o.status as order_status,
+            SELECT d.*, o.order_number, o.service_type, o.pickup_address, o.status as order_status,
                    l.name as laundromat_name, l.certified as laundromat_certified
-            FROM dispatch_offers do
-            JOIN orders o ON o.id = do.order_id
-            JOIN laundromats l ON l.id = do.laundromat_id
-            WHERE do.laundromat_id = $1 AND do.status = 'pending'
-            ORDER BY do.offered_at DESC
+            FROM dispatch_offers d
+            JOIN orders o ON o.id = d.order_id
+            JOIN laundromats l ON l.id = d.laundromat_id
+            WHERE d.laundromat_id = $1 AND d.status = 'pending'
+            ORDER BY d.offered_at DESC
           `;
           params = [laundromatId];
         } else {
           // Non-certified: only see offers where certified_only_until has passed
           query = `
-            SELECT do.*, o.order_number, o.service_type, o.pickup_address, o.status as order_status,
+            SELECT d.*, o.order_number, o.service_type, o.pickup_address, o.status as order_status,
                    l.name as laundromat_name, l.certified as laundromat_certified
-            FROM dispatch_offers do
-            JOIN orders o ON o.id = do.order_id
-            JOIN laundromats l ON l.id = do.laundromat_id
-            WHERE do.laundromat_id = $1
-              AND do.status = 'pending'
-              AND do.certified_only_until <= NOW()
-            ORDER BY do.offered_at DESC
+            FROM dispatch_offers d
+            JOIN orders o ON o.id = d.order_id
+            JOIN laundromats l ON l.id = d.laundromat_id
+            WHERE d.laundromat_id = $1
+              AND d.status = 'pending'
+              AND d.certified_only_until <= NOW()
+            ORDER BY d.offered_at DESC
           `;
           params = [laundromatId];
         }
