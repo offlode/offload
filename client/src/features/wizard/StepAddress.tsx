@@ -147,6 +147,25 @@ export function StepAddress({
   // Guards against stale fetchFields overwrites when user edits during in-flight request
   const selectionEpochRef = useRef(0);
 
+  // Bug B fix: local input state to avoid controlled-component concatenation
+  // when user does Cmd+A then types replacement text while parent state lags
+  const [localInput, setLocalInput] = useState(address);
+  const localInputSetBySelection = useRef(false);
+  const prevAddressRef = useRef(address);
+
+  // Sync parent → local when a suggestion is selected (flag set) OR when
+  // parent changes for a reason other than local typing (e.g., external reset)
+  useEffect(() => {
+    if (localInputSetBySelection.current) {
+      setLocalInput(address);
+      localInputSetBySelection.current = false;
+    } else if (address !== prevAddressRef.current && address !== localInput) {
+      // External change (not from our own onChange) — sync it
+      setLocalInput(address);
+    }
+    prevAddressRef.current = address;
+  }, [address]);
+
   // Store latest refs for callbacks
   const serviceTypeRef = useRef(serviceType);
   const onServiceAreaChangeRef = useRef(onServiceAreaChange);
@@ -228,6 +247,14 @@ export function StepAddress({
     }
   }
 
+  // Lazy-init session token so it's never null when the API is called
+  function getOrCreateSessionToken(): google.maps.places.AutocompleteSessionToken {
+    if (!sessionTokenRef.current) {
+      sessionTokenRef.current = new google.maps.places.AutocompleteSessionToken();
+    }
+    return sessionTokenRef.current;
+  }
+
   // Fetch autocomplete suggestions via Places API (New) — AutocompleteSuggestion
   const fetchSuggestions = useCallback(async (input: string) => {
     const places = (google?.maps?.places) as any;
@@ -240,13 +267,21 @@ export function StepAddress({
     setFetchingSuggestions(true);
     setAutocompleteError("");
     try {
+      const request = {
+        input,
+        sessionToken: getOrCreateSessionToken(),
+        includedRegionCodes: ["us"],
+        includedPrimaryTypes: ["address"],
+        languageCode: "en",
+      };
+      console.warn("[Places] fetchAutocompleteSuggestions request:", {
+        input: request.input,
+        hasSessionToken: !!request.sessionToken,
+        includedRegionCodes: request.includedRegionCodes,
+        includedPrimaryTypes: request.includedPrimaryTypes,
+      });
       const { suggestions: rawSuggestions } = await places.AutocompleteSuggestion
-        .fetchAutocompleteSuggestions({
-          input,
-          sessionToken: sessionTokenRef.current,
-          includedRegionCodes: ["us"],
-          types: ["address"],
-        });
+        .fetchAutocompleteSuggestions(request);
       if (!rawSuggestions || rawSuggestions.length === 0) {
         setSuggestions([]);
         setShowSuggestions(false);
@@ -264,7 +299,8 @@ export function StepAddress({
         }));
       setSuggestions(results);
       setShowSuggestions(true);
-    } catch {
+    } catch (err) {
+      console.error("[Places] fetchAutocompleteSuggestions failed:", err);
       setSuggestions([]);
       setShowSuggestions(false);
       if (input.length >= 5) {
@@ -281,6 +317,8 @@ export function StepAddress({
     setSuggestions([]);
     setAutocompleteError("");
     const epoch = ++selectionEpochRef.current;
+    localInputSetBySelection.current = true;
+    setLocalInput(suggestion.text);
     onAddressChangeRef.current(suggestion.text, suggestion.placeId);
 
     const placeObj = suggestion._place;
@@ -308,11 +346,14 @@ export function StepAddress({
       const city = findComp("locality") || findComp("sublocality") || findComp("administrative_area_level_2");
       const state = findComp("administrative_area_level_1", true);
 
+      localInputSetBySelection.current = true;
+      setLocalInput(formatted);
       onAddressChangeRef.current(formatted, suggestion.placeId);
       if (zip || (lat != null && lng != null)) {
         checkServiceArea({ zip, city, state, lat, lng });
       }
-    } catch {
+    } catch (err) {
+      console.warn("[Places] fetchFields failed:", err);
       // If fetchFields fails, keep the text the user selected
     }
   }, [mapsReady]);
@@ -413,9 +454,10 @@ export function StepAddress({
         </Label>
         <Input
           ref={autocompleteRef}
-          value={address}
+          value={localInput}
           onChange={e => {
             const val = e.target.value;
+            setLocalInput(val);
             // Invalidate any in-flight fetchFields so stale results don't overwrite
             selectionEpochRef.current++;
             onAddressChange(val, "");
