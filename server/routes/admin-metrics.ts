@@ -6,6 +6,7 @@ import { logAdminAction } from "../audit-helpers";
 import { ADMIN_ROLES, requireAuth } from "../session";
 import { now } from "../engines";
 import { getPagination, paginatedResponse, camelizeRow } from "./deps";
+import { enrichAdminOrder } from "./orders-crud";
 
 export function registerAdminMetricsRoutes(app: Express) {
   // ─────────────────────────────────────────────────────────
@@ -99,21 +100,6 @@ export function registerAdminMetricsRoutes(app: Express) {
     });
   });
 
-  async function enrichAdminOrder(order: Order) {
-    const customer = await storage.getUser(order.customerId);
-    const vendor = order.vendorId ? await storage.getVendor(order.vendorId) : null;
-    const driver = order.driverId ? await storage.getDriver(order.driverId) : null;
-    const returnDriver = order.returnDriverId ? await storage.getDriver(order.returnDriverId) : null;
-    return {
-      ...order,
-      customerName: customer?.name || "Unknown customer",
-      customerEmail: customer?.email || null,
-      customerPhone: customer?.phone || null,
-      vendorName: vendor?.name || null,
-      driverName: driver?.name || null,
-      returnDriverName: returnDriver?.name || null,
-    };
-  }
 
   app.get("/api/admin/orders", requireAuth(ADMIN_ROLES), async (req, res) => {
     const pg = getPagination(req);
