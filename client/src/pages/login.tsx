@@ -34,8 +34,8 @@ export default function LoginPage() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     const errors: FieldError[] = [];
-    if (!email.trim()) errors.push({ field: "email", message: "Email is required" });
-    if (!password.trim()) errors.push({ field: "password", message: "Password is required" });
+    if (!email.trim()) errors.push({ field: "email", message: t("login.email_required") });
+    if (!password.trim()) errors.push({ field: "password", message: t("login.password_required") });
     if (errors.length > 0) {
       setFieldErrors(errors);
       scrollToFirstError(errors);
@@ -56,7 +56,7 @@ export default function LoginPage() {
       // Show inline error instead of toast for invalid credentials
       setFieldErrors([
         { field: "email", message: "" },
-        { field: "password", message: "Invalid email or password. Please try again." },
+        { field: "password", message: t("login.invalid_credentials") },
       ]);
     } finally {
       setIsLoading(false);
@@ -66,7 +66,7 @@ export default function LoginPage() {
   const handle2FASubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!twoFACode.trim()) {
-      setTwoFAError(useBackupCode ? "Backup code is required" : "Verification code is required");
+      setTwoFAError(useBackupCode ? t("login.backup_code_required") : t("login.verification_code_required"));
       return;
     }
     setTwoFAError("");
@@ -76,7 +76,7 @@ export default function LoginPage() {
       await new Promise(r => setTimeout(r, 50));
       navigateByRole(user.role);
     } catch (err: any) {
-      setTwoFAError(err.message || "Invalid code. Please try again.");
+      setTwoFAError(err.message || t("login.invalid_code"));
     } finally {
       setTwoFALoading(false);
     }
@@ -112,17 +112,17 @@ export default function LoginPage() {
             <ShieldCheck className="w-8 h-8 text-primary" />
           </div>
 
-          <h1 className="text-2xl font-bold text-foreground mb-2">Two-Factor Authentication</h1>
+          <h1 className="text-2xl font-bold text-foreground mb-2">{t("login.two_fa_title")}</h1>
           <p className="text-sm text-muted-foreground text-center mb-8">
             {useBackupCode
-              ? "Enter one of your backup codes to continue."
-              : "Enter your 6-digit code from your authenticator app."}
+              ? t("login.two_fa_backup_prompt")
+              : t("login.two_fa_authenticator_prompt")}
           </p>
 
           <form onSubmit={handle2FASubmit} className="w-full space-y-4">
             <div>
               <label htmlFor="2fa-code" className="text-xs text-muted-foreground mb-1.5 block">
-                {useBackupCode ? "Backup code" : "Enter your 6-digit code"}
+                {useBackupCode ? t("login.two_fa_backup_label") : t("login.two_fa_code_label")}
               </label>
               <input
                 data-testid="input-2fa-code"
@@ -154,10 +154,10 @@ export default function LoginPage() {
               {twoFALoading ? (
                 <span className="flex items-center justify-center gap-2">
                   <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  Verifying...
+                  {t("login.two_fa_verifying")}
                 </span>
               ) : (
-                "Verify"
+                t("login.two_fa_verify")
               )}
             </button>
           </form>
@@ -172,7 +172,7 @@ export default function LoginPage() {
             }}
             className="mt-4 text-sm text-primary hover:text-primary/80 transition-colors"
           >
-            {useBackupCode ? "Use authenticator code instead" : "Use backup code"}
+            {useBackupCode ? t("login.two_fa_use_authenticator") : t("login.two_fa_use_backup")}
           </button>
         </div>
       </div>
@@ -198,13 +198,13 @@ export default function LoginPage() {
           {/* Email */}
           <div>
             <label htmlFor="email" className="text-xs text-muted-foreground mb-1.5 block">
-              Email
+              {t("login.email_label")}
             </label>
             <input
               data-testid="input-email"
               id="email"
               type="email"
-              placeholder="Email"
+              placeholder={t("login.email_label")}
               value={email}
               onChange={(e) => { setEmail(e.target.value); clearError("email"); }}
               autoComplete="email"
@@ -216,13 +216,13 @@ export default function LoginPage() {
           {/* Password */}
           <div className="relative">
             <label htmlFor="password" className="text-xs text-muted-foreground mb-1.5 block">
-              Password
+              {t("login.password_label")}
             </label>
             <input
               data-testid="input-password"
               id="password"
               type={showPassword ? "text" : "password"}
-              placeholder="Password"
+              placeholder={t("login.password_label")}
               value={password}
               onChange={(e) => { setPassword(e.target.value); clearError("password"); }}
               autoComplete="current-password"
@@ -253,7 +253,7 @@ export default function LoginPage() {
               onClick={() => navigate("/forgot-password")}
 
             >
-              Forgot Password?
+              {t("login.forgot_password")}
             </button>
           </div>
 
@@ -267,10 +267,10 @@ export default function LoginPage() {
             {isLoading ? (
               <span className="flex items-center justify-center gap-2">
                 <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                Logging in...
+                {t("login.logging_in")}
               </span>
             ) : (
-              "Log In"
+              t("login.log_in")
             )}
           </button>
         </form>
@@ -282,14 +282,14 @@ export default function LoginPage() {
 
         {/* Sign Up Link */}
         <p className="mt-8 text-sm text-muted-foreground">
-          Don't have an account?{" "}
+          {t("login.no_account")}{" "}
           <button
             data-testid="link-signup"
             type="button"
             onClick={() => navigate("/role-select")}
             className="text-primary hover:text-primary/80 font-semibold transition-colors"
           >
-            Sign Up
+            {t("login.sign_up")}
           </button>
         </p>
 

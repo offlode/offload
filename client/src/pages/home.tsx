@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/contexts/auth-context";
 import { VoiceOrderModal } from "@/components/voice-order";
 import { OffloadLogo } from "@/components/offload-logo";
+import { useI18n } from "@/i18n";
 import { apiRequest } from "@/lib/queryClient";
 import { friendlyStatus } from "@/lib/order-status";
 import type { Order, Vendor, Address, PaymentMethod } from "@shared/schema";
@@ -20,16 +21,19 @@ import type { Order, Vendor, Address, PaymentMethod } from "@shared/schema";
 // ─── Landing view for logged-out users ───────────────────────
 function LandingView() {
   const [, navigate] = useLocation();
+  const { t } = useI18n();
   return (
     <div className="pb-28 max-w-lg mx-auto">
       {/* Hero Section */}
       <div className="px-5 pt-12 pb-8 text-center">
         <OffloadLogo size={64} className="mx-auto mb-6" />
         <h1 className="text-3xl font-bold mb-3" data-testid="text-landing-title">
-          Fresh clothes,<br />zero hassle.
+          {t("home.landing_title").split("\n").map((line, i) => (
+            <span key={i}>{i > 0 && <br />}{line}</span>
+          ))}
         </h1>
         <p className="text-muted-foreground text-sm leading-relaxed max-w-xs mx-auto">
-          We pick up, wash with care, and deliver back — fresh and folded. No trips to the laundromat.
+          {t("home.landing_subtitle")}
         </p>
       </div>
 
@@ -40,7 +44,7 @@ function LandingView() {
           onClick={() => navigate("/login")}
           data-testid="button-login"
         >
-          Log In
+          {t("home.login_button")}
         </Button>
         <Button
           variant="secondary"
@@ -48,7 +52,7 @@ function LandingView() {
           onClick={() => navigate("/role-select")}
           data-testid="button-signup"
         >
-          Create Account
+          {t("home.create_account_button")}
         </Button>
       </div>
 
@@ -56,9 +60,9 @@ function LandingView() {
       <div className="px-5">
         <div className="grid grid-cols-1 gap-3">
           {[
-            { icon: <Truck className="w-5 h-5 text-primary" />, title: "Free Pickup & Delivery", desc: "We come to you — same day, 24h, or scheduled." },
-            { icon: <Shield className="w-5 h-5 text-emerald-400" />, title: "Offload Certified", desc: "All vendors are verified for quality and reliability." },
-            { icon: <Star className="w-5 h-5 text-amber-400" />, title: "Top-Rated Service", desc: "Our vendors are vetted and rated by real customers." },
+            { icon: <Truck className="w-5 h-5 text-primary" />, title: t("home.feature_pickup_title"), desc: t("home.feature_pickup_desc") },
+            { icon: <Shield className="w-5 h-5 text-emerald-400" />, title: t("home.feature_certified_title"), desc: t("home.feature_certified_desc") },
+            { icon: <Star className="w-5 h-5 text-amber-400" />, title: t("home.feature_rated_title"), desc: t("home.feature_rated_desc") },
           ].map((f, i) => (
             <Card key={i} className="p-4 flex items-start gap-3" data-testid={`feature-card-${i}`}>
               <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center shrink-0">
@@ -121,6 +125,7 @@ function WashTile({ icon, title, description, priceHint, href }: WashTileProps) 
 export default function HomePage() {
   const [, navigate] = useLocation();
   const { user, isAuthenticated } = useAuth();
+  const { t } = useI18n();
   const [voiceOrderOpen, setVoiceOrderOpen] = useState(false);
 
   const openVoiceModal = useCallback(() => {
@@ -174,9 +179,9 @@ export default function HomePage() {
 
   const greeting = () => {
     const hour = new Date().getHours();
-    if (hour < 12) return "Good morning";
-    if (hour < 17) return "Good afternoon";
-    return "Good evening";
+    if (hour < 12) return t("home.good_morning");
+    if (hour < 17) return t("home.good_afternoon");
+    return t("home.good_evening");
   };
 
   // Top-rated vendor
@@ -215,9 +220,9 @@ export default function HomePage() {
             <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full -mr-10 -mt-10 blur-sm" />
             <div className="absolute bottom-0 left-0 w-24 h-24 bg-white/5 rounded-full -ml-8 -mb-8 blur-sm" />
 
-            <h2 className="text-lg font-bold mb-1 relative z-10">Ready for fresh laundry?</h2>
+            <h2 className="text-lg font-bold mb-1 relative z-10">{t("home.hero_title")}</h2>
             <p className="text-sm text-white/80 mb-4 relative z-10 leading-relaxed max-w-[280px]">
-              We'll pick it up, wash it with care, and deliver it back — fresh and folded.
+              {t("home.hero_subtitle")}
             </p>
             <Button
               variant="secondary"
@@ -225,7 +230,7 @@ export default function HomePage() {
               className="bg-white/15 border border-white/20 text-white no-default-hover-elevate no-default-active-elevate hover:bg-white/25 transition-colors"
               data-testid="button-schedule"
             >
-              Schedule Pickup <ArrowRight className="w-4 h-4 ml-1.5 group-hover:translate-x-0.5 transition-transform" />
+              {t("home.hero_cta")} <ArrowRight className="w-4 h-4 ml-1.5 group-hover:translate-x-0.5 transition-transform" />
             </Button>
           </Card>
         </Link>
@@ -243,13 +248,13 @@ export default function HomePage() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between">
-                    <p className="text-sm font-semibold">Your laundry is on its way</p>
+                    <p className="text-sm font-semibold">{t("home.active_order_title")}</p>
                     <Badge variant="secondary" className="text-[10px] bg-blue-500/15 text-blue-400">
                       {friendlyStatus(activeOrder.status)}
                     </Badge>
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    {activeOrder.orderNumber} — Tap to track
+                    {activeOrder.orderNumber} — {t("home.active_order_tap")}
                   </p>
                 </div>
                 <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
@@ -272,7 +277,7 @@ export default function HomePage() {
                 <Shield className="w-5 h-5 text-emerald-500" />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-emerald-400">Top-Rated Vendor Near You</p>
+                <p className="text-sm font-semibold text-emerald-400">{t("home.top_vendor_title")}</p>
                 <div className="flex items-center gap-1 mt-0.5">
                   <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
                   <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
@@ -280,10 +285,10 @@ export default function HomePage() {
                   <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
                   <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
                   <span className="text-xs text-muted-foreground ml-1">
-                    {topVendor.rating?.toFixed(1)} ({topVendor.reviewCount || 0} reviews)
+                    {topVendor.rating?.toFixed(1)} ({topVendor.reviewCount || 0} {t("home.top_vendor_reviews")})
                   </span>
                 </div>
-                <p className="text-xs text-muted-foreground mt-1">{topVendor.name} — Tap for details</p>
+                <p className="text-xs text-muted-foreground mt-1">{topVendor.name} — {t("home.top_vendor_tap")}</p>
               </div>
             </div>
           </Card>
@@ -323,9 +328,9 @@ export default function HomePage() {
                 <RefreshCw className="w-5 h-5 text-emerald-500" />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold">Reorder Last</p>
+                <p className="text-sm font-semibold">{t("home.reorder_title")}</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Same as last time — one tap to review & place
+                  {t("home.reorder_subtitle")}
                 </p>
               </div>
               <ArrowRight className="w-4 h-4 text-emerald-500 shrink-0" />
@@ -336,27 +341,27 @@ export default function HomePage() {
 
       {/* ── Choose Your Wash Style — Quick Order Tiles ── */}
       <div className="mb-5">
-        <h3 className="text-sm font-semibold px-5 mb-3">Choose Your Wash Style</h3>
+        <h3 className="text-sm font-semibold px-5 mb-3">{t("home.wash_style_heading")}</h3>
         <div className="flex gap-3 px-5 pr-8 overflow-x-auto snap-x snap-mandatory pb-2 scrollbar-none" style={{ scrollbarWidth: "none" }}>
           <WashTile
             icon={<Shirt className="w-5 h-5" />}
-            title="Standard Wash"
-            description="Quick wash, your saved prefs"
-            priceHint="From $24.99"
+            title={t("home.standard_wash_title")}
+            description={t("home.standard_wash_desc")}
+            priceHint={t("home.standard_wash_price")}
             href="/order/new?service=wash_fold"
           />
           <WashTile
             icon={<Sparkles className="w-5 h-5" />}
-            title="Signature Wash"
-            description="Premium label, +$5/bag"
-            priceHint="From $29.99"
+            title={t("home.signature_wash_title")}
+            description={t("home.signature_wash_desc")}
+            priceHint={t("home.signature_wash_price")}
             href="/order/new?service=wash_fold_signature"
           />
           <WashTile
             icon={<Settings2 className="w-5 h-5" />}
-            title="Wash Preferences"
-            description="Customize your wash by clothing type"
-            priceHint="Edit prefs"
+            title={t("home.wash_prefs_tile_title")}
+            description={t("home.wash_prefs_tile_desc")}
+            priceHint={t("home.wash_prefs_tile_price")}
             href="/profile?openWashPrefs=1"
           />
         </div>
@@ -369,9 +374,9 @@ export default function HomePage() {
           <Link href="/profile?openWashPrefs=1">
             <Card className="p-4 h-[120px] flex flex-col cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.98]" data-testid="card-wash-preferences">
               <Settings2 className="w-6 h-6 text-primary mb-2" />
-              <p className="text-sm font-semibold">Wash Preferences</p>
-              <p className="text-xs text-muted-foreground mt-0.5 flex-1">Cold wash, hypoallergenic</p>
-              <p className="text-xs text-primary font-medium">Edit preferences →</p>
+              <p className="text-sm font-semibold">{t("home.card_wash_prefs_title")}</p>
+              <p className="text-xs text-muted-foreground mt-0.5 flex-1">{t("home.card_wash_prefs_desc")}</p>
+              <p className="text-xs text-primary font-medium">{t("home.card_wash_prefs_link")} →</p>
             </Card>
           </Link>
 
@@ -379,9 +384,9 @@ export default function HomePage() {
           <Link href="/orders">
             <Card className="p-4 h-[120px] flex flex-col cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.98] relative" data-testid="card-track-orders">
               <ClipboardList className="w-6 h-6 text-primary mb-2" />
-              <p className="text-sm font-semibold">Track Orders</p>
+              <p className="text-sm font-semibold">{t("home.card_track_title")}</p>
               <p className="text-xs text-muted-foreground mt-0.5 flex-1">
-                {activeOrders.length > 0 ? `${activeOrders.length} active order${activeOrders.length > 1 ? "s" : ""}` : "No active orders"}
+                {activeOrders.length > 0 ? `${activeOrders.length} ${activeOrders.length > 1 ? t("home.card_track_active_plural") : t("home.card_track_active")}` : t("home.no_active_orders")}
               </p>
               {activeOrders.length > 0 && (
                 <span className="absolute top-3 right-3 w-5 h-5 rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center">
@@ -408,8 +413,8 @@ export default function HomePage() {
               <Mic className="w-6 h-6 text-[#5B4BC4]" />
             </div>
             <div className="flex-1">
-              <p className="text-sm font-semibold text-[#5B4BC4]">Talk to Offload</p>
-              <p className="text-xs text-muted-foreground mt-0.5">Order by voice — just tell us what you need</p>
+              <p className="text-sm font-semibold text-[#5B4BC4]">{t("home.talk_to_offload")}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{t("home.talk_to_offload_desc")}</p>
             </div>
             <ChevronRight className="w-4 h-4 text-[#5B4BC4]/60 shrink-0" />
           </div>
@@ -418,7 +423,7 @@ export default function HomePage() {
 
       {/* ── Recent Activity ── */}
       <div className="px-5">
-        <h3 className="text-sm font-semibold mb-3">Recent Activity</h3>
+        <h3 className="text-sm font-semibold mb-3">{t("home.recent_activity")}</h3>
         {ordersLoading ? (
           <div className="space-y-3">
             <Skeleton className="h-20 w-full rounded-lg" />
@@ -479,10 +484,10 @@ export default function HomePage() {
             <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
               <Package className="w-8 h-8 text-primary/60" />
             </div>
-            <p className="text-sm font-medium mb-1">No orders yet</p>
-            <p className="text-xs text-muted-foreground mb-4">Schedule your first pickup and we'll take care of the rest.</p>
+            <p className="text-sm font-medium mb-1">{t("home.no_orders_yet")}</p>
+            <p className="text-xs text-muted-foreground mb-4">{t("home.no_orders_desc")}</p>
             <Link href="/order/new">
-              <Button size="sm" data-testid="button-first-pickup">Schedule First Pickup</Button>
+              <Button size="sm" data-testid="button-first-pickup">{t("home.schedule_first_pickup")}</Button>
             </Link>
           </Card>
         )}

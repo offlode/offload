@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/auth-context";
+import { useI18n } from "@/i18n";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { friendlyStatus, STATUS_STYLES } from "@/lib/order-status";
 import type { Order, Vendor, Message } from "@shared/schema";
@@ -46,6 +47,7 @@ type FilterTab = "all" | "active" | "completed" | "cancelled";
 export default function OrdersPage() {
   const { toast } = useToast();
   const { user } = useAuth();
+  const { t } = useI18n();
   const [filter, setFilter] = useState<FilterTab>("all");
   const [messageSheet, setMessageSheet] = useState<number | null>(null);
   const [messageText, setMessageText] = useState("");
@@ -90,7 +92,7 @@ export default function OrdersPage() {
       setMessageText("");
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({ title: t("common.error"), description: err.message, variant: "destructive" });
     },
   });
 
@@ -107,11 +109,11 @@ export default function OrdersPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [`/api/orders?customerId=${userId}`] });
       setCancelOrderId(null);
-      toast({ title: "Order cancelled", description: "Your order has been cancelled." });
+      toast({ title: t("orders.cancelled_toast"), description: t("orders.cancelled_desc") });
     },
     onError: (err: Error) => {
       setCancelOrderId(null);
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({ title: t("common.error"), description: err.message, variant: "destructive" });
     },
   });
 
@@ -125,10 +127,10 @@ export default function OrdersPage() {
   }) || [];
 
   const tabs: { key: FilterTab; label: string }[] = [
-    { key: "all", label: "All" },
-    { key: "active", label: "Active" },
-    { key: "completed", label: "Done" },
-    { key: "cancelled", label: "Cancelled" },
+    { key: "all", label: t("orders.filter_all") },
+    { key: "active", label: t("orders.filter_active") },
+    { key: "completed", label: t("orders.filter_done") },
+    { key: "cancelled", label: t("orders.filter_cancelled") },
   ];
 
   return (
@@ -136,8 +138,8 @@ export default function OrdersPage() {
       <div className="px-5 pt-6 pb-2">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight" data-testid="text-orders-title">My Orders</h1>
-            <p className="text-sm text-muted-foreground mt-1">Track and manage your laundry</p>
+            <h1 className="text-2xl font-bold tracking-tight" data-testid="text-orders-title">{t("orders.title")}</h1>
+            <p className="text-sm text-muted-foreground mt-1">{t("orders.subtitle")}</p>
           </div>
           <Button
             variant="secondary"
@@ -155,18 +157,18 @@ export default function OrdersPage() {
       {/* Filter Tabs — Figma pill-style */}
       <div className="px-5 mb-4">
         <div className="flex bg-muted rounded-xl p-1 gap-1">
-          {tabs.map(t => (
+          {tabs.map(tab => (
             <button
-              key={t.key}
-              data-testid={`filter-${t.key}`}
-              onClick={() => setFilter(t.key)}
+              key={tab.key}
+              data-testid={`filter-${tab.key}`}
+              onClick={() => setFilter(tab.key)}
               className={`flex-1 text-xs font-medium py-2 rounded-lg transition-all min-h-[36px] ${
-                filter === t.key
+                filter === tab.key
                   ? "bg-card text-foreground shadow-sm"
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              {t.label}
+              {tab.label}
             </button>
           ))}
         </div>
@@ -176,7 +178,7 @@ export default function OrdersPage() {
       {isRefetching && (
         <div className="flex items-center justify-center gap-2 pb-3 text-xs text-muted-foreground">
           <RefreshCw className="w-3 h-3 animate-spin" />
-          Refreshing...
+          {t("orders.refreshing")}
         </div>
       )}
 
@@ -258,7 +260,7 @@ export default function OrdersPage() {
                       data-testid={`button-message-${order.id}`}
                     >
                       <MessageSquare className="w-3.5 h-3.5" />
-                      Message
+                      {t("orders.message")}
                     </Button>
                     {isCancellable && (
                       <Button
@@ -272,7 +274,7 @@ export default function OrdersPage() {
                         data-testid={`button-cancel-${order.id}`}
                       >
                         <X className="w-3.5 h-3.5" />
-                        Cancel
+                        {t("orders.cancel")}
                       </Button>
                     )}
                   </div>
@@ -286,16 +288,16 @@ export default function OrdersPage() {
               <ClipboardList className="w-8 h-8 text-primary/60" />
             </div>
             <p className="text-base font-semibold mb-1">
-              {filter === "all" ? "No orders yet" : `No ${filter} orders`}
+              {filter === "all" ? t("orders.no_orders") : t("orders.no_filtered", { filter: tabs.find(tab => tab.key === filter)?.label || filter })}
             </p>
             <p className="text-sm text-muted-foreground mb-4">
               {filter === "all"
-                ? "Schedule your first pickup and we'll take care of the rest. Choose your bag size, customize your wash, and pick a time that works for you."
-                : "Nothing to show for this filter. Try switching to a different tab."}
+                ? t("orders.empty_all_desc")
+                : t("orders.no_filtered_hint")}
             </p>
             {filter === "all" && (
               <Link href="/order/new">
-                <Button className="rounded-full" data-testid="button-schedule-first">Schedule a Pickup</Button>
+                <Button className="rounded-full" data-testid="button-schedule-first">{t("orders.schedule_first")}</Button>
               </Link>
             )}
           </Card>
@@ -306,7 +308,7 @@ export default function OrdersPage() {
       <Sheet open={!!messageSheet} onOpenChange={() => setMessageSheet(null)}>
         <SheetContent side="bottom" className="max-h-[70vh] rounded-t-2xl">
           <SheetHeader>
-            <SheetTitle>Messages</SheetTitle>
+            <SheetTitle>{t("orders.messages_title")}</SheetTitle>
           </SheetHeader>
           <div className="mt-4 flex-1 overflow-y-auto max-h-[40vh] space-y-3 mb-4">
             {messagesData && messagesData.length > 0 ? (
@@ -330,13 +332,13 @@ export default function OrdersPage() {
             ) : (
               <div className="text-center py-8">
                 <MessageSquare className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
-                <p className="text-sm text-muted-foreground">No messages yet. Start the conversation!</p>
+                <p className="text-sm text-muted-foreground">{t("orders.no_messages")}</p>
               </div>
             )}
           </div>
           <div className="flex gap-2">
             <Textarea
-              placeholder="Type a message..."
+              placeholder={t("orders.message_placeholder")}
               value={messageText}
               onChange={e => setMessageText(e.target.value)}
               className="resize-none min-h-[40px] max-h-[80px]"
@@ -358,20 +360,20 @@ export default function OrdersPage() {
       <AlertDialog open={!!cancelOrderId} onOpenChange={() => setCancelOrderId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Cancel this order?</AlertDialogTitle>
+            <AlertDialogTitle>{t("orders.cancel_title")}</AlertDialogTitle>
             <AlertDialogDescription>
-              This will cancel your laundry pickup. This action cannot be undone.
+              {t("orders.cancel_description")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-cancel-dismiss">Keep Order</AlertDialogCancel>
+            <AlertDialogCancel data-testid="button-cancel-dismiss">{t("orders.cancel_keep")}</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => cancelOrderId && cancelMutation.mutate(cancelOrderId)}
               disabled={cancelMutation.isPending}
               data-testid="button-cancel-confirm"
             >
-              {cancelMutation.isPending ? "Cancelling..." : "Yes, Cancel"}
+              {cancelMutation.isPending ? t("orders.cancelling") : t("orders.cancel_confirm")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

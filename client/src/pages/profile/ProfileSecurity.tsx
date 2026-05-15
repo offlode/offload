@@ -9,6 +9,7 @@ import {
   AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { useI18n } from "@/i18n";
 import type { useProfileData } from "./useProfileData";
 
 type ProfileDataReturn = ReturnType<typeof useProfileData>;
@@ -35,25 +36,27 @@ export function ProfileSecurity({
   disable2FAOpen, setDisable2FAOpen, disable2FACode, setDisable2FACode, disable2FAMutation,
   toast,
 }: ProfileSecurityProps) {
+  const { t } = useI18n();
+
   return (
     <>
       {/* 2FA Setup Sheet */}
       <Sheet open={twoFAOpen} onOpenChange={setTwoFAOpen}>
         <SheetContent side="bottom" className="max-h-[80vh] rounded-t-2xl">
           <SheetHeader>
-            <SheetTitle>Enable Two-Factor Authentication</SheetTitle>
+            <SheetTitle>{t("profile_security.setup_title")}</SheetTitle>
           </SheetHeader>
           <div className="mt-4 space-y-4">
             {twoFASetupMutation.isPending ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="w-6 h-6 animate-spin text-primary" />
-                <span className="ml-2 text-sm text-muted-foreground">Setting up...</span>
+                <span className="ml-2 text-sm text-muted-foreground">{t("profile_security.setting_up")}</span>
               </div>
             ) : twoFASecret ? (
               <>
                 <div className="text-center">
                   <p className="text-sm text-muted-foreground mb-3">
-                    Scan this QR code with your authenticator app (Google Authenticator, Authy, etc.)
+                    {t("profile_security.scan_qr")}
                   </p>
                   {twoFASecret.qrUrl ? (
                     <div className="flex justify-center mb-3">
@@ -67,7 +70,7 @@ export function ProfileSecurity({
                     <Card className="p-4 mb-3">
                       <div className="flex items-center justify-center gap-2">
                         <QrCode className="w-5 h-5 text-muted-foreground" />
-                        <p className="text-xs text-muted-foreground">QR code unavailable — use manual entry</p>
+                        <p className="text-xs text-muted-foreground">{t("profile_security.qr_unavailable")}</p>
                       </div>
                     </Card>
                   )}
@@ -77,7 +80,7 @@ export function ProfileSecurity({
                       <button
                         onClick={() => {
                           navigator.clipboard.writeText(twoFASecret.secret);
-                          toast({ title: "Copied!", description: "Secret key copied to clipboard." });
+                          toast({ title: t("profile_security.copied"), description: t("profile_security.copied_desc") });
                         }}
                         className="p-1 rounded hover:bg-muted"
                       >
@@ -90,7 +93,7 @@ export function ProfileSecurity({
                 {/* Backup codes */}
                 {twoFASecret.backupCodes.length > 0 && (
                   <Card className="p-4">
-                    <p className="text-xs font-semibold mb-2">Backup Codes — save these somewhere safe</p>
+                    <p className="text-xs font-semibold mb-2">{t("profile_security.backup_codes")}</p>
                     <div className="grid grid-cols-2 gap-1">
                       {twoFASecret.backupCodes.map((code, i) => (
                         <code key={i} className="text-xs font-mono text-muted-foreground bg-muted px-2 py-1 rounded text-center">{code}</code>
@@ -101,7 +104,7 @@ export function ProfileSecurity({
 
                 {/* Verify */}
                 <div>
-                  <Label className="text-xs text-muted-foreground mb-1.5 block">Enter the 6-digit code from your app</Label>
+                  <Label className="text-xs text-muted-foreground mb-1.5 block">{t("profile_security.enter_code")}</Label>
                   <Input
                     value={twoFACode}
                     onChange={e => setTwoFACode(e.target.value.replace(/\D/g, "").slice(0, 6))}
@@ -117,11 +120,11 @@ export function ProfileSecurity({
                   onClick={() => twoFAVerifyMutation.mutate()}
                   data-testid="button-verify-2fa"
                 >
-                  {twoFAVerifyMutation.isPending ? "Verifying..." : "Enable 2FA"}
+                  {twoFAVerifyMutation.isPending ? t("profile_security.verifying") : t("profile_security.enable_2fa")}
                 </Button>
               </>
             ) : (
-              <p className="text-sm text-destructive text-center">Failed to initialize 2FA setup. Please try again.</p>
+              <p className="text-sm text-destructive text-center">{t("profile_security.setup_failed")}</p>
             )}
           </div>
         </SheetContent>
@@ -131,9 +134,9 @@ export function ProfileSecurity({
       <AlertDialog open={disable2FAOpen} onOpenChange={setDisable2FAOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Disable Two-Factor Authentication</AlertDialogTitle>
+            <AlertDialogTitle>{t("profile_security.disable_title")}</AlertDialogTitle>
             <AlertDialogDescription>
-              Enter your current 6-digit authenticator code to disable 2FA.
+              {t("profile_security.disable_description")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="py-2">
@@ -151,7 +154,7 @@ export function ProfileSecurity({
               onClick={() => setDisable2FACode("")}
               data-testid="button-disable-2fa-cancel"
             >
-              Cancel
+              {t("profile_security.disable_cancel")}
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={() => disable2FAMutation.mutate()}
@@ -159,7 +162,7 @@ export function ProfileSecurity({
               className="bg-red-500 text-white hover:bg-red-600 focus:ring-red-500"
               data-testid="button-disable-2fa-confirm"
             >
-              {disable2FAMutation.isPending ? "Disabling..." : "Disable 2FA"}
+              {disable2FAMutation.isPending ? t("profile_security.disabling") : t("profile_security.disable_confirm")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

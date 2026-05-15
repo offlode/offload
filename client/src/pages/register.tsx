@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 import { ArrowLeft, Eye, EyeOff } from "lucide-react";
 import { useAuth } from "@/contexts/auth-context";
 import { useToast } from "@/hooks/use-toast";
+import { useI18n } from "@/i18n";
 import type { FieldError } from "@/lib/inline-validation";
 import { scrollToFirstError, fieldBorderClass } from "@/lib/inline-validation";
 import { InlineFieldError } from "@/components/field-error";
@@ -13,13 +14,14 @@ export default function RegisterPage() {
   const [, navigate] = useLocation();
   const { register: authRegister, setUser } = useAuth();
   const { toast } = useToast();
+  const { t } = useI18n();
 
   const role = sessionStorage.getItem("offload_register_role") || "customer";
 
   const roleLabelMap: Record<string, string> = {
-    customer: "Customer",
-    staff: "Manager",
-    driver: "Driver",
+    customer: t("register.role_customer"),
+    staff: t("register.role_manager"),
+    driver: t("register.role_driver"),
   };
 
   const [fullName, setFullName] = useState("");
@@ -42,11 +44,11 @@ export default function RegisterPage() {
     if (/[A-Z]/.test(pw)) score++;
     if (/[0-9]/.test(pw)) score++;
     if (/[^A-Za-z0-9]/.test(pw)) score++;
-    if (score <= 1) return { score: 20, label: "Weak", color: "bg-red-500" };
-    if (score <= 2) return { score: 40, label: "Fair", color: "bg-orange-500" };
-    if (score <= 3) return { score: 60, label: "Good", color: "bg-yellow-500" };
-    if (score <= 4) return { score: 80, label: "Strong", color: "bg-emerald-500" };
-    return { score: 100, label: "Very strong", color: "bg-emerald-600" };
+    if (score <= 1) return { score: 20, label: t("register.strength_weak"), color: "bg-red-500" };
+    if (score <= 2) return { score: 40, label: t("register.strength_fair"), color: "bg-orange-500" };
+    if (score <= 3) return { score: 60, label: t("register.strength_good"), color: "bg-yellow-500" };
+    if (score <= 4) return { score: 80, label: t("register.strength_strong"), color: "bg-emerald-500" };
+    return { score: 100, label: t("register.strength_very_strong"), color: "bg-emerald-600" };
   };
   const passwordStrength = getPasswordStrength(password);
 
@@ -57,13 +59,13 @@ export default function RegisterPage() {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     const errors: FieldError[] = [];
-    if (!fullName.trim()) errors.push({ field: "fullName", message: "Full name is required" });
-    if (!email.trim()) errors.push({ field: "email", message: "Email is required" });
-    if (!password.trim()) errors.push({ field: "password", message: "Password is required" });
-    else if (password.length < 8) errors.push({ field: "password", message: "Password must be at least 8 characters" });
-    if (!confirmPassword.trim()) errors.push({ field: "confirmPassword", message: "Please confirm your password" });
-    else if (password !== confirmPassword) errors.push({ field: "confirmPassword", message: "Passwords do not match" });
-    if (!agreedToTerms) errors.push({ field: "terms", message: "You must agree to the Terms of Service" });
+    if (!fullName.trim()) errors.push({ field: "fullName", message: t("register.full_name_required") });
+    if (!email.trim()) errors.push({ field: "email", message: t("register.email_required") });
+    if (!password.trim()) errors.push({ field: "password", message: t("register.password_required") });
+    else if (password.length < 8) errors.push({ field: "password", message: t("register.password_min_length") });
+    if (!confirmPassword.trim()) errors.push({ field: "confirmPassword", message: t("register.confirm_required") });
+    else if (password !== confirmPassword) errors.push({ field: "confirmPassword", message: t("register.passwords_no_match") });
+    if (!agreedToTerms) errors.push({ field: "terms", message: t("register.terms_required") });
     if (errors.length > 0) {
       setFieldErrors(errors);
       scrollToFirstError(errors);
@@ -84,7 +86,7 @@ export default function RegisterPage() {
       // Clean up role from sessionStorage
       sessionStorage.removeItem("offload_register_role");
 
-      toast({ title: `Welcome to Offload, ${user.name.split(" ")[0]}!`, description: "Your account is ready. Let's get started." });
+      toast({ title: t("register.welcome_toast", { name: user.name.split(" ")[0] }), description: t("register.welcome_description") });
 
       // Wait one tick for React to flush the auth state update from authRegister
       // before navigating. Without this, RequireAuth sees the old (null) state
@@ -113,8 +115,8 @@ export default function RegisterPage() {
       }
     } catch (err: any) {
       toast({
-        title: "Registration failed",
-        description: err.message || "Something went wrong. Please try again.",
+        title: t("register.registration_failed"),
+        description: err.message || t("register.generic_error"),
         variant: "destructive",
       });
     } finally {
@@ -147,7 +149,7 @@ export default function RegisterPage() {
         </div>
 
         {/* Heading */}
-        <h2 className="text-xl font-bold text-foreground mb-3">Create Account</h2>
+        <h2 className="text-xl font-bold text-foreground mb-3">{t("register.create_account")}</h2>
 
         {/* Role Badge */}
         <div className="mb-6">
@@ -155,7 +157,7 @@ export default function RegisterPage() {
             data-testid="badge-role"
             className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-primary/15 text-primary border border-primary/20"
           >
-            Registering as: {roleLabelMap[role] || role}
+            {t("register.registering_as")} {roleLabelMap[role] || role}
           </span>
         </div>
 
@@ -163,13 +165,13 @@ export default function RegisterPage() {
         <form onSubmit={handleRegister} className="w-full space-y-4">
           {/* Full Name */}
           <div>
-            <label htmlFor="fullName" className="sr-only">Full Name</label>
+            <label htmlFor="fullName" className="sr-only">{t("register.full_name_placeholder")}</label>
             <input
               data-testid="input-fullname"
               id="fullName"
               name="fullName"
               type="text"
-              placeholder="Full Name"
+              placeholder={t("register.full_name_placeholder")}
               value={fullName}
               onChange={(e) => { setFullName(e.target.value); clearError("fullName"); }}
               autoComplete="name"
@@ -180,13 +182,13 @@ export default function RegisterPage() {
 
           {/* Email */}
           <div>
-            <label htmlFor="reg-email" className="sr-only">Email</label>
+            <label htmlFor="reg-email" className="sr-only">{t("register.email_placeholder")}</label>
             <input
               data-testid="input-email"
               id="reg-email"
               name="email"
               type="email"
-              placeholder="Email"
+              placeholder={t("register.email_placeholder")}
               value={email}
               onChange={(e) => { setEmail(e.target.value); clearError("email"); }}
               autoComplete="email"
@@ -197,7 +199,7 @@ export default function RegisterPage() {
 
           {/* Phone with country code */}
           <div>
-            <label htmlFor="reg-phone" className="sr-only">Phone Number</label>
+            <label htmlFor="reg-phone" className="sr-only">{t("register.phone_placeholder")}</label>
             <div className="flex items-center h-12 rounded-xl bg-card border border-border overflow-hidden focus-within:ring-2 focus-within:ring-primary/50">
               <span className="flex items-center gap-1.5 pl-4 pr-2 text-muted-foreground text-sm border-r border-border">
                 <span className="text-base">🇺🇸</span>
@@ -209,7 +211,7 @@ export default function RegisterPage() {
                 name="phone"
                 type="tel"
                 inputMode="tel"
-                placeholder="Phone Number"
+                placeholder={t("register.phone_placeholder")}
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
                 autoComplete="tel-national"
@@ -220,13 +222,13 @@ export default function RegisterPage() {
 
           {/* Password */}
           <div className="relative">
-            <label htmlFor="reg-password" className="sr-only">Password</label>
+            <label htmlFor="reg-password" className="sr-only">{t("register.password_placeholder")}</label>
             <input
               data-testid="input-password"
               id="reg-password"
               name="password"
               type={showPassword ? "text" : "password"}
-              placeholder="Password"
+              placeholder={t("register.password_placeholder")}
               value={password}
               onChange={(e) => { setPassword(e.target.value); clearError("password"); }}
               autoComplete="new-password"
@@ -247,7 +249,7 @@ export default function RegisterPage() {
           {password.length > 0 && (
             <div className="space-y-1">
               <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">Password strength</span>
+                <span className="text-xs text-muted-foreground">{t("register.password_strength")}</span>
                 <span className={`text-xs font-medium ${passwordStrength.score >= 60 ? "text-emerald-500" : passwordStrength.score >= 40 ? "text-orange-500" : "text-red-500"}`}>
                   {passwordStrength.label}
                 </span>
@@ -263,13 +265,13 @@ export default function RegisterPage() {
 
           {/* Confirm Password */}
           <div className="relative">
-            <label htmlFor="confirm-password" className="sr-only">Confirm Password</label>
+            <label htmlFor="confirm-password" className="sr-only">{t("register.confirm_password_placeholder")}</label>
             <input
               data-testid="input-confirm-password"
               id="confirm-password"
               name="confirmPassword"
               type={showConfirmPassword ? "text" : "password"}
-              placeholder="Confirm Password"
+              placeholder={t("register.confirm_password_placeholder")}
               value={confirmPassword}
               onChange={(e) => { setConfirmPassword(e.target.value); clearError("confirmPassword"); }}
               autoComplete="new-password"
@@ -297,10 +299,10 @@ export default function RegisterPage() {
                 data-testid="checkbox-terms"
               />
               <span className="text-xs text-muted-foreground leading-snug">
-                I agree to the{" "}
-                <a href="/terms" className="text-primary hover:underline font-medium">Terms of Service</a>
-                {" "}and{" "}
-                <a href="/privacy" className="text-primary hover:underline font-medium">Privacy Policy</a>
+                {t("register.terms_agree")}{" "}
+                <a href="/terms" className="text-primary hover:underline font-medium">{t("register.terms_of_service")}</a>
+                {" "}{t("register.terms_and")}{" "}
+                <a href="/privacy" className="text-primary hover:underline font-medium">{t("register.privacy_policy")}</a>
               </span>
             </label>
             <InlineFieldError field="terms" errors={fieldErrors} />
@@ -316,10 +318,10 @@ export default function RegisterPage() {
             {isLoading ? (
               <span className="flex items-center justify-center gap-2">
                 <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                Creating account...
+                {t("register.creating_account")}
               </span>
             ) : (
-              "Sign Up"
+              t("register.sign_up")
             )}
           </button>
         </form>
@@ -329,7 +331,7 @@ export default function RegisterPage() {
           <>
             <div className="flex items-center gap-3 w-full my-6">
               <div className="flex-1 h-px bg-border" />
-              <span className="text-sm text-muted-foreground">or</span>
+              <span className="text-sm text-muted-foreground">{t("register.or")}</span>
               <div className="flex-1 h-px bg-border" />
             </div>
             <div className="w-full">
@@ -340,14 +342,14 @@ export default function RegisterPage() {
 
         {/* Login Link */}
         <p className="mt-8 text-sm text-muted-foreground text-center">
-          Already have an account?{" "}
+          {t("register.already_have_account")}{" "}
           <button
             data-testid="link-login"
             type="button"
             onClick={() => navigate("/login")}
             className="text-primary hover:text-primary/80 font-semibold transition-colors"
           >
-            Log in
+            {t("register.log_in")}
           </button>
         </p>
       </div>

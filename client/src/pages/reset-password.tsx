@@ -1,8 +1,10 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
+import { useI18n } from "@/i18n";
 
 export default function ResetPasswordPage() {
+  const { t } = useI18n();
   const [, setLocation] = useLocation();
   const [token, setToken] = useState("");
   const [password, setPassword] = useState("");
@@ -26,10 +28,10 @@ export default function ResetPasswordPage() {
 
   const validate = (): boolean => {
     const errs: Record<string, string> = {};
-    if (!password) errs.password = "Password is required";
-    else if (password.length < 8) errs.password = "Password must be at least 8 characters";
-    if (!confirmPassword) errs.confirm = "Please confirm your password";
-    else if (password !== confirmPassword) errs.confirm = "Passwords don't match";
+    if (!password) errs.password = t("reset.password_required");
+    else if (password.length < 8) errs.password = t("reset.password_min_length");
+    if (!confirmPassword) errs.confirm = t("reset.confirm_required");
+    else if (password !== confirmPassword) errs.confirm = t("reset.confirm_no_match");
     setErrors(errs);
     return Object.keys(errs).length === 0;
 
@@ -41,7 +43,7 @@ export default function ResetPasswordPage() {
     if (!validate()) return;
 
     if (!token) {
-      setServerError("Invalid reset link. Please request a new one.");
+      setServerError(t("reset.invalid_link"));
       return;
     }
 
@@ -52,7 +54,7 @@ export default function ResetPasswordPage() {
       // Redirect to login after 3 seconds
       setTimeout(() => setLocation("/login"), 3000);
     } catch (err: any) {
-      const msg = err?.message || "Something went wrong. Please try again.";
+      const msg = err?.message || t("reset.generic_error");
       setServerError(msg);
     } finally {
       setLoading(false);
@@ -68,10 +70,10 @@ export default function ResetPasswordPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
           </div>
-          <h1 className="text-2xl font-bold text-foreground">Password reset</h1>
-          <p className="text-muted-foreground text-sm">Your password has been updated. Redirecting to login...</p>
+          <h1 className="text-2xl font-bold text-foreground">{t("reset.success_title")}</h1>
+          <p className="text-muted-foreground text-sm">{t("reset.success_message")}</p>
           <Link href="/login" className="inline-block mt-4 text-primary hover:text-primary/80 text-sm font-medium transition-colors">
-              Go to login now
+              {t("reset.go_to_login")}
           </Link>
 
         </div>
@@ -83,8 +85,8 @@ export default function ResetPasswordPage() {
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <div className="w-full max-w-md space-y-6">
         <div className="text-center space-y-2">
-          <h1 className="text-2xl font-bold text-foreground">Choose a new password</h1>
-          <p className="text-muted-foreground text-sm">Enter your new password below.</p>
+          <h1 className="text-2xl font-bold text-foreground">{t("reset.title")}</h1>
+          <p className="text-muted-foreground text-sm">{t("reset.subtitle")}</p>
         </div>
 
         {serverError && (
@@ -96,7 +98,7 @@ export default function ResetPasswordPage() {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label htmlFor="password" className="block text-sm font-medium text-foreground mb-1.5">
-              New password
+              {t("reset.password_label")}
             </label>
             <div className="relative">
               <input
@@ -105,7 +107,7 @@ export default function ResetPasswordPage() {
                 data-testid="input-password"
                 value={password}
                 onChange={(e) => { setPassword(e.target.value); setErrors(prev => ({ ...prev, password: "" })); }}
-                placeholder="At least 8 characters"
+                placeholder={t("reset.password_placeholder")}
                 className={`w-full px-4 py-3 pr-12 rounded-lg bg-card border text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary transition-colors ${
                   errors.password ? "border-red-500" : "border-border"
                 }`}
@@ -130,7 +132,7 @@ export default function ResetPasswordPage() {
 
           <div>
             <label htmlFor="confirm" className="block text-sm font-medium text-foreground mb-1.5">
-              Confirm password
+              {t("reset.confirm_label")}
             </label>
             <input
               id="confirm"
@@ -138,7 +140,7 @@ export default function ResetPasswordPage() {
               data-testid="input-confirm-password"
               value={confirmPassword}
               onChange={(e) => { setConfirmPassword(e.target.value); setErrors(prev => ({ ...prev, confirm: "" })); }}
-              placeholder="Type your password again"
+              placeholder={t("reset.confirm_placeholder")}
               className={`w-full px-4 py-3 rounded-lg bg-card border text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary transition-colors ${
                 errors.confirm ? "border-red-500" : "border-border"
               }`}
@@ -154,13 +156,13 @@ export default function ResetPasswordPage() {
             disabled={loading}
             className="w-full py-3 rounded-lg bg-primary hover:bg-primary/90 text-foreground font-semibold text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? "Resetting..." : "Reset password"}
+            {loading ? t("reset.resetting") : t("reset.submit")}
           </button>
         </form>
 
         <div className="text-center">
           <Link href="/login" className="text-primary hover:text-primary/80 text-sm font-medium transition-colors">
-              &larr; Back to login
+              &larr; {t("reset.back_to_login")}
           </Link>
         </div>
 
