@@ -539,7 +539,7 @@ export function registerQuotesPricingRoutes(app: Express) {
         quoteNumber: generateQuoteNumber(),
         customerId,
         sessionId: sessionId || null,
-        publicToken: randomBytes(16).toString("hex"),
+        publicToken: randomBytes(32).toString("hex"),
         status: "quoted",
         pickupAddress,
         pickupCity: pickupCity || null,
@@ -626,11 +626,29 @@ export function registerQuotesPricingRoutes(app: Express) {
   }
 
   // ── Public quote retrieval by cryptographic token ──
-  app.get("/api/quotes/by-token/:token", async (req, res) => {
+  const quoteByTokenLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many requests. Please try again later." },
+    keyGenerator: (req) => req.ip || req.socket.remoteAddress || "unknown",
+  });
+
+  app.get("/api/quotes/by-token/:token", quoteByTokenLimiter, async (req, res) => {
     const token = String(req.params.token || "");
-    if (!/^[a-f0-9]{32}$/i.test(token)) return res.status(404).json({ error: "Quote not found" });
+    // Accept both 32-char (legacy 16-byte) and 64-char (new 32-byte) hex tokens
+    if (!/^[a-f0-9]{32,64}$/i.test(token)) return res.status(404).json({ error: "Quote not found" });
     const quote = await storage.getQuoteByPublicToken(token);
     if (!quote) return res.status(404).json({ error: "Quote not found" });
+
+    // Enforce 24h expiry on public token access
+    const createdAt = new Date(quote.createdAt).getTime();
+    const twentyFourHours = 24 * 60 * 60 * 1000;
+    if (Date.now() - createdAt > twentyFourHours) {
+      return res.status(410).json({ error: "Quote link has expired" });
+    }
+
     return sendQuoteResponse(quote, res);
   });
 

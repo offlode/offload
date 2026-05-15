@@ -1,0 +1,26 @@
+# Gitleaks configuration — prevent secrets from being committed
+# https://github.com/gitleaks/gitleaks
+
+title = "Offload gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "resend-api-key"
+description = "Resend API Key"
+regex = '''re_[A-Za-z0-9]{8,}_[A-Za-z0-9]{20,}'''
+tags = ["key", "resend"]
+
+[[rules]]
+id = "openai-api-key"
+description = "OpenAI API Key"
+regex = '''sk-[A-Za-z0-9_-]{20,}'''
+tags = ["key", "openai"]
+
+[allowlist]
+paths = [
+  '''\.gitleaks\.toml$''',
+  '''node_modules/''',
+  '''dist/''',
+]
