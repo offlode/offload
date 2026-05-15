@@ -104,6 +104,38 @@ function applyVoicePrefill(base: WizardState): WizardState {
   };
 }
 
+function applyReorderPrefill(base: WizardState): { state: WizardState; startStep: number } {
+  const reorder = (window as any).__offload_reorder as {
+    bags?: Array<{ size: string; quantity: number }>;
+    serviceType?: string;
+    deliverySpeed?: string;
+    address?: string;
+    pickupAddressId?: number;
+    paymentMethodId?: string;
+  } | undefined;
+  if (!reorder) return { state: base, startStep: 1 };
+
+  delete (window as any).__offload_reorder;
+
+  const bags = Array.isArray(reorder.bags) && reorder.bags.length > 0
+    ? reorder.bags.map(b => ({ size: b.size as BagSize, quantity: b.quantity || 1 }))
+    : base.bags;
+
+  return {
+    state: {
+      ...base,
+      bags,
+      serviceType: reorder.serviceType || base.serviceType,
+      deliverySpeed: (reorder.deliverySpeed as DeliverySpeed) || base.deliverySpeed,
+      address: reorder.address || base.address,
+      pickupAddressId: reorder.pickupAddressId ?? base.pickupAddressId,
+      paymentMethodId: reorder.paymentMethodId || base.paymentMethodId,
+    },
+    // Jump to review step (7) so user can confirm and place
+    startStep: 7,
+  };
+}
+
 function loadSavedState(): WizardState | null {
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY);
@@ -117,15 +149,24 @@ export default function OrderNewPage() {
   const { toast } = useToast();
   const { user } = useAuth();
 
-  // Initialize state from sessionStorage > query params > defaults
-  const [state, setState] = useState<WizardState>(() => {
+  // Initialize state from sessionStorage > query params > reorder > defaults
+  const [initResult] = useState(() => {
+    // Check reorder first (takes priority over saved state)
+    const reorderData = (window as any).__offload_reorder;
+    if (reorderData) {
+      const qp = parseQueryParams();
+      const base = applyVoicePrefill({ ...INITIAL_WIZARD_STATE, ...qp });
+      return applyReorderPrefill(base);
+    }
     const saved = loadSavedState();
-    if (saved) return applyVoicePrefill(saved);
+    if (saved) return { state: applyVoicePrefill(saved), startStep: 1 };
     const qp = parseQueryParams();
-    return applyVoicePrefill({ ...INITIAL_WIZARD_STATE, ...qp });
+    return { state: applyVoicePrefill({ ...INITIAL_WIZARD_STATE, ...qp }), startStep: 1 };
   });
 
-  const [step, setStep] = useState(1);
+  const [state, setState] = useState<WizardState>(initResult.state);
+
+  const [step, setStep] = useState(initResult.startStep);
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
   const [orderSuccess, setOrderSuccess] = useState(false);
   const [createdOrderId, setCreatedOrderId] = useState<number | null>(null);

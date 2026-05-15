@@ -173,7 +173,7 @@ export default function LoginPage() {
         {/* Logo */}
         <h1
           data-testid="text-app-name"
-          className="text-3xl font-extrabold text-white tracking-tight mb-12"
+          className="text-3xl font-extrabold text-primary tracking-tight mb-12"
         >
           Offload
         </h1>
@@ -218,7 +218,7 @@ export default function LoginPage() {
               type="button"
               onClick={() => setShowPassword(!showPassword)}
               aria-label={showPassword ? "Hide password" : "Show password"}
-              className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+              className="absolute right-4 bottom-3.5 text-muted-foreground hover:text-foreground transition-colors"
             >
               {showPassword ? (
                 <EyeOff className="w-5 h-5" />
