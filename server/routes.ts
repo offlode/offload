@@ -20,6 +20,11 @@ import { registerPaymentRoutes } from "./routes/payments";
 import { registerPlatformRoutes } from "./routes/platform";
 import { registerWaveLRoutes } from "./routes/wave-l";
 import { registerWave2Routes } from "./routes/wave-2";
+import { registerDispatchRoutes } from "./routes/dispatch";
+import { registerLaundromatRoutes } from "./routes/laundromats";
+import { registerPricingAdminRoutes } from "./routes/pricing-admin";
+import { startDispatchEngine } from "./dispatch-engine";
+import { seedPhaseA } from "./seed-phase-a";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -235,6 +240,9 @@ export async function registerRoutes(
   registerPlatformRoutes(app);
   registerWaveLRoutes(app);
   registerWave2Routes(app);
+  registerDispatchRoutes(app);
+  registerLaundromatRoutes(app);
+  registerPricingAdminRoutes(app);
 
   // ── API versioning header ──
   app.use((_req, res, next) => {
@@ -245,6 +253,14 @@ export async function registerRoutes(
 
   // ── Voice Order endpoints (STT + extraction) ──
   registerVoiceRoutes(app, requireAuth);
+
+  // ── Phase A: dispatch auction background engine ──
+  startDispatchEngine();
+
+  // ── Phase A: seed data (super_admin, demo laundromats) ──
+  seedPhaseA().catch((err) => {
+    console.error("[seed-phase-a] Seed error:", err);
+  });
 
   return httpServer;
 }

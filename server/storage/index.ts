@@ -595,6 +595,12 @@ async function ensureIntegrityConstraints() {
     ["notification_preferences", "email", true],
     ["notification_preferences", "sms", false],
     ["user_2fa", "enabled", false],
+    // Phase A: laundromat booleans
+    ["laundromats", "certified", false],
+    ["laundromats", "active", true],
+    ["laundromats", "accepts_standard", true],
+    ["laundromats", "accepts_signature", true],
+    ["laundromats", "accepts_custom", true],
   ];
   for (const [table, col, defaultVal] of boolFixups) {
     try {
@@ -753,6 +759,79 @@ async function ensureIntegrityConstraints() {
       const msg = String(e?.message || "");
       if (!msg.includes("already exists")) {
         console.warn(`[integrity] Wave L ${name} table:`, msg);
+      }
+    }
+  }
+
+  // Phase A: laundromats + dispatch_offers tables
+  const phaseATables: Array<[string, string]> = [
+    ["laundromats", `CREATE TABLE IF NOT EXISTS laundromats (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      owner_user_id INTEGER REFERENCES users(id),
+      address_line1 TEXT,
+      city TEXT,
+      state TEXT,
+      zip TEXT,
+      lat DOUBLE PRECISION,
+      lng DOUBLE PRECISION,
+      service_radius_miles INTEGER DEFAULT 10,
+      certified BOOLEAN DEFAULT false,
+      active BOOLEAN DEFAULT true,
+      accepts_standard BOOLEAN DEFAULT true,
+      accepts_signature BOOLEAN DEFAULT true,
+      accepts_custom BOOLEAN DEFAULT true,
+      signature_premium_cents INTEGER DEFAULT 500,
+      capacity_bags_per_day INTEGER DEFAULT 100,
+      hours_json TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`],
+    ["dispatch_offers", `CREATE TABLE IF NOT EXISTS dispatch_offers (
+      id TEXT PRIMARY KEY,
+      order_id INTEGER NOT NULL REFERENCES orders(id),
+      laundromat_id TEXT NOT NULL REFERENCES laundromats(id),
+      offered_at TIMESTAMPTZ DEFAULT NOW(),
+      certified_only_until TIMESTAMPTZ NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','declined','expired','superseded')),
+      responded_at TIMESTAMPTZ,
+      responded_by_user_id INTEGER REFERENCES users(id)
+    )`],
+  ];
+  for (const [name, sqlDef] of phaseATables) {
+    try {
+      await pool.query(sqlDef);
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      if (!msg.includes("already exists")) {
+        console.warn(`[integrity] Phase A ${name} table:`, msg);
+      }
+    }
+  }
+  // Phase A indexes for dispatch_offers
+  try {
+    await pool.query("CREATE INDEX IF NOT EXISTS idx_dispatch_offers_order_status ON dispatch_offers(order_id, status)");
+    await pool.query("CREATE INDEX IF NOT EXISTS idx_dispatch_offers_laundromat ON dispatch_offers(laundromat_id, status)");
+  } catch (e: any) {
+    console.warn("[integrity] Phase A dispatch indexes:", e?.message);
+  }
+
+  // Phase A: new columns on existing tables
+  const phaseACols: Array<[string, string]> = [
+    ["users", "laundromat_id TEXT"],
+    ["users", "preferred_laundromat_id TEXT"],
+    ["orders", "laundromat_id TEXT"],
+    ["orders", "auction_started_at TIMESTAMPTZ"],
+    ["orders", "auction_won_at TIMESTAMPTZ"],
+    ["chat_sessions", "laundromat_id TEXT"],
+  ];
+  for (const [table, colDef] of phaseACols) {
+    try {
+      await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${colDef}`);
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      if (!msg.includes("already exists") && !msg.includes("duplicate column")) {
+        console.warn(`[integrity] Phase A ${table} column:`, msg);
       }
     }
   }
