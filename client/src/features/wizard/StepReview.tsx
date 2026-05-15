@@ -50,6 +50,7 @@ export function StepReview({ state, onEdit, onQuoteStatus }: StepReviewProps) {
     separated: false,
     clothing_types: [],
     wash_preferences: state.specialInstructions ? { notes: state.specialInstructions } : {},
+    bags: state.bags.filter(b => b.quantity > 0).map(b => ({ size: b.size, quantity: b.quantity })),
   };
 
   const { data: quote, isLoading: quoteLoading, isError: quoteError } = useQuery<QuoteResponse>({
