@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
 import {
   ArrowLeft, Phone, MessageCircle, MapPin, Package,
-  Check, Clock, Truck, User, ChevronDown, ChevronUp, Shield, Map,
+  Check, Clock, Truck, User, ChevronDown, ChevronUp, Shield,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -92,7 +92,6 @@ export default function OrderTrackingPage() {
   const { user } = useAuth();
   const orderId = orderParams?.id || trackingParams?.id;
   const [summaryOpen, setSummaryOpen] = useState(false);
-  const [mapOpen, setMapOpen] = useState(false);
   const [earlierStagesOpen, setEarlierStagesOpen] = useState(false);
 
   const isTerminal = (status?: string) =>
@@ -134,31 +133,35 @@ export default function OrderTrackingPage() {
   }, [user, orderId]);
 
   // Map backend progress steps, or fall back to client-side mapping from canonical labels
+  // Build progress labels — only include current + completed steps (no future stages)
   const progressLabels: { key: string; label: string; completed: boolean; current: boolean; timestamp?: string }[] =
     progress?.steps && progress.steps.length > 0
       ? (() => {
           const firstNonCompleted = progress.steps.findIndex(s => !s.completed);
-          // If all steps are completed, mark the last step as current
           const currentIdx = firstNonCompleted === -1 ? progress.steps.length - 1 : firstNonCompleted;
-          return progress.steps.map((step, idx) => ({
-            key: step.fsmState,
-            label: step.label,
-            completed: step.completed,
-            current: idx === currentIdx,
-            timestamp: step.timestamp || undefined,
-          }));
+          return progress.steps
+            .map((step, idx) => ({
+              key: step.fsmState,
+              label: step.label,
+              completed: step.completed,
+              current: idx === currentIdx,
+              timestamp: step.timestamp || undefined,
+            }))
+            .filter(s => s.completed || s.current); // exclude future stages
         })()
-      : ORDER_PROGRESS_ORDER.map(key => {
-          const orderStatusIdx = ORDER_PROGRESS_ORDER.indexOf(order?.status as any);
-          const thisIdx = ORDER_PROGRESS_ORDER.indexOf(key);
-          const isTerminalState = orderStatusIdx === ORDER_PROGRESS_ORDER.length - 1;
-          return {
-            key,
-            label: ORDER_PROGRESS_LABELS[key] || key,
-            completed: orderStatusIdx >= 0 && (thisIdx < orderStatusIdx || (isTerminalState && thisIdx <= orderStatusIdx)),
-            current: thisIdx === orderStatusIdx,
-          };
-        });
+      : ORDER_PROGRESS_ORDER
+          .map(key => {
+            const orderStatusIdx = ORDER_PROGRESS_ORDER.indexOf(order?.status as any);
+            const thisIdx = ORDER_PROGRESS_ORDER.indexOf(key);
+            const isTerminalState = orderStatusIdx === ORDER_PROGRESS_ORDER.length - 1;
+            return {
+              key,
+              label: ORDER_PROGRESS_LABELS[key] || key,
+              completed: orderStatusIdx >= 0 && (thisIdx < orderStatusIdx || (isTerminalState && thisIdx <= orderStatusIdx)),
+              current: thisIdx === orderStatusIdx,
+            };
+          })
+          .filter(s => s.completed || s.current); // exclude future stages
 
   const currentLabel = friendlyStatus(progress?.currentStatus || order?.status || "order_placed");
 
@@ -278,7 +281,7 @@ export default function OrderTrackingPage() {
                   variant="outline"
                   size="icon"
                   className="h-11 w-11 rounded-full"
-                  onClick={() => navigate("/chat")}
+                  onClick={() => navigate(`/chat/order/${order.id}`)}
                   data-testid="button-message-driver"
                 >
                   <MessageCircle className="w-4 h-4" />
@@ -322,45 +325,46 @@ export default function OrderTrackingPage() {
         </div>
       )}
 
-      {/* View Map toggle + tracking map */}
-      <div className="px-5 mb-4">
-        <Button
-          variant={mapOpen ? "default" : "outline"}
-          className="w-full mb-3 gap-2"
-          onClick={() => setMapOpen(!mapOpen)}
-          data-testid="button-toggle-map"
-        >
-          <Map className="w-4 h-4" />
-          {mapOpen ? "Hide Map" : "View Map"}
-        </Button>
-        {mapOpen && (
-          <EmbeddedTrackingMap
-            driverPos={
-              (order.driverLat && order.driverLng)
-                ? { lat: order.driverLat, lng: order.driverLng }
-                : order.driver?.location ?? null
-            }
-            pickup={{
-              lat: order.pickupAddress?.lat || 0,
-              lng: order.pickupAddress?.lng || 0,
-              address: order.pickupAddress
-                ? `${order.pickupAddress.street || ""}, ${order.pickupAddress.city || ""}`
-                : order.address || "",
-            }}
-            delivery={{
-              lat: order.dropoffAddress?.lat || 0,
-              lng: order.dropoffAddress?.lng || 0,
-              address: order.dropoffAddress
-                ? `${order.dropoffAddress.street || ""}, ${order.dropoffAddress.city || ""}`
-                : order.address || "",
-            }}
-            isDriverPhase={!!(
-              (order.driver || order.driverLat) &&
-              ["driver_assigned", "en_route_pickup", "arrived_pickup", "picked_up", "out_for_delivery", "en_route_delivery", "arrived_delivery"].includes(order.status)
-            )}
-          />
-        )}
-      </div>
+      {/* Tracking map — always visible for active order states */}
+      {(() => {
+        const mapStates = [
+          "confirmed", "scheduled", "driver_assigned", "en_route_pickup", "arrived_pickup",
+          "picked_up", "at_facility", "washing", "wash_complete", "folded_packaged",
+          "final_weight_verified", "ready_for_delivery", "out_for_delivery",
+          "en_route_delivery", "arrived_delivery", "delivered",
+        ];
+        const showMap = mapStates.includes(order.status);
+        if (!showMap) return null;
+        return (
+          <div className="px-5 mb-4">
+            <EmbeddedTrackingMap
+              driverPos={
+                (order.driverLat && order.driverLng)
+                  ? { lat: order.driverLat, lng: order.driverLng }
+                  : order.driver?.location ?? null
+              }
+              pickup={{
+                lat: order.pickupAddress?.lat || 0,
+                lng: order.pickupAddress?.lng || 0,
+                address: order.pickupAddress
+                  ? `${order.pickupAddress.street || ""}, ${order.pickupAddress.city || ""}`
+                  : order.address || "",
+              }}
+              delivery={{
+                lat: order.dropoffAddress?.lat || 0,
+                lng: order.dropoffAddress?.lng || 0,
+                address: order.dropoffAddress
+                  ? `${order.dropoffAddress.street || ""}, ${order.dropoffAddress.city || ""}`
+                  : order.address || "",
+              }}
+              isDriverPhase={!!(
+                (order.driver || order.driverLat) &&
+                ["driver_assigned", "en_route_pickup", "arrived_pickup", "picked_up", "out_for_delivery", "en_route_delivery", "arrived_delivery"].includes(order.status)
+              )}
+            />
+          </div>
+        );
+      })()}
 
       {/* Order progress — current stage prominently, earlier stages collapsible */}
       <div className="px-5 mb-4">

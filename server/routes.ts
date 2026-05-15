@@ -25,6 +25,7 @@ import { registerLaundromatRoutes } from "./routes/laundromats";
 import { registerPricingAdminRoutes } from "./routes/pricing-admin";
 import { startDispatchEngine } from "./dispatch-engine";
 import { seedPhaseA } from "./seed-phase-a";
+import { backfillDispatch } from "./backfill-dispatch";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -260,6 +261,11 @@ export async function registerRoutes(
   // ── Phase A: seed data (super_admin, demo laundromats) ──
   seedPhaseA().catch((err) => {
     console.error("[seed-phase-a] Seed error:", err);
+  });
+
+  // ── Phase C: backfill dispatch offers for orders that missed the auction ──
+  backfillDispatch().catch((err) => {
+    console.error("[backfill-dispatch] Error:", err);
   });
 
   return httpServer;

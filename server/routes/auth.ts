@@ -338,6 +338,7 @@ export function registerAuthRoutes(app: Express) {
     // show a real error state rather than silently leaking another vendor's data.
     let vendorProfile: any = null;
     let driverProfile: any = null;
+    let laundromatProfile: any = null;
     try {
       if (["vendor", "laundromat", "manager", "staff"].includes(user.role)) {
         vendorProfile = await storage.getVendorByUserId(user.id) ?? null;
@@ -345,9 +346,19 @@ export function registerAuthRoutes(app: Express) {
       if (user.role === "driver") {
         driverProfile = await storage.getDriverByUserId(user.id) ?? null;
       }
+      // Phase A: surface laundromat record for owner/employee roles
+      const laundromatId = user.laundromatId || user.laundromat_id;
+      if (laundromatId && ["laundromat_owner", "laundromat_employee", "laundromat", "manager", "staff"].includes(user.role)) {
+        const { pool: dbPool } = await import("../storage");
+        const { rows } = await dbPool.query(
+          `SELECT * FROM laundromats WHERE id = $1 LIMIT 1`,
+          [laundromatId],
+        );
+        laundromatProfile = rows[0] ?? null;
+      }
     } catch (_err) {
       // swallow — the client must handle null profile.
     }
-    res.json({ user: { ...user, password: undefined, vendorProfile, driverProfile } });
+    res.json({ user: { ...user, password: undefined, vendorProfile, driverProfile, laundromatProfile } });
   });
 }
