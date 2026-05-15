@@ -76,6 +76,8 @@ function parseCityStateFromAddress(value: string): Pick<AddressMeta, "city" | "s
 interface PlaceSuggestion {
   text: string;
   placeId: string;
+  /** Holds the Place object from `toPlace()` so we can call fetchFields later */
+  _place?: google.maps.places.Place;
 }
 
 // ── Google Maps JS SDK loader ──
@@ -140,8 +142,10 @@ export function StepAddress({
   const [mapsReady, setMapsReady] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
   const suggestionsRef = useRef<HTMLDivElement>(null);
-  const autocompleteServiceRef = useRef<any>(null);
-  const placesServiceRef = useRef<any>(null);
+  // Session token groups autocomplete + place-details into one billing session
+  const sessionTokenRef = useRef<google.maps.places.AutocompleteSessionToken | null>(null);
+  // Guards against stale fetchFields overwrites when user edits during in-flight request
+  const selectionEpochRef = useRef(0);
 
   // Store latest refs for callbacks
   const serviceTypeRef = useRef(serviceType);
@@ -151,16 +155,13 @@ export function StepAddress({
   useEffect(() => { onServiceAreaChangeRef.current = onServiceAreaChange; }, [onServiceAreaChange]);
   useEffect(() => { onAddressChangeRef.current = onAddressChange; }, [onAddressChange]);
 
-  // Load Google Maps JS SDK with Places library
+  // Load Google Maps JS SDK with Places library (v=weekly includes new Places classes)
   useEffect(() => {
     if (!GOOGLE_API_KEY) return;
     let cancelled = false;
     loadMapsWithPlaces(GOOGLE_API_KEY).then((g) => {
       if (cancelled || !g?.maps?.places) return;
-      autocompleteServiceRef.current = new g.maps.places.AutocompleteService();
-      // PlacesService needs a DOM element or map; use a hidden div
-      const div = document.createElement("div");
-      placesServiceRef.current = new g.maps.places.PlacesService(div);
+      sessionTokenRef.current = new g.maps.places.AutocompleteSessionToken();
       setMapsReady(true);
     });
     return () => { cancelled = true; };
@@ -227,9 +228,10 @@ export function StepAddress({
     }
   }
 
-  // Fetch autocomplete suggestions via Google Maps JS SDK
-  const fetchSuggestions = useCallback((input: string) => {
-    if (input.length < 3 || !autocompleteServiceRef.current) {
+  // Fetch autocomplete suggestions via Places API (New) — AutocompleteSuggestion
+  const fetchSuggestions = useCallback(async (input: string) => {
+    const places = (google?.maps?.places) as any;
+    if (input.length < 3 || !mapsReady || !places?.AutocompleteSuggestion) {
       setSuggestions([]);
       setShowSuggestions(false);
       setAutocompleteError("");
@@ -237,64 +239,82 @@ export function StepAddress({
     }
     setFetchingSuggestions(true);
     setAutocompleteError("");
-    autocompleteServiceRef.current.getPlacePredictions(
-      {
-        input,
-        componentRestrictions: { country: "us" },
-        types: ["address"],
-      },
-      (predictions: any[] | null, status: string) => {
-        setFetchingSuggestions(false);
-        if (status !== "OK" || !predictions) {
-          setSuggestions([]);
-          setShowSuggestions(false);
-          if (input.length >= 5) {
-            setAutocompleteError("No address suggestions found. Type your full address (with street number) to continue manually.");
-          }
-          return;
+    try {
+      const { suggestions: rawSuggestions } = await places.AutocompleteSuggestion
+        .fetchAutocompleteSuggestions({
+          input,
+          sessionToken: sessionTokenRef.current,
+          includedRegionCodes: ["us"],
+          types: ["address"],
+        });
+      if (!rawSuggestions || rawSuggestions.length === 0) {
+        setSuggestions([]);
+        setShowSuggestions(false);
+        if (input.length >= 5) {
+          setAutocompleteError("No address suggestions found. Type your full address (with street number) to continue manually.");
         }
-        const results: PlaceSuggestion[] = predictions.map((p) => ({
-          text: p.description || "",
-          placeId: p.place_id || "",
+        return;
+      }
+      const results: PlaceSuggestion[] = rawSuggestions
+        .filter((s: any) => s.placePrediction)
+        .map((s: any) => ({
+          text: s.placePrediction.text?.text || s.placePrediction.toString() || "",
+          placeId: s.placePrediction.placeId || "",
+          _place: s.placePrediction.toPlace(),
         }));
-        setSuggestions(results);
-        setShowSuggestions(true);
-      },
-    );
+      setSuggestions(results);
+      setShowSuggestions(true);
+    } catch {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      if (input.length >= 5) {
+        setAutocompleteError("No address suggestions found. Type your full address (with street number) to continue manually.");
+      }
+    } finally {
+      setFetchingSuggestions(false);
+    }
   }, [mapsReady]);
 
-  // Handle selecting a suggestion — fetch details via PlacesService
-  const handleSelectSuggestion = useCallback((suggestion: PlaceSuggestion) => {
+  // Handle selecting a suggestion — fetch details via Place.fetchFields (New API)
+  const handleSelectSuggestion = useCallback(async (suggestion: PlaceSuggestion) => {
     setShowSuggestions(false);
     setSuggestions([]);
     setAutocompleteError("");
+    const epoch = ++selectionEpochRef.current;
     onAddressChangeRef.current(suggestion.text, suggestion.placeId);
 
-    if (!placesServiceRef.current || !suggestion.placeId) return;
-    placesServiceRef.current.getDetails(
-      { placeId: suggestion.placeId, fields: ["formatted_address", "geometry", "address_components"] },
-      (place: any, status: string) => {
-        if (status !== "OK" || !place) return;
-        const formatted = place.formatted_address || suggestion.text;
-        const lat = place.geometry?.location?.lat() ?? null;
-        const lng = place.geometry?.location?.lng() ?? null;
-        const comps: Array<{ types: string[]; long_name: string; short_name: string }> =
-          place.address_components || [];
-        const findComp = (type: string, short = false) => {
-          const c = comps.find((comp) => comp.types.includes(type));
-          if (!c) return "";
-          return short ? c.short_name : c.long_name;
-        };
-        const zip = findComp("postal_code");
-        const city = findComp("locality") || findComp("sublocality") || findComp("administrative_area_level_2");
-        const state = findComp("administrative_area_level_1", true);
+    const placeObj = suggestion._place;
+    if (!placeObj) return;
+    try {
+      await placeObj.fetchFields({
+        fields: ["formattedAddress", "addressComponents", "location", "displayName"],
+      });
+      // If user edited the input while fetchFields was in-flight, discard stale result
+      if (selectionEpochRef.current !== epoch) return;
+      // Rotate session token after a complete autocomplete+details session
+      sessionTokenRef.current = new google.maps.places.AutocompleteSessionToken();
 
-        onAddressChangeRef.current(formatted, suggestion.placeId);
-        if (zip || (lat != null && lng != null)) {
-          checkServiceArea({ zip, city, state, lat, lng });
-        }
-      },
-    );
+      const formatted = placeObj.formattedAddress || suggestion.text;
+      const lat = placeObj.location?.lat() ?? null;
+      const lng = placeObj.location?.lng() ?? null;
+      const comps: Array<{ types: string[]; longText: string; shortText: string }> =
+        (placeObj.addressComponents as any) || [];
+      const findComp = (type: string, short = false) => {
+        const c = comps.find((comp: any) => comp.types?.includes(type));
+        if (!c) return "";
+        return short ? c.shortText : c.longText;
+      };
+      const zip = findComp("postal_code");
+      const city = findComp("locality") || findComp("sublocality") || findComp("administrative_area_level_2");
+      const state = findComp("administrative_area_level_1", true);
+
+      onAddressChangeRef.current(formatted, suggestion.placeId);
+      if (zip || (lat != null && lng != null)) {
+        checkServiceArea({ zip, city, state, lat, lng });
+      }
+    } catch {
+      // If fetchFields fails, keep the text the user selected
+    }
   }, [mapsReady]);
 
   // Close suggestions on outside click
@@ -396,6 +416,8 @@ export function StepAddress({
           value={address}
           onChange={e => {
             const val = e.target.value;
+            // Invalidate any in-flight fetchFields so stale results don't overwrite
+            selectionEpochRef.current++;
             onAddressChange(val, "");
             onServiceAreaChange(null);
             setAutocompleteError("");
