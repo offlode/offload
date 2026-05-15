@@ -34,6 +34,16 @@ export const BAG_OPTIONS = {
   xl: { maxLbs: 50, label: "XL Bag" },
 } as const;
 
+// Canonical flat-rate bag prices (display only — backend is authoritative)
+export const BAG_PRICES: Record<BagSize, { standard: number; signature: number }> = {
+  small: { standard: 24.99, signature: 29.99 },
+  medium: { standard: 44.99, signature: 49.99 },
+  large: { standard: 59.99, signature: 64.99 },
+  xl: { standard: 89.99, signature: 94.99 },
+};
+
+export const SIGNATURE_PREMIUM = 5;
+
 export const DELIVERY_SPEEDS = {
   standard: { label: "Standard (48h)", hours: 48 },
   next_day: { label: "Next Day (24h)", hours: 24 },

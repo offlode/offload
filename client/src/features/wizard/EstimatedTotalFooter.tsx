@@ -22,7 +22,7 @@ export function EstimatedTotalFooter({ state, currentStep }: EstimatedTotalFoote
   const hasBags = state.bags.some(b => b.quantity > 0);
 
   useEffect(() => {
-    if (currentStep < 1 || !hasBags || !state.serviceType) {
+    if (currentStep < 1 || !hasBags) {
       setTotal(null);
       return;
     }

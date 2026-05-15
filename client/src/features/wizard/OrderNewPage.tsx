@@ -425,6 +425,7 @@ export default function OrderNewPage() {
             <StepBags
               bags={state.bags}
               onChange={bags => update("bags", bags)}
+              serviceType={state.serviceType}
             />
           )}
           {step === 2 && (
@@ -488,26 +489,33 @@ export default function OrderNewPage() {
               )}
             </Button>
           ) : (
-            <div className="flex gap-3">
-              {step > 1 && (
-                <Button
-                  variant="outline"
-                  className="h-12 px-6 rounded-full"
-                  onClick={goBack}
-                  data-testid="button-prev-step"
-                >
-                  Back
-                </Button>
+            <div className="space-y-2">
+              {step === 2 && state.address && !state.pickupTimeWindow && (
+                <p className="text-xs text-amber-500 text-center font-medium" data-testid="hint-select-time">
+                  Select a pickup time to continue
+                </p>
               )}
-              <Button
-                className="flex-1 h-12 text-base font-semibold rounded-full"
-                disabled={!canProceed()}
-                onClick={goNext}
-                data-testid="button-next-step"
-              >
-                Continue
-                <ArrowRight className="w-4 h-4 ml-2" />
-              </Button>
+              <div className="flex gap-3">
+                {step > 1 && (
+                  <Button
+                    variant="outline"
+                    className="h-12 px-6 rounded-full"
+                    onClick={goBack}
+                    data-testid="button-prev-step"
+                  >
+                    Back
+                  </Button>
+                )}
+                <Button
+                  className="flex-1 h-12 text-base font-semibold rounded-full"
+                  disabled={!canProceed()}
+                  onClick={goNext}
+                  data-testid="button-next-step"
+                >
+                  Continue
+                  <ArrowRight className="w-4 h-4 ml-2" />
+                </Button>
+              </div>
             </div>
           )}
         </div>

@@ -5,9 +5,10 @@ import {
   User, Package, DollarSign, Star, Heart, MapPin, CreditCard,
   Bell, Shield, Settings, HelpCircle, LogOut, ChevronRight,
   Truck, Sun, Moon, LayoutDashboard, X, Check, ChevronDown, ArrowLeft,
-  Trash2, Lock, Smartphone, QrCode, Copy, Loader2
+  Trash2, Lock, Smartphone, QrCode, Copy, Loader2, Globe
 } from "lucide-react";
 import { CertifiedPanel } from "@/components/ui/certified-panel";
+import { useI18n } from "@/i18n";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -74,6 +75,7 @@ export default function ProfilePage() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
   const { user: authUser, logout } = useAuth();
+  const { language, setLanguage } = useI18n();
   const userId = authUser?.id;
 
   const [editProfileOpen, setEditProfileOpen] = useState(false);
@@ -612,6 +614,16 @@ export default function ProfilePage() {
             value={`${paymentMethods?.length || 0} on file`}
             color="bg-amber-500/15 text-amber-400"
             onClick={() => navigate("/payments")}
+          />
+          <SettingsRow
+            icon={<Globe className="w-4 h-4" />}
+            label="Language"
+            value={language === "en" ? "English" : "Español"}
+            color="bg-sky-500/15 text-sky-400"
+            onClick={() => {
+              setLanguage(language === "en" ? "es" : "en");
+              toast({ title: language === "en" ? "Idioma cambiado a Español" : "Language changed to English" });
+            }}
           />
         </Card>
       </div>

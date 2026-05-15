@@ -215,7 +215,7 @@ export default function OrdersPage() {
                               {vendor?.name || order.orderNumber}
                             </p>
                             <p className="text-[11px] text-muted-foreground">
-                              {bags.map((b: any) => `${b.quantity}x ${b.type}`).join(", ")}
+                              {bags.map((b: any) => `${b.quantity}x ${b.label ?? b.type ?? b.size ?? "Bag"}`).join(", ")}
                             </p>
                           </div>
                           <p className="text-sm font-bold shrink-0">${order.total?.toFixed(2)}</p>

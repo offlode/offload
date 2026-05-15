@@ -514,7 +514,7 @@ export default function OrderDetailPage() {
       {/* Weight & Pricing Section */}
       <WeightBreakdown order={order} />
 
-      {/* 16-State Visual Status Stepper */}
+      {/* 13-State FSM Visual Timeline */}
       {order.status !== "cancelled" && (
         <div className="px-5 mb-4">
           <Card className="p-4" data-testid="card-status-stepper">

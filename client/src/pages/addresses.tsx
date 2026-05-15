@@ -184,7 +184,9 @@ export default function AddressesPage() {
                       ) : null}
                     </div>
                     <p className="text-xs text-muted-foreground">{addr.street}{addr.apt ? `, ${addr.apt}` : ""}</p>
-                    <p className="text-xs text-muted-foreground">{addr.city}, {addr.state} {addr.zip}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {addr.city}, {addr.state.replace(/\s*\d{5}(-\d{4})?$/, "")} {addr.zip}
+                    </p>
                     {addr.notes && <p className="text-xs text-muted-foreground/60 mt-1 italic">{addr.notes}</p>}
                   </div>
                 </div>
