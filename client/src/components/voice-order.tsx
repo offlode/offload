@@ -20,6 +20,7 @@
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useLocation } from "wouter";
 import {
   Mic, MicOff, X, Check, ChevronDown, Loader2,
@@ -555,8 +556,8 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
 
   if (!open) return null;
 
-  return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="voice-order-title">
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="voice-order-title">
       <Card className="w-full max-w-sm p-6 relative overflow-y-auto max-h-[90vh]">
         {/* Close */}
         <button
@@ -925,6 +926,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
           </>
         )}
       </Card>
-    </div>
+    </div>,
+    document.body,
   );
 }

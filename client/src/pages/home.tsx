@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import {
@@ -10,7 +10,6 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/auth-context";
 import { VoiceOrderModal } from "@/components/voice-order";
 import { apiRequest } from "@/lib/queryClient";
@@ -122,9 +121,12 @@ function WashTile({ icon, title, description, priceHint, href }: WashTileProps) 
 // ─── Main Home Page ──────────────────────────────────────────
 export default function HomePage() {
   const [, navigate] = useLocation();
-  const { toast } = useToast();
   const { user, isAuthenticated } = useAuth();
   const [voiceOrderOpen, setVoiceOrderOpen] = useState(false);
+
+  const openVoiceModal = useCallback(() => {
+    setVoiceOrderOpen(true);
+  }, []);
 
   const { data: addressList } = useQuery<Address[]>({
     queryKey: [`/api/addresses?userId=${user?.id}`],
@@ -385,19 +387,22 @@ export default function HomePage() {
       {/* ── Talk to Offload — Voice/AI CTA ── */}
       <div className="px-5 mb-5">
         <Card
-          className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.99] bg-gradient-to-r from-primary/10 to-primary/5 border-primary/20"
-          onClick={() => setVoiceOrderOpen(true)}
+          role="button"
+          tabIndex={0}
+          className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.99] bg-gradient-to-r from-[#7C3AED]/15 to-[#7C3AED]/5 border-[#7C3AED]/25"
+          onClick={openVoiceModal}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openVoiceModal(); } }}
           data-testid="card-talk-to-offload"
         >
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-              <Mic className="w-6 h-6 text-primary" />
+            <div className="w-12 h-12 rounded-full bg-[#7C3AED]/20 flex items-center justify-center shrink-0">
+              <Mic className="w-6 h-6 text-[#7C3AED]" />
             </div>
             <div className="flex-1">
-              <p className="text-sm font-semibold text-primary">Talk to Offload</p>
+              <p className="text-sm font-semibold text-[#7C3AED]">Talk to Offload</p>
               <p className="text-xs text-muted-foreground mt-0.5">Order by voice — just tell us what you need</p>
             </div>
-            <ChevronRight className="w-4 h-4 text-primary/60 shrink-0" />
+            <ChevronRight className="w-4 h-4 text-[#7C3AED]/60 shrink-0" />
           </div>
         </Card>
       </div>
