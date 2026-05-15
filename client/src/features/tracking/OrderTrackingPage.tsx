@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
 import {
   ArrowLeft, Phone, MessageCircle, MapPin, Package,
-  Check, Clock, Truck, User, ChevronDown, ChevronUp, Shield,
+  Check, Clock, Truck, User, ChevronDown, ChevronUp, Shield, Map,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -47,6 +47,15 @@ interface VendorInfo {
   certified?: boolean;
 }
 
+interface AddressInfo {
+  street?: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+  lat?: number;
+  lng?: number;
+}
+
 interface OrderDetail {
   id: number;
   orderNumber: string;
@@ -62,6 +71,10 @@ interface OrderDetail {
   createdAt: string;
   driver?: DriverInfo;
   vendor?: VendorInfo;
+  pickupAddress?: AddressInfo;
+  dropoffAddress?: AddressInfo;
+  driverLat?: number;
+  driverLng?: number;
 }
 
 function formatDate(iso: string) {
@@ -79,14 +92,20 @@ export default function OrderTrackingPage() {
   const { user } = useAuth();
   const orderId = orderParams?.id || trackingParams?.id;
   const [summaryOpen, setSummaryOpen] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [earlierStagesOpen, setEarlierStagesOpen] = useState(false);
 
   const isTerminal = (status?: string) =>
     !!status && (TERMINAL_STATUSES as readonly string[]).includes(status);
 
-  // Fetch order details
+  // Fetch order details — poll every 30s for driver position updates
   const { data: order, isLoading, isError, refetch } = useQuery<OrderDetail>({
     queryKey: [`/api/orders/${orderId}`],
     enabled: !!orderId,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status && isTerminal(status) ? false : 30_000;
+    },
   });
 
   // P0-8: Fetch progress with 20s polling, stop on terminal states
@@ -303,65 +322,111 @@ export default function OrderTrackingPage() {
         </div>
       )}
 
-      {/* Tracking map */}
+      {/* View Map toggle + tracking map */}
       <div className="px-5 mb-4">
-        <EmbeddedTrackingMap
-          driverPos={order.driver?.location ?? null}
-          pickup={{ lat: 0, lng: 0, address: order.address || "" }}
-          delivery={{ lat: 0, lng: 0, address: order.address || "" }}
-          isDriverPhase={!!(order.driver && ["driver_assigned", "en_route_pickup", "arrived_pickup", "en_route_delivery", "arrived_delivery"].includes(order.status))}
-        />
+        <Button
+          variant={mapOpen ? "default" : "outline"}
+          className="w-full mb-3 gap-2"
+          onClick={() => setMapOpen(!mapOpen)}
+          data-testid="button-toggle-map"
+        >
+          <Map className="w-4 h-4" />
+          {mapOpen ? "Hide Map" : "View Map"}
+        </Button>
+        {mapOpen && (
+          <EmbeddedTrackingMap
+            driverPos={
+              (order.driverLat && order.driverLng)
+                ? { lat: order.driverLat, lng: order.driverLng }
+                : order.driver?.location ?? null
+            }
+            pickup={{
+              lat: order.pickupAddress?.lat || 0,
+              lng: order.pickupAddress?.lng || 0,
+              address: order.pickupAddress
+                ? `${order.pickupAddress.street || ""}, ${order.pickupAddress.city || ""}`
+                : order.address || "",
+            }}
+            delivery={{
+              lat: order.dropoffAddress?.lat || 0,
+              lng: order.dropoffAddress?.lng || 0,
+              address: order.dropoffAddress
+                ? `${order.dropoffAddress.street || ""}, ${order.dropoffAddress.city || ""}`
+                : order.address || "",
+            }}
+            isDriverPhase={!!(
+              (order.driver || order.driverLat) &&
+              ["driver_assigned", "en_route_pickup", "arrived_pickup", "picked_up", "out_for_delivery", "en_route_delivery", "arrived_delivery"].includes(order.status)
+            )}
+          />
+        )}
       </div>
 
-      {/* Order progress timeline */}
+      {/* Order progress — current stage prominently, earlier stages collapsible */}
       <div className="px-5 mb-4">
         <h3 className="text-sm font-semibold mb-3">Order Progress</h3>
-        <Card className="p-4">
-          <div className="space-y-0">
-            {progressLabels.map((step, idx) => {
-              const isLast = idx === progressLabels.length - 1;
-              return (
-                <div key={step.key} className="flex gap-3">
-                  {/* Timeline connector */}
-                  <div className="flex flex-col items-center">
-                    <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
-                      step.completed
-                        ? "bg-emerald-500 text-white"
-                        : step.current
-                        ? "bg-primary text-primary-foreground ring-2 ring-primary/30"
-                        : "bg-muted text-muted-foreground"
-                    }`}>
-                      {step.completed ? (
-                        <Check className="w-3.5 h-3.5" />
-                      ) : step.current ? (
-                        <Clock className="w-3 h-3" />
-                      ) : (
-                        <span className="w-1.5 h-1.5 rounded-full bg-current" />
-                      )}
-                    </div>
-                    {!isLast && (
-                      <div className={`w-0.5 h-6 ${
-                        step.completed ? "bg-emerald-500" : "bg-border"
-                      }`} />
-                    )}
-                  </div>
 
-                  {/* Label */}
-                  <div className="pb-4">
-                    <p className={`text-sm ${
-                      step.current ? "font-bold text-primary" : step.completed ? "font-medium" : "text-muted-foreground"
-                    }`}>
-                      {step.label}
-                    </p>
-                    {step.timestamp && (
-                      <p className="text-[10px] text-muted-foreground">{formatDate(step.timestamp)}</p>
-                    )}
-                  </div>
+        {/* Current stage — big purple card */}
+        {(() => {
+          const currentStep = progressLabels.find(s => s.current);
+          if (!currentStep) return null;
+          return (
+            <Card className="p-5 bg-primary/10 border-primary/30 mb-3" data-testid="card-current-stage">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-primary text-primary-foreground flex items-center justify-center">
+                  <Clock className="w-5 h-5" />
                 </div>
-              );
-            })}
-          </div>
-        </Card>
+                <div className="flex-1">
+                  <p className="text-base font-bold text-primary">{currentStep.label}</p>
+                  {currentStep.timestamp && (
+                    <p className="text-xs text-muted-foreground mt-0.5">{formatDate(currentStep.timestamp)}</p>
+                  )}
+                </div>
+              </div>
+            </Card>
+          );
+        })()}
+
+        {/* Earlier completed stages — collapsible */}
+        {(() => {
+          const completedSteps = progressLabels.filter(s => s.completed && !s.current);
+          if (completedSteps.length === 0) return null;
+          return (
+            <Collapsible open={earlierStagesOpen} onOpenChange={setEarlierStagesOpen}>
+              <CollapsibleTrigger asChild>
+                <button className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors mb-2 w-full" data-testid="button-earlier-stages">
+                  {earlierStagesOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                  <span>View earlier stages ({completedSteps.length})</span>
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <Card className="p-4">
+                  <div className="space-y-0">
+                    {completedSteps.map((step, idx) => {
+                      const isLast = idx === completedSteps.length - 1;
+                      return (
+                        <div key={step.key} className="flex gap-3">
+                          <div className="flex flex-col items-center">
+                            <div className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 bg-emerald-500 text-white">
+                              <Check className="w-3.5 h-3.5" />
+                            </div>
+                            {!isLast && <div className="w-0.5 h-6 bg-emerald-500" />}
+                          </div>
+                          <div className="pb-4">
+                            <p className="text-sm font-medium">{step.label}</p>
+                            {step.timestamp && (
+                              <p className="text-[10px] text-muted-foreground">{formatDate(step.timestamp)}</p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Card>
+              </CollapsibleContent>
+            </Collapsible>
+          );
+        })()}
       </div>
 
       {/* Order summary (collapsible) */}

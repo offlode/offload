@@ -21,6 +21,7 @@ type Conversation = {
   status: string;
   lastMessage: { content: string; timestamp: string; senderRole: string } | null;
   unreadCount: number;
+  laundromat?: { id: number; name: string } | null;
 };
 
 function formatTime(iso: string | Date): string {
@@ -356,25 +357,40 @@ export default function ChatPage() {
           <ChevronLeft className="w-5 h-5" />
         </button>
 
-        <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-          {activeOrderId ? (
-            <MessageCircle className="w-5 h-5 text-primary" />
-          ) : (
-            <Bot className="w-5 h-5 text-primary" />
-          )}
-        </div>
+        {(() => {
+          const activeConv = activeOrderId ? conversations.find(c => c.orderId === activeOrderId) : null;
+          const laundromatName = activeConv?.laundromat?.name;
+          const initial = laundromatName ? laundromatName.charAt(0).toUpperCase() : null;
+          return (
+            <>
+              <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                {activeOrderId && initial ? (
+                  <span className="text-sm font-bold text-primary">{initial}</span>
+                ) : activeOrderId ? (
+                  <MessageCircle className="w-5 h-5 text-primary" />
+                ) : (
+                  <Bot className="w-5 h-5 text-primary" />
+                )}
+              </div>
 
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold" data-testid="text-chat-title">
-            {activeOrderId ? "Order Chat" : "Offload Messages"}
-          </p>
-          <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="text-xs text-muted-foreground">
-              {activeOrderId ? "Real-time messaging" : "Virtual Assistant + Order chats"}
-            </span>
-          </div>
-        </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold" data-testid="text-chat-title">
+                  {activeOrderId
+                    ? laundromatName
+                      ? `Chat with ${laundromatName}`
+                      : "Offload Support"
+                    : "Offload Messages"}
+                </p>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="text-xs text-muted-foreground">
+                    {activeOrderId ? "Real-time messaging" : "Virtual Assistant + Order chats"}
+                  </span>
+                </div>
+              </div>
+            </>
+          );
+        })()}
 
         {activeOrderId && (
           <button

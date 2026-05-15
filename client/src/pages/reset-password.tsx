@@ -68,7 +68,7 @@ export default function ResetPasswordPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
           </div>
-          <h1 className="text-2xl font-bold text-white">Password reset</h1>
+          <h1 className="text-2xl font-bold text-foreground">Password reset</h1>
           <p className="text-muted-foreground text-sm">Your password has been updated. Redirecting to login...</p>
           <Link href="/login" className="inline-block mt-4 text-primary hover:text-primary/80 text-sm font-medium transition-colors">
               Go to login now
@@ -83,7 +83,7 @@ export default function ResetPasswordPage() {
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <div className="w-full max-w-md space-y-6">
         <div className="text-center space-y-2">
-          <h1 className="text-2xl font-bold text-white">Choose a new password</h1>
+          <h1 className="text-2xl font-bold text-foreground">Choose a new password</h1>
           <p className="text-muted-foreground text-sm">Enter your new password below.</p>
         </div>
 
@@ -106,7 +106,7 @@ export default function ResetPasswordPage() {
                 value={password}
                 onChange={(e) => { setPassword(e.target.value); setErrors(prev => ({ ...prev, password: "" })); }}
                 placeholder="At least 8 characters"
-                className={`w-full px-4 py-3 pr-12 rounded-lg bg-card border text-white placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary transition-colors ${
+                className={`w-full px-4 py-3 pr-12 rounded-lg bg-card border text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary transition-colors ${
                   errors.password ? "border-red-500" : "border-border"
                 }`}
 
@@ -139,7 +139,7 @@ export default function ResetPasswordPage() {
               value={confirmPassword}
               onChange={(e) => { setConfirmPassword(e.target.value); setErrors(prev => ({ ...prev, confirm: "" })); }}
               placeholder="Type your password again"
-              className={`w-full px-4 py-3 rounded-lg bg-card border text-white placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary transition-colors ${
+              className={`w-full px-4 py-3 rounded-lg bg-card border text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary transition-colors ${
                 errors.confirm ? "border-red-500" : "border-border"
               }`}
             />
@@ -152,7 +152,7 @@ export default function ResetPasswordPage() {
             type="submit"
             data-testid="button-submit"
             disabled={loading}
-            className="w-full py-3 rounded-lg bg-primary hover:bg-primary/90 text-white font-semibold text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full py-3 rounded-lg bg-primary hover:bg-primary/90 text-foreground font-semibold text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? "Resetting..." : "Reset password"}
           </button>

@@ -7,6 +7,7 @@ import type { FieldError } from "@/lib/inline-validation";
 import { scrollToFirstError, fieldBorderClass } from "@/lib/inline-validation";
 import { InlineFieldError } from "@/components/field-error";
 import { AppleSignInButton } from "@/components/apple-sign-in-button";
+import { OffloadLogo } from "@/components/offload-logo";
 
 export default function RegisterPage() {
   const [, navigate] = useLocation();
@@ -135,12 +136,15 @@ export default function RegisterPage() {
         </button>
 
         {/* Logo */}
-        <h1
-          data-testid="text-app-name"
-          className="text-3xl font-extrabold text-primary tracking-tight mb-3"
-        >
-          Offload
-        </h1>
+        <div className="flex items-center gap-2 mb-3">
+          <OffloadLogo size={36} />
+          <h1
+            data-testid="text-app-name"
+            className="text-3xl font-extrabold text-primary tracking-tight"
+          >
+            Offload
+          </h1>
+        </div>
 
         {/* Heading */}
         <h2 className="text-xl font-bold text-foreground mb-3">Create Account</h2>

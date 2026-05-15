@@ -118,8 +118,14 @@ function applyReorderPrefill(base: WizardState): { state: WizardState; startStep
   delete (window as any).__offload_reorder;
 
   const bags = Array.isArray(reorder.bags) && reorder.bags.length > 0
-    ? reorder.bags.map(b => ({ size: b.size as BagSize, quantity: b.quantity || 1 }))
+    ? reorder.bags.map(b => ({
+        size: (b.size in BAG_OPTIONS ? b.size : "small") as BagSize,
+        quantity: b.quantity || 1,
+      }))
     : base.bags;
+
+  // Default to today's date and first available time window for reorders
+  const today = new Date().toISOString().split("T")[0];
 
   return {
     state: {
@@ -130,6 +136,8 @@ function applyReorderPrefill(base: WizardState): { state: WizardState; startStep
       address: reorder.address || base.address,
       pickupAddressId: reorder.pickupAddressId ?? base.pickupAddressId,
       paymentMethodId: reorder.paymentMethodId || base.paymentMethodId,
+      pickupDate: base.pickupDate || today,
+      pickupTimeWindow: base.pickupTimeWindow || "8 AM – 10 AM",
     },
     // Jump to review step (7) so user can confirm and place
     startStep: 7,

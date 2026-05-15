@@ -529,11 +529,12 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
   function handleContinue() {
     // Prefill the order wizard via window globals.
     const tierName = extracted?.tierName || mapBagSize(editBagSize || extracted?.bagSize || null);
-    const speed = mapDeliverySpeed(editDeliverySpeed || extracted?.deliverySpeed || null);
+    // Pass canonical speed names (standard/next_day/same_day) matching wizard's normalizeDeliverySpeed
+    const rawSpeed = editDeliverySpeed || extracted?.deliverySpeed || "standard";
 
     (window as any).__offload_voice_prefill = {
       tierName,
-      deliverySpeed: speed,
+      deliverySpeed: rawSpeed,
       separated: extracted?.separated,
       clothingTypes: extracted?.clothingTypes ?? [],
       pickupAddress: editPickupAddress || extracted?.pickupAddress,

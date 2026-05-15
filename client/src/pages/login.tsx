@@ -6,6 +6,7 @@ import type { FieldError } from "@/lib/inline-validation";
 import { scrollToFirstError, fieldBorderClass } from "@/lib/inline-validation";
 import { InlineFieldError } from "@/components/field-error";
 import { AppleSignInButton } from "@/components/apple-sign-in-button";
+import { OffloadLogo } from "@/components/offload-logo";
 
 export default function LoginPage() {
   const [, navigate] = useLocation();
@@ -171,12 +172,15 @@ export default function LoginPage() {
     <div className="min-h-screen bg-background flex flex-col items-center px-6 pt-16 pb-8">
       <div className="w-full max-w-sm flex flex-col items-center">
         {/* Logo */}
-        <h1
-          data-testid="text-app-name"
-          className="text-3xl font-extrabold text-primary tracking-tight mb-12"
-        >
-          Offload
-        </h1>
+        <div className="flex flex-col items-center mb-12">
+          <OffloadLogo size={56} className="mb-3" />
+          <h1
+            data-testid="text-app-name"
+            className="text-3xl font-extrabold text-primary tracking-tight"
+          >
+            Offload
+          </h1>
+        </div>
 
         {/* Form */}
         <form onSubmit={handleLogin} className="w-full space-y-4">
