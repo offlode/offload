@@ -147,23 +147,24 @@ export function StepAddress({
   // Guards against stale fetchFields overwrites when user edits during in-flight request
   const selectionEpochRef = useRef(0);
 
-  // Bug B fix: local input state to avoid controlled-component concatenation
-  // when user does Cmd+A then types replacement text while parent state lags
-  const [localInput, setLocalInput] = useState(address);
-  const localInputSetBySelection = useRef(false);
-  const prevAddressRef = useRef(address);
+  // Bug B fix: single source of truth for the input field value.
+  // `inputValue` drives <Input value={}> AND the autocomplete request.
+  // Parent prop `address` is synced in one direction via useEffect.
+  const [inputValue, setInputValue] = useState(address ?? "");
+  const inputValueRef = useRef(inputValue);
 
-  // Sync parent → local when a suggestion is selected (flag set) OR when
-  // parent changes for a reason other than local typing (e.g., external reset)
+  // Keep ref in sync so debounced callbacks always read the latest value
+  useEffect(() => { inputValueRef.current = inputValue; }, [inputValue]);
+
+  // Sync parent → local only when parent changes externally (e.g. saved-address click).
+  // We track whether the local onChange is the source to avoid stale overwrites.
+  const localIsSource = useRef(false);
   useEffect(() => {
-    if (localInputSetBySelection.current) {
-      setLocalInput(address);
-      localInputSetBySelection.current = false;
-    } else if (address !== prevAddressRef.current && address !== localInput) {
-      // External change (not from our own onChange) — sync it
-      setLocalInput(address);
+    if (localIsSource.current) {
+      localIsSource.current = false;
+      return;
     }
-    prevAddressRef.current = address;
+    setInputValue(address ?? "");
   }, [address]);
 
   // Store latest refs for callbacks
@@ -272,8 +273,8 @@ export function StepAddress({
         sessionToken: getOrCreateSessionToken(),
         includedRegionCodes: ["us"],
         includedPrimaryTypes: ["address"],
-        languageCode: "en",
       };
+      console.warn("[Places] state check:", { inputValue: inputValueRef.current, requestInput: request.input });
       console.warn("[Places] fetchAutocompleteSuggestions request:", {
         input: request.input,
         hasSessionToken: !!request.sessionToken,
@@ -317,8 +318,8 @@ export function StepAddress({
     setSuggestions([]);
     setAutocompleteError("");
     const epoch = ++selectionEpochRef.current;
-    localInputSetBySelection.current = true;
-    setLocalInput(suggestion.text);
+    setInputValue(suggestion.text);
+    localIsSource.current = true;
     onAddressChangeRef.current(suggestion.text, suggestion.placeId);
 
     const placeObj = suggestion._place;
@@ -346,8 +347,8 @@ export function StepAddress({
       const city = findComp("locality") || findComp("sublocality") || findComp("administrative_area_level_2");
       const state = findComp("administrative_area_level_1", true);
 
-      localInputSetBySelection.current = true;
-      setLocalInput(formatted);
+      setInputValue(formatted);
+      localIsSource.current = true;
       onAddressChangeRef.current(formatted, suggestion.placeId);
       if (zip || (lat != null && lng != null)) {
         checkServiceArea({ zip, city, state, lat, lng });
@@ -454,16 +455,17 @@ export function StepAddress({
         </Label>
         <Input
           ref={autocompleteRef}
-          value={localInput}
+          value={inputValue}
           onChange={e => {
             const val = e.target.value;
-            setLocalInput(val);
+            setInputValue(val);
+            localIsSource.current = true;
             // Invalidate any in-flight fetchFields so stale results don't overwrite
             selectionEpochRef.current++;
             onAddressChange(val, "");
             onServiceAreaChange(null);
             setAutocompleteError("");
-            // Debounce autocomplete requests
+            // Debounce autocomplete requests — always pass val directly
             if (debounceRef.current) clearTimeout(debounceRef.current);
             debounceRef.current = setTimeout(() => fetchSuggestions(val), 300);
           }}
