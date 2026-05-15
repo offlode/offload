@@ -24,6 +24,7 @@ import {
 import {
   Accordion, AccordionContent, AccordionItem, AccordionTrigger,
 } from "@/components/ui/accordion";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useTheme } from "@/components/theme-provider";
@@ -256,6 +257,35 @@ export default function ProfilePage() {
 
   const { data: vendors } = useQuery<Vendor[]>({
     queryKey: ["/api/vendors"],
+  });
+
+  // Preferred laundromat state — Phase A adds laundromat_id to orders & PATCH /api/me
+  const [preferredLaundromatId, setPreferredLaundromatId] = useState<string>("");
+
+  // Initialize preferred laundromat from user data
+  useEffect(() => {
+    if (user && (user as any).preferredLaundromatId) {
+      setPreferredLaundromatId(String((user as any).preferredLaundromatId));
+    }
+  }, [user]);
+
+  const savePreferredLaundromat = useMutation({
+    mutationFn: async (laundromatId: string) => {
+      const res = await apiRequest("/api/me", {
+        method: "PATCH",
+        body: JSON.stringify({
+          preferred_laundromat_id: laundromatId || null,
+        }),
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
+      toast({ title: "Preferred laundromat saved" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
   });
 
   const updateUserMutation = useMutation({
@@ -848,6 +878,33 @@ export default function ProfilePage() {
                 ))}
               </div>
             </div>
+            {/* Preferred Laundromat */}
+            {vendors && vendors.length > 0 && (
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1 block">Preferred Laundromat</Label>
+                <p className="text-[11px] text-muted-foreground mb-2">Optionally pick a default from laundromats you've used</p>
+                <Select
+                  value={preferredLaundromatId}
+                  onValueChange={(v) => {
+                    setPreferredLaundromatId(v);
+                    savePreferredLaundromat.mutate(v);
+                  }}
+                >
+                  <SelectTrigger className="h-11 text-sm" data-testid="select-preferred-laundromat">
+                    <SelectValue placeholder="No preference" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">No preference</SelectItem>
+                    {vendors.map((v) => (
+                      <SelectItem key={v.id} value={String(v.id)}>
+                        {v.name}{v.certified ? " (Certified)" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
             <Button
               className="w-full"
               disabled={saveWashPrefsMutation.isPending}

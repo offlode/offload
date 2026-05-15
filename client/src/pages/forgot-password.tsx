@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
+import { OffloadLogo } from "@/components/offload-logo";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
@@ -41,9 +42,9 @@ export default function ForgotPasswordPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
             </svg>
           </div>
-          <h1 className="text-2xl font-bold text-white">Check your email</h1>
+          <h1 className="text-2xl font-bold text-foreground">Check your email</h1>
           <p className="text-muted-foreground text-sm leading-relaxed">
-            If an account with <span className="text-white font-medium">{email}</span> exists, we've sent a password reset link. Check your inbox and spam folder.
+            If an account with <span className="text-foreground font-medium">{email}</span> exists, we've sent a password reset link. Check your inbox and spam folder.
           </p>
           <p className="text-muted-foreground text-xs">The link expires in 1 hour.</p>
           <Link href="/login" className="inline-block mt-4 text-primary hover:text-primary/80 text-sm font-medium transition-colors">
@@ -58,7 +59,8 @@ export default function ForgotPasswordPage() {
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <div className="w-full max-w-md space-y-6">
         <div className="text-center space-y-2">
-          <h1 className="text-2xl font-bold text-white">Reset your password</h1>
+          <OffloadLogo size={48} className="mx-auto mb-4" />
+          <h1 className="text-2xl font-bold text-foreground">Reset your password</h1>
           <p className="text-muted-foreground text-sm">Enter your email and we'll send you a reset link.</p>
         </div>
 
@@ -74,7 +76,7 @@ export default function ForgotPasswordPage() {
               value={email}
               onChange={(e) => { setEmail(e.target.value); setError(""); }}
               placeholder="you@example.com"
-              className={`w-full px-4 py-3 rounded-lg bg-card border text-white placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary transition-colors ${
+              className={`w-full px-4 py-3 rounded-lg bg-card border text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary transition-colors ${
                 error ? "border-red-500" : "border-border"
               }`}
               autoFocus
@@ -88,7 +90,7 @@ export default function ForgotPasswordPage() {
             type="submit"
             data-testid="button-submit"
             disabled={loading}
-            className="w-full py-3 rounded-lg bg-primary hover:bg-primary/90 text-white font-semibold text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full py-3 rounded-lg bg-primary hover:bg-primary/90 text-foreground font-semibold text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? "Sending..." : "Send reset link"}
           </button>

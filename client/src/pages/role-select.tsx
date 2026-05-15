@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { ArrowLeft, ShoppingBag, LayoutGrid, Navigation } from "lucide-react";
+import { OffloadLogo } from "@/components/offload-logo";
 
 type Role = "customer" | "staff" | "driver";
 
@@ -49,12 +50,15 @@ export default function RoleSelectPage() {
         </button>
 
         {/* Logo */}
-        <h1
-          data-testid="text-app-name"
-          className="text-3xl font-extrabold text-primary tracking-tight mb-3"
-        >
-          Offload
-        </h1>
+        <div className="flex items-center gap-2 mb-3">
+          <OffloadLogo size={36} />
+          <h1
+            data-testid="text-app-name"
+            className="text-3xl font-extrabold text-primary tracking-tight"
+          >
+            Offload
+          </h1>
+        </div>
 
         {/* Heading */}
         <h2 className="text-xl font-bold text-foreground mb-1">Select Your Role</h2>

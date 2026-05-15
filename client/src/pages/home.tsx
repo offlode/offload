@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/contexts/auth-context";
 import { VoiceOrderModal } from "@/components/voice-order";
+import { OffloadLogo } from "@/components/offload-logo";
 import { apiRequest } from "@/lib/queryClient";
 import { friendlyStatus } from "@/lib/order-status";
 import type { Order, Vendor, Address, PaymentMethod } from "@shared/schema";
@@ -23,9 +24,7 @@ function LandingView() {
     <div className="pb-28 max-w-lg mx-auto">
       {/* Hero Section */}
       <div className="px-5 pt-12 pb-8 text-center">
-        <div className="w-20 h-20 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-6">
-          <Shirt className="w-10 h-10 text-primary" />
-        </div>
+        <OffloadLogo size={64} className="mx-auto mb-6" />
         <h1 className="text-3xl font-bold mb-3" data-testid="text-landing-title">
           Fresh clothes,<br />zero hassle.
         </h1>
@@ -102,7 +101,7 @@ function WashTile({ icon, title, description, priceHint, href }: WashTileProps) 
   return (
     <Link href={href}>
       <Card
-        className="p-4 min-w-[180px] max-w-[200px] shrink-0 snap-start cursor-pointer transition-all duration-200 hover:border-primary/40 hover:shadow-[0_0_20px_rgba(124,58,237,0.1)] active:scale-[0.97]"
+        className="p-4 min-w-[260px] w-[260px] shrink-0 snap-start cursor-pointer transition-all duration-200 hover:border-primary/40 hover:shadow-[0_0_20px_rgba(124,58,237,0.1)] active:scale-[0.97]"
         data-testid={`tile-${title.toLowerCase().replace(/\s+/g, "-")}`}
       >
         <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center mb-3 text-primary">
@@ -189,10 +188,15 @@ export default function HomePage() {
     <div className="pb-28 max-w-lg mx-auto">
       {/* ── Header / Greeting ── */}
       <div className="px-5 pt-6 pb-2">
-        <p className="text-muted-foreground text-sm">{greeting()},</p>
-        <h1 className="text-2xl font-bold mt-0.5" data-testid="text-greeting">
-          {user?.name || "there"}
-        </h1>
+        <div className="flex items-center gap-3 mb-1">
+          <OffloadLogo size={36} />
+          <div>
+            <p className="text-muted-foreground text-sm">{greeting()},</p>
+            <h1 className="text-2xl font-bold mt-0.5" data-testid="text-greeting">
+              {user?.name || "there"}
+            </h1>
+          </div>
+        </div>
         {defaultAddr && (
           <div className="flex items-center gap-1.5 mt-2 text-muted-foreground text-xs">
             <MapPin className="w-3.5 h-3.5 text-primary" />
@@ -293,7 +297,12 @@ export default function HomePage() {
             className="p-4 cursor-pointer border-emerald-500/20 bg-emerald-500/5 transition-all duration-200 hover:border-emerald-500/40 hover:shadow-[0_0_20px_rgba(34,197,94,0.08)] active:scale-[0.99]"
             onClick={() => {
               // Prefill wizard with last order's settings and navigate to review
-              const bags = (() => { try { return JSON.parse(lastOrder.bags || "[]"); } catch { return []; } })();
+              const rawBags = (() => { try { return JSON.parse(lastOrder.bags || "[]"); } catch { return []; } })();
+              // Normalize bags to { size, quantity } format regardless of backend field names
+              const bags = rawBags.map((b: any) => ({
+                size: b.size || b.bagSize || b.type || "small",
+                quantity: b.quantity || b.count || b.qty || 1,
+              }));
               const serviceType = lastOrder.serviceType || "wash_fold";
               const qs = `?service=${encodeURIComponent(serviceType)}`;
               // Store reorder data for wizard
@@ -328,7 +337,7 @@ export default function HomePage() {
       {/* ── Choose Your Wash Style — Quick Order Tiles ── */}
       <div className="mb-5">
         <h3 className="text-sm font-semibold px-5 mb-3">Choose Your Wash Style</h3>
-        <div className="flex gap-3 px-5 overflow-x-auto snap-x snap-mandatory pb-2 scrollbar-none" style={{ scrollbarWidth: "none" }}>
+        <div className="flex gap-3 px-5 pr-8 overflow-x-auto snap-x snap-mandatory pb-2 scrollbar-none" style={{ scrollbarWidth: "none" }}>
           <WashTile
             icon={<Shirt className="w-5 h-5" />}
             title="Standard Wash"
@@ -358,20 +367,20 @@ export default function HomePage() {
         <div className="grid grid-cols-2 gap-3">
           {/* Wash Preferences */}
           <Link href="/profile#wash-prefs">
-            <Card className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.98]" data-testid="card-wash-preferences">
-              <Settings2 className="w-5 h-5 text-primary mb-2" />
-              <p className="text-sm font-medium">Wash Preferences</p>
-              <p className="text-xs text-muted-foreground mt-0.5">Cold wash, hypoallergenic detergent</p>
-              <p className="text-xs text-primary mt-1.5 font-medium">Edit preferences →</p>
+            <Card className="p-4 h-[120px] flex flex-col cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.98]" data-testid="card-wash-preferences">
+              <Settings2 className="w-6 h-6 text-primary mb-2" />
+              <p className="text-sm font-semibold">Wash Preferences</p>
+              <p className="text-xs text-muted-foreground mt-0.5 flex-1">Cold wash, hypoallergenic</p>
+              <p className="text-xs text-primary font-medium">Edit preferences →</p>
             </Card>
           </Link>
 
           {/* Track Orders */}
           <Link href="/orders">
-            <Card className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.98] relative" data-testid="card-track-orders">
-              <ClipboardList className="w-5 h-5 text-primary mb-2" />
-              <p className="text-sm font-medium">Track Orders</p>
-              <p className="text-xs text-muted-foreground mt-0.5">
+            <Card className="p-4 h-[120px] flex flex-col cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.98] relative" data-testid="card-track-orders">
+              <ClipboardList className="w-6 h-6 text-primary mb-2" />
+              <p className="text-sm font-semibold">Track Orders</p>
+              <p className="text-xs text-muted-foreground mt-0.5 flex-1">
                 {activeOrders.length > 0 ? `${activeOrders.length} active order${activeOrders.length > 1 ? "s" : ""}` : "No active orders"}
               </p>
               {activeOrders.length > 0 && (

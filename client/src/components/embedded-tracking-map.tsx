@@ -124,12 +124,12 @@ export default function EmbeddedTrackingMap({
           map: mapRef.current,
           title: "Driver",
           icon: {
-            path: g.maps.SymbolPath.CIRCLE,
-            scale: 10,
+            path: g.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+            scale: 6,
             fillColor: "#7C3AED",
             fillOpacity: 1,
             strokeColor: "#ffffff",
-            strokeWeight: 3,
+            strokeWeight: 2,
           },
           zIndex: 999,
         });
@@ -156,7 +156,14 @@ export default function EmbeddedTrackingMap({
         position: { lat: pickup.lat, lng: pickup.lng },
         map: mapRef.current,
         title: "Pickup",
-        label: { text: "P", color: "white", fontSize: "12px", fontWeight: "700" },
+        icon: {
+          path: g.maps.SymbolPath.CIRCLE,
+          scale: 10,
+          fillColor: "#22C55E",
+          fillOpacity: 1,
+          strokeColor: "#ffffff",
+          strokeWeight: 3,
+        },
       });
     }
     if (delivery.lat && delivery.lng && !deliveryMarkerRef.current) {
@@ -164,7 +171,14 @@ export default function EmbeddedTrackingMap({
         position: { lat: delivery.lat, lng: delivery.lng },
         map: mapRef.current,
         title: "Delivery",
-        label: { text: "D", color: "white", fontSize: "12px", fontWeight: "700" },
+        icon: {
+          path: g.maps.SymbolPath.CIRCLE,
+          scale: 10,
+          fillColor: "#3B82F6",
+          fillOpacity: 1,
+          strokeColor: "#ffffff",
+          strokeWeight: 3,
+        },
       });
     }
   }, [pickup.lat, pickup.lng, delivery.lat, delivery.lng]);
