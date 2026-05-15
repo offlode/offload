@@ -147,23 +147,25 @@ export function StepAddress({
   // Guards against stale fetchFields overwrites when user edits during in-flight request
   const selectionEpochRef = useRef(0);
 
-  // Bug B fix: single source of truth for the input field value.
+  // Single source of truth for the input field value.
   // `inputValue` drives <Input value={}> AND the autocomplete request.
-  // Parent prop `address` is synced in one direction via useEffect.
+  // Parent prop `address` is synced in one direction: parent → local only
+  // when the parent prop changes to something we didn't push ourselves.
   const [inputValue, setInputValue] = useState(address ?? "");
   const inputValueRef = useRef(inputValue);
 
   // Keep ref in sync so debounced callbacks always read the latest value
   useEffect(() => { inputValueRef.current = inputValue; }, [inputValue]);
 
-  // Sync parent → local only when parent changes externally (e.g. saved-address click).
-  // We track whether the local onChange is the source to avoid stale overwrites.
-  const localIsSource = useRef(false);
+  // Track the last value we sent to the parent so we can distinguish
+  // external parent changes from echoes of our own updates.
+  const lastPushedToParent = useRef(address ?? "");
   useEffect(() => {
-    if (localIsSource.current) {
-      localIsSource.current = false;
-      return;
-    }
+    // If the parent prop matches what we last pushed, this is just our
+    // own update echoing back — don't overwrite the user's input.
+    if (address === lastPushedToParent.current) return;
+    // Genuine external change (e.g. saved-address picker) — sync it.
+    lastPushedToParent.current = address ?? "";
     setInputValue(address ?? "");
   }, [address]);
 
@@ -272,15 +274,7 @@ export function StepAddress({
         input,
         sessionToken: getOrCreateSessionToken(),
         includedRegionCodes: ["us"],
-        includedPrimaryTypes: ["address"],
       };
-      console.warn("[Places] state check:", { inputValue: inputValueRef.current, requestInput: request.input });
-      console.warn("[Places] fetchAutocompleteSuggestions request:", {
-        input: request.input,
-        hasSessionToken: !!request.sessionToken,
-        includedRegionCodes: request.includedRegionCodes,
-        includedPrimaryTypes: request.includedPrimaryTypes,
-      });
       const { suggestions: rawSuggestions } = await places.AutocompleteSuggestion
         .fetchAutocompleteSuggestions(request);
       if (!rawSuggestions || rawSuggestions.length === 0) {
@@ -319,7 +313,7 @@ export function StepAddress({
     setAutocompleteError("");
     const epoch = ++selectionEpochRef.current;
     setInputValue(suggestion.text);
-    localIsSource.current = true;
+    lastPushedToParent.current = suggestion.text;
     onAddressChangeRef.current(suggestion.text, suggestion.placeId);
 
     const placeObj = suggestion._place;
@@ -348,7 +342,7 @@ export function StepAddress({
       const state = findComp("administrative_area_level_1", true);
 
       setInputValue(formatted);
-      localIsSource.current = true;
+      lastPushedToParent.current = formatted;
       onAddressChangeRef.current(formatted, suggestion.placeId);
       if (zip || (lat != null && lng != null)) {
         checkServiceArea({ zip, city, state, lat, lng });
@@ -459,7 +453,7 @@ export function StepAddress({
           onChange={e => {
             const val = e.target.value;
             setInputValue(val);
-            localIsSource.current = true;
+            lastPushedToParent.current = val;
             // Invalidate any in-flight fetchFields so stale results don't overwrite
             selectionEpochRef.current++;
             onAddressChange(val, "");
