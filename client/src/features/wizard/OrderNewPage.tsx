@@ -548,7 +548,7 @@ export default function OrderNewPage() {
         <div className="max-w-lg mx-auto">
           {step === 7 ? (
             <Button
-              className="w-full h-12 text-base font-semibold"
+              className="w-full h-12 text-base font-semibold rounded-full"
               disabled={submitMutation.isPending || !quoteValid}
               onClick={() => submitMutation.mutate()}
               data-testid="button-place-order"
@@ -567,7 +567,7 @@ export default function OrderNewPage() {
               {step > 1 && (
                 <Button
                   variant="outline"
-                  className="h-12 px-6"
+                  className="h-12 px-6 rounded-full"
                   onClick={goBack}
                   data-testid="button-prev-step"
                 >
@@ -575,7 +575,7 @@ export default function OrderNewPage() {
                 </Button>
               )}
               <Button
-                className="flex-1 h-12 text-base font-semibold"
+                className="flex-1 h-12 text-base font-semibold rounded-full"
                 disabled={!canProceed()}
                 onClick={goNext}
                 data-testid="button-next-step"

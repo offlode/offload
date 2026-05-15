@@ -36,7 +36,7 @@ export function StepPayment({ selectedMethodId, onSelect }: StepPaymentProps) {
   return (
     <div className="px-5 space-y-4">
       <div>
-        <h2 className="text-lg font-bold mb-1">Payment Method</h2>
+        <h2 className="text-xl font-bold tracking-tight mb-1">Payment Method</h2>
         <p className="text-sm text-muted-foreground">
           Choose how you'd like to pay for this order.
         </p>
@@ -61,7 +61,7 @@ export function StepPayment({ selectedMethodId, onSelect }: StepPaymentProps) {
                 className="w-full text-left"
               >
                 <Card
-                  className={`p-4 cursor-pointer transition-all duration-200 ${
+                  className={`p-4 rounded-2xl cursor-pointer transition-all duration-200 ${
                     isSelected
                       ? "border-primary ring-2 ring-primary/20 bg-primary/5"
                       : "hover:border-primary/30"
@@ -98,7 +98,7 @@ export function StepPayment({ selectedMethodId, onSelect }: StepPaymentProps) {
           })}
         </div>
       ) : (
-        <Card className="p-8 text-center">
+        <Card className="p-8 text-center rounded-2xl">
           <div className="w-14 h-14 rounded-full bg-muted flex items-center justify-center mx-auto mb-3">
             <CreditCard className="w-7 h-7 text-muted-foreground" />
           </div>

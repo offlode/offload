@@ -68,7 +68,7 @@ export function StepSeparation({ value, separationFee, bags, onChange }: StepSep
   return (
     <div className="px-5 space-y-4">
       <div>
-        <h2 className="text-lg font-bold mb-1">Separate by Type?</h2>
+        <h2 className="text-xl font-bold tracking-tight mb-1">Separate by Type?</h2>
         <p className="text-sm text-muted-foreground">
           Want us to wash your clothes separately by clothing type?
         </p>
@@ -83,7 +83,7 @@ export function StepSeparation({ value, separationFee, bags, onChange }: StepSep
           className="text-left"
         >
           <Card
-            className={`p-5 cursor-pointer transition-all duration-200 text-center ${
+            className={`p-5 rounded-2xl cursor-pointer transition-all duration-200 text-center ${
               value === true
                 ? "border-primary ring-2 ring-primary/20 bg-primary/5"
                 : "hover:border-primary/30"
@@ -109,7 +109,7 @@ export function StepSeparation({ value, separationFee, bags, onChange }: StepSep
           className="text-left"
         >
           <Card
-            className={`p-5 cursor-pointer transition-all duration-200 text-center ${
+            className={`p-5 rounded-2xl cursor-pointer transition-all duration-200 text-center ${
               value === false
                 ? "border-primary ring-2 ring-primary/20 bg-primary/5"
                 : "hover:border-primary/30"
@@ -130,7 +130,7 @@ export function StepSeparation({ value, separationFee, bags, onChange }: StepSep
 
       {/* Separation fee disclosure */}
       {value === true && (
-        <Card className="p-4 bg-primary/5 border-primary/20">
+        <Card className="p-4 bg-primary/5 border-primary/20 rounded-2xl">
           <div className="flex items-start gap-3">
             <Shirt className="w-5 h-5 text-primary shrink-0 mt-0.5" />
             <div>
