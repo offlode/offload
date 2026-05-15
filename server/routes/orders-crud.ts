@@ -4,7 +4,7 @@ import { eq, sql } from "drizzle-orm";
 import * as schema from "@shared/schema";
 import { PRICING_TIERS } from "@shared/schema";
 import type { Order } from "@shared/schema";
-import { storage, db, addOrderCents } from "../storage";
+import { storage, db, pool, addOrderCents } from "../storage";
 import { pricingConfig } from "../pricing-config-service";
 import {
   calculatePricing,
@@ -103,7 +103,7 @@ export function registerOrdersCrudRoutes(app: Express) {
     // P2-004 + P2-013: centralized ownership check for ALL roles
     const user = (req as any).currentUser;
     const userRole = user?.role || "customer";
-    if (["admin", "manager", "support"].includes(userRole)) {
+    if (["admin", "super_admin", "manager", "support"].includes(userRole)) {
       // Admin/manager/support can access all orders
     } else if (userRole === "customer") {
       if (order.customerId !== user.id) {
@@ -120,6 +120,13 @@ export function registerOrdersCrudRoutes(app: Express) {
       if (!vendorProfile || order.vendorId !== vendorProfile.id) {
         return res.status(403).json({ error: "Access denied" });
       }
+    } else if (["laundromat_owner", "laundromat_employee"].includes(userRole)) {
+      // Phase A: laundromat staff can access orders assigned to their laundromat
+      const orderLmId = (order as any).laundromatId || (order as any).laundromat_id;
+      const userLmId = user.laundromatId || user.laundromat_id;
+      if (!orderLmId || !userLmId || orderLmId !== userLmId) {
+        return res.status(403).json({ error: "Access denied" });
+      }
     } else {
       return res.status(403).json({ error: "Access denied" });
     }
@@ -131,6 +138,21 @@ export function registerOrdersCrudRoutes(app: Express) {
     const customer = await storage.getUser(order.customerId);
     const consents = await storage.getConsentsByOrder(order.id);
     const review = await storage.getReviewByOrder(order.id);
+
+    // Phase A: fetch winning laundromat info if present
+    let laundromatInfo: { id: string; name: string } | null = null;
+    const orderLaundromatId = (order as any).laundromatId || (order as any).laundromat_id;
+    if (orderLaundromatId) {
+      try {
+        const { rows: lmRows } = await pool.query(
+          `SELECT id, name FROM laundromats WHERE id = $1`,
+          [orderLaundromatId],
+        );
+        if (lmRows.length > 0) {
+          laundromatInfo = { id: lmRows[0].id, name: lmRows[0].name };
+        }
+      } catch { /* ignore */ }
+    }
 
     // Mask sensitive info based on role
     const driverInfo = driver ? {
@@ -177,6 +199,7 @@ export function registerOrdersCrudRoutes(app: Express) {
       consents,
       review,
       slaStatus: order.slaDeadline ? checkSLAStatus(order) : "on_track",
+      laundromat: laundromatInfo,
     });
   });
 

@@ -27,7 +27,7 @@ export function registerUserRoutes(app: Express) {
 
   app.get("/api/users/:id", requireAuth(), async (req, res) => {
     const currentUserP = (req as any).currentUser;
-    if (currentUserP.role !== "admin" && currentUserP.role !== "manager" && currentUserP.id !== Number(String(req.params.id))) {
+    if (currentUserP.role !== "admin" && currentUserP.role !== "super_admin" && currentUserP.role !== "manager" && currentUserP.id !== Number(String(req.params.id))) {
       return res.status(403).json({ error: "Access denied" });
     }
     const user = await storage.getUser(Number(String(req.params.id)));
@@ -43,7 +43,7 @@ export function registerUserRoutes(app: Express) {
   app.patch("/api/users/:id", requireAuth(), async (req, res) => {
     const currentUserU = (req as any).currentUser;
     const targetId = Number(String(req.params.id));
-    if (targetId !== currentUserU.id && !["admin","manager"].includes(currentUserU.role)) {
+    if (targetId !== currentUserU.id && !["admin","manager","super_admin"].includes(currentUserU.role)) {
       return res.status(403).json({ error: "Access denied" });
     }
     const UserPatch = z.object({
@@ -54,13 +54,14 @@ export function registerUserRoutes(app: Express) {
       notificationPreferences: z.any().optional(),
       preferredDetergent: z.string().optional().nullable(),
       preferences: z.any().optional(),
+      preferredLaundromatId: z.string().optional().nullable(),
     }).strip();
     const parsed = UserPatch.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });
     }
     const body = parsed.data;
-    const SELF_FIELDS = ["name","email","phone","profileImage","notificationPreferences","preferredDetergent","preferences"] as const;
+    const SELF_FIELDS = ["name","email","phone","profileImage","notificationPreferences","preferredDetergent","preferences","preferredLaundromatId"] as const;
     const updateData: any = {};
     for (const k of SELF_FIELDS) { if ((body as any)[k] !== undefined) updateData[k] = (body as any)[k]; }
     const updated = await storage.updateUser(targetId, updateData);
@@ -73,9 +74,9 @@ export function registerUserRoutes(app: Express) {
   });
 
 
-  app.post("/api/users/:id/role", requireAuth(["admin"]), async (req, res) => {
+  app.post("/api/users/:id/role", requireAuth(["admin", "super_admin"]), async (req, res) => {
     const targetId = Number(String(req.params.id));
-    const RoleBody = z.object({ role: z.enum(["customer","driver","laundromat","vendor","staff","manager","admin"]) }).strip();
+    const RoleBody = z.object({ role: z.enum(["customer","driver","laundromat","vendor","staff","manager","admin","super_admin","laundromat_owner","laundromat_employee"]) }).strip();
     const parsed = RoleBody.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", issues: parsed.error.issues });

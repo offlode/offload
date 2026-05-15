@@ -10,7 +10,7 @@ export interface SessionData {
 
 export const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 export const SESSION_COOKIE = "offload_session";
-export const ADMIN_ROLES = ["admin", "manager"];
+export const ADMIN_ROLES = ["admin", "super_admin", "manager"];
 
 export const APPLE_ISSUER = "https://appleid.apple.com";
 export const APPLE_AUDIENCE = "com.offloadusa.app";
@@ -20,8 +20,11 @@ export const appleJWKS = createRemoteJWKSet(new URL("https://appleid.apple.com/a
 });
 
 export function isAdminOrManager(user: any): boolean {
-  return !!user && ADMIN_ROLES.includes(user.role);
+  return !!user && (ADMIN_ROLES.includes(user.role));
 }
+
+/** Convenience: roles that count as laundromat staff for dispatch purposes */
+export const LAUNDROMAT_ROLES = ["laundromat_owner", "laundromat_employee"];
 
 export function formatCents(cents: number): string {
   const safe = Number.isFinite(cents) ? cents : 0;
@@ -172,9 +175,13 @@ export function requireAuth(allowedRoles?: string[]) {
       if (allowedRoles.length === 0) {
         return res.status(403).json({ error: "Insufficient permissions" });
       }
-      // Admin is no longer an unconditional bypass. Endpoints that allow admin
-      // access must list "admin" explicitly in allowedRoles.
-      if (!allowedRoles.includes(user.role)) {
+      // super_admin inherits access from admin: if "admin" is in allowedRoles,
+      // super_admin is also allowed.
+      const effectiveRoles = [...allowedRoles];
+      if (effectiveRoles.includes("admin") && !effectiveRoles.includes("super_admin")) {
+        effectiveRoles.push("super_admin");
+      }
+      if (!effectiveRoles.includes(user.role)) {
         return res.status(403).json({ error: "Insufficient permissions" });
       }
     }

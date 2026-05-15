@@ -43,6 +43,9 @@ export const users = pgTable("users", {
   mustChangePassword: boolean("must_change_password").default(false),
   // Wave L: wash preferences JSON
   preferences: text("preferences"),
+  // Phase A: laundromat association (plain text, FK enforced at runtime to avoid circular import)
+  laundromatId: text("laundromat_id"),
+  preferredLaundromatId: text("preferred_laundromat_id"),
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({ id: true });
@@ -370,6 +373,10 @@ export const orders = pgTable("orders", {
   deliveredAt: timestamptz("delivered_at"),
   cancelledAt: timestamptz("cancelled_at"),
   slaCreditIssuedAt: timestamptz("sla_credit_issued_at"),
+  // Phase A: dispatch auction
+  laundromatId: text("laundromat_id"),
+  auctionStartedAt: timestamptz("auction_started_at"),
+  auctionWonAt: timestamptz("auction_won_at"),
   createdAt: timestamptz("created_at").notNull(),
   updatedAt: timestamptz("updated_at").notNull(),
 }, (table) => ({

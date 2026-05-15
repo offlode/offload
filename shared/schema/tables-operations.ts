@@ -229,6 +229,8 @@ export const chatSessions = pgTable("chat_sessions", {
   aiResolved: boolean("ai_resolved").default(false),
   escalatedTo: integer("escalated_to"), // admin userId
   messagesJson: text("messages_json"), // JSON: full conversation
+  // Phase A: laundromat association
+  laundromatId: text("laundromat_id"),
   createdAt: timestamptz("created_at").notNull(),
   resolvedAt: timestamptz("resolved_at"),
 });
