@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { requireRole } from "../middleware/requireRole";
-import { storage } from "../storage";
+import { storage, pool } from "../storage";
 
 export function registerPricingAdminRoutes(app: Express) {
   /**
@@ -11,7 +11,9 @@ export function registerPricingAdminRoutes(app: Express) {
     try {
       const tiers = await storage.getPricingTiers();
       const addOns = await storage.getAddOns();
-      res.json({ tiers, addOns });
+      // Return tiers array at top level (admin component expects PricingTier[])
+      // and embed addOns alongside for clients that need them
+      res.json(tiers);
     } catch (err: any) {
       console.error("[pricing-admin] GET error:", err);
       res.status(500).json({ error: "Internal server error" });
@@ -19,8 +21,55 @@ export function registerPricingAdminRoutes(app: Express) {
   });
 
   /**
+   * PATCH /api/pricing/:id
+   * super_admin/admin only — updates a single pricing tier
+   */
+  app.patch("/api/pricing/:id", requireRole("super_admin", "admin"), async (req, res) => {
+    try {
+      const tierId = Number(req.params.id);
+      const existing = await storage.getPricingTier(tierId);
+      if (!existing) return res.status(404).json({ error: "Tier not found" });
+
+      const data = req.body;
+      const updates: any = {};
+      if (data.flat_price !== undefined) {
+        updates.flatPrice = data.flat_price;
+        updates.flatPriceCents = Math.round(data.flat_price * 100);
+      }
+      if (data.overage_rate !== undefined) {
+        updates.overageRate = data.overage_rate;
+        updates.overageRateCents = Math.round(data.overage_rate * 100);
+      }
+      if (data.max_weight !== undefined) updates.maxWeight = data.max_weight;
+      if (data.is_active !== undefined) updates.isActive = data.is_active;
+
+      const fieldMap: Record<string, string> = {
+        flatPrice: "flat_price", flatPriceCents: "flat_price_cents",
+        overageRate: "overage_rate", overageRateCents: "overage_rate_cents",
+        maxWeight: "max_weight", isActive: "is_active",
+      };
+      const setClauses: string[] = [];
+      const values: any[] = [];
+      let idx = 1;
+      for (const [key, val] of Object.entries(updates)) {
+        const col = fieldMap[key];
+        if (col) { setClauses.push(`${col} = $${idx}`); values.push(val); idx++; }
+      }
+      if (setClauses.length > 0) {
+        values.push(tierId);
+        await pool.query(`UPDATE pricing_tiers SET ${setClauses.join(", ")} WHERE id = $${idx}`, values);
+      }
+      const updatedTiers = await storage.getPricingTiers();
+      res.json(updatedTiers);
+    } catch (err: any) {
+      console.error("[pricing-admin] PATCH /:id error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  /**
    * PATCH /api/pricing
-   * super_admin/admin only — updates pricing tiers
+   * super_admin/admin only — updates pricing tiers (bulk)
    * Body: { tiers: Array<{ id: number, flatPrice?: number, overageRate?: number, maxWeight?: number, isActive?: boolean }> }
    */
   app.patch("/api/pricing", requireRole("super_admin", "admin"), async (req, res) => {

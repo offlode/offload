@@ -166,15 +166,15 @@ const QUICK_ACTIONS = [
   { label: "Talk to Human", icon: <Phone className="w-3.5 h-3.5" />, prompt: "I'd like to speak with a human support agent." },
 ];
 
-export default function ChatPage() {
+export default function ChatPage({ initialOrderId }: { initialOrderId?: number } = {}) {
   const [, navigate] = useLocation();
   const { user } = useAuth();
   const { toast } = useToast();
 
-  const [activeOrderId, setActiveOrderId] = useState<number | null>(null);
+  const [activeOrderId, setActiveOrderId] = useState<number | null>(initialOrderId ?? null);
   const [inputValue, setInputValue] = useState("");
   const [isTyping, setIsTyping] = useState(false);
-  const [showConversations, setShowConversations] = useState(true);
+  const [showConversations, setShowConversations] = useState(!initialOrderId);
 
   // AI chat state (fallback when no order selected)
   const [aiMessages, setAiMessages] = useState<Array<{ id: string; role: "user" | "assistant"; content: string; timestamp: Date }>>([

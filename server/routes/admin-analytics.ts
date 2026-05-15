@@ -254,22 +254,36 @@ export function registerAdminAnalyticsRoutes(app: Express) {
     }
   });
 
-  // Admin: all users list
-  app.get("/api/admin/users", requireAuth(["admin"]), async (req, res) => {
+  // Admin: all users list (supports ?q= search and ?role= filter)
+  app.get("/api/admin/users", requireAuth(["admin", "super_admin"]), async (req, res) => {
     const pg = getPagination(req);
+    const searchQuery = req.query.q as string | undefined;
     const role = req.query.role as string | undefined;
+
+    // If ?q= is provided, delegate to search
+    if (searchQuery) {
+      const users = await storage.searchUsers(searchQuery);
+      return res.json(users.map(u => ({ ...u, password: undefined })));
+    }
+
     if (role) {
       const users = (await storage.getUsersByRole(role)).map(u => ({ ...u, password: undefined }));
       return res.json(paginatedResponse(users, pg));
     }
-    const allRoles = ["customer", "driver", "laundromat", "vendor", "manager", "admin"];
+    const allRoles = ["customer", "driver", "laundromat", "vendor", "manager", "admin", "super_admin", "laundromat_owner", "laundromat_employee"];
     const allUserArrays = await Promise.all(allRoles.map(r => storage.getUsersByRole(r)));
-    const allUsers = allUserArrays.flat().map(u => ({ ...u, password: undefined }));
+    // Deduplicate by user id
+    const seen = new Set<number>();
+    const allUsers = allUserArrays.flat().filter(u => {
+      if (seen.has(u.id)) return false;
+      seen.add(u.id);
+      return true;
+    }).map(u => ({ ...u, password: undefined }));
     res.json(paginatedResponse(allUsers, pg));
   });
 
   // Admin: search users
-  app.get("/api/admin/users/search", requireAuth(["admin"]), async (req, res) => {
+  app.get("/api/admin/users/search", requireAuth(["admin", "super_admin"]), async (req, res) => {
     const query = req.query.q as string;
     if (!query) return res.status(400).json({ error: "Search query required" });
     const users = await storage.searchUsers(query);

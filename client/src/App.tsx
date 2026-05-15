@@ -140,6 +140,9 @@ function AppRouter() {
       <Route path="/referrals">
         {() => <RequireAuth allowedRoles={["customer"]}><ReferralsPage /></RequireAuth>}
       </Route>
+      <Route path="/chat/order/:orderId">
+        {(params) => <RequireAuth allowedRoles={["customer"]}><ChatPage initialOrderId={params.orderId ? Number(params.orderId) : undefined} /></RequireAuth>}
+      </Route>
       <Route path="/chat">
         {() => <RequireAuth allowedRoles={["customer"]}><ChatPage /></RequireAuth>}
       </Route>

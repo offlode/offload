@@ -21,6 +21,7 @@ import {
   notifyUser,
   calculateFraudRisk,
 } from "../engines";
+import { dispatchOrder } from "../dispatch-engine";
 import { getPagination, paginatedResponse } from "./deps";
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
@@ -539,6 +540,22 @@ export function registerOrdersCrudRoutes(app: Express) {
         timestamp: now(),
         orderUpdate: { confirmedAt: now() },
       } as any);
+
+      // ── STEP 2.5: Dispatch auction — create offers for eligible laundromats ──
+      try {
+        const offerCount = await dispatchOrder(order.id);
+        if (offerCount > 0) {
+          await storage.createOrderEvent({
+            orderId: order.id,
+            eventType: "auction_started",
+            description: `Dispatch auction started — ${offerCount} laundromat(s) notified`,
+            actorRole: "system",
+            timestamp: now(),
+          });
+        }
+      } catch (dispatchErr: any) {
+        console.warn("[/api/orders] dispatch auction error (non-fatal):", dispatchErr?.message);
+      }
 
       // ── STEP 3: Auto-dispatch vendor ──
       const addr = await storage.getAddress(pickupAddressId);

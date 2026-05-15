@@ -216,7 +216,7 @@ export default function EmbeddedTrackingMap({
           )}
           {!isDriverPhase && (
             <p className="text-xs text-muted-foreground/60">
-              Live map appears once the driver is on the way
+              Map loading — pickup and delivery pins will appear shortly
             </p>
           )}
           {isDriverPhase && !cfg?.configured && (
