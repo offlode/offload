@@ -68,11 +68,12 @@ interface OrderDetail {
   specialInstructions: string;
   total: number;
   address: string;
+  pickupAddress?: string | AddressInfo;
   createdAt: string;
   driver?: DriverInfo;
   vendor?: VendorInfo;
-  pickupAddress?: AddressInfo;
-  dropoffAddress?: AddressInfo;
+  pickupCoords?: { lat: number; lng: number } | null;
+  deliveryCoords?: { lat: number; lng: number } | null;
   driverLat?: number;
   driverLng?: number;
 }
@@ -344,17 +345,17 @@ export default function OrderTrackingPage() {
                   : order.driver?.location ?? null
               }
               pickup={{
-                lat: order.pickupAddress?.lat || 0,
-                lng: order.pickupAddress?.lng || 0,
-                address: order.pickupAddress
-                  ? `${order.pickupAddress.street || ""}, ${order.pickupAddress.city || ""}`
+                lat: order.pickupCoords?.lat || 0,
+                lng: order.pickupCoords?.lng || 0,
+                address: typeof order.pickupAddress === "string"
+                  ? order.pickupAddress
                   : order.address || "",
               }}
               delivery={{
-                lat: order.dropoffAddress?.lat || 0,
-                lng: order.dropoffAddress?.lng || 0,
-                address: order.dropoffAddress
-                  ? `${order.dropoffAddress.street || ""}, ${order.dropoffAddress.city || ""}`
+                lat: order.deliveryCoords?.lat || 0,
+                lng: order.deliveryCoords?.lng || 0,
+                address: typeof order.pickupAddress === "string"
+                  ? order.pickupAddress
                   : order.address || "",
               }}
               isDriverPhase={!!(

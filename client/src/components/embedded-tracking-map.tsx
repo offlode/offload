@@ -65,11 +65,37 @@ export default function EmbeddedTrackingMap({
   const pickupMarkerRef = useRef<any>(null);
   const deliveryMarkerRef = useRef<any>(null);
   const [failed, setFailed] = useState(false);
+  const [geocodedPickup, setGeocodedPickup] = useState<{ lat: number; lng: number } | null>(null);
+  const geocodeAttemptedRef = useRef(false);
+
+  // Geocode the pickup address when no coordinates are provided
+  useEffect(() => {
+    if (pickup.lat && pickup.lng) return; // already have coords
+    if (!pickup.address || geocodeAttemptedRef.current) return;
+    if (!cfg?.configured || !cfg.mapsKey) return;
+
+    geocodeAttemptedRef.current = true;
+    loadMapsJs(cfg.mapsKey).then((g) => {
+      if (!g?.maps) return;
+      const geocoder = new g.maps.Geocoder();
+      geocoder.geocode({ address: pickup.address }, (results: any, status: string) => {
+        if (status === "OK" && results?.[0]) {
+          const loc = results[0].geometry.location;
+          setGeocodedPickup({ lat: loc.lat(), lng: loc.lng() });
+        }
+      });
+    });
+  }, [pickup.address, pickup.lat, pickup.lng, cfg?.configured, cfg?.mapsKey]);
+
+  // Resolve effective pickup coordinates (passed-in or geocoded)
+  const effectivePickup = (pickup.lat && pickup.lng)
+    ? { lat: pickup.lat, lng: pickup.lng }
+    : geocodedPickup;
 
   // Decide the best center available right now.
   const center =
     driverPos ||
-    (pickup.lat && pickup.lng ? { lat: pickup.lat, lng: pickup.lng } : null) ||
+    effectivePickup ||
     (delivery.lat && delivery.lng ? { lat: delivery.lat, lng: delivery.lng } : null);
 
   // Initialize map once key + center are ready.
@@ -95,11 +121,27 @@ export default function EmbeddedTrackingMap({
           gestureHandling: "cooperative",
           clickableIcons: false,
           styles: [
-            // Subtle dark-aware style; falls back to default colors if not supported.
             { featureType: "poi", stylers: [{ visibility: "off" }] },
             { featureType: "transit", stylers: [{ visibility: "off" }] },
           ],
         });
+
+        // Drop pickup marker immediately if we have coordinates
+        if (effectivePickup && !pickupMarkerRef.current) {
+          pickupMarkerRef.current = new g.maps.Marker({
+            position: effectivePickup,
+            map: mapRef.current,
+            title: "Pickup",
+            icon: {
+              path: g.maps.SymbolPath.CIRCLE,
+              scale: 10,
+              fillColor: "#22C55E",
+              fillOpacity: 1,
+              strokeColor: "#ffffff",
+              strokeWeight: 3,
+            },
+          });
+        }
       } catch (err) {
         console.warn("[EmbeddedTrackingMap] map init failed", err);
         setFailed(true);
@@ -145,15 +187,15 @@ export default function EmbeddedTrackingMap({
     }
   }, [driverPos?.lat, driverPos?.lng, isDriverPhase]);
 
-  // Drop pickup + delivery markers.
+  // Drop pickup + delivery markers when geocoded coords become available.
   useEffect(() => {
     if (!mapRef.current) return;
     const g = (window as any).google;
     if (!g?.maps) return;
 
-    if (pickup.lat && pickup.lng && !pickupMarkerRef.current) {
+    if (effectivePickup && !pickupMarkerRef.current) {
       pickupMarkerRef.current = new g.maps.Marker({
-        position: { lat: pickup.lat, lng: pickup.lng },
+        position: effectivePickup,
         map: mapRef.current,
         title: "Pickup",
         icon: {
@@ -165,6 +207,7 @@ export default function EmbeddedTrackingMap({
           strokeWeight: 3,
         },
       });
+      mapRef.current.panTo(effectivePickup);
     }
     if (delivery.lat && delivery.lng && !deliveryMarkerRef.current) {
       deliveryMarkerRef.current = new g.maps.Marker({
@@ -181,7 +224,7 @@ export default function EmbeddedTrackingMap({
         },
       });
     }
-  }, [pickup.lat, pickup.lng, delivery.lat, delivery.lng]);
+  }, [effectivePickup?.lat, effectivePickup?.lng, delivery.lat, delivery.lng]);
 
   // ── Fallback rendering ───────────────────────────────────────────
   // Reason 1: Maps key not configured for this environment.
@@ -216,7 +259,7 @@ export default function EmbeddedTrackingMap({
           )}
           {!isDriverPhase && (
             <p className="text-xs text-muted-foreground/60">
-              Map loading — pickup and delivery pins will appear shortly
+              Live map appears once the driver is on the way
             </p>
           )}
           {isDriverPhase && !cfg?.configured && (
