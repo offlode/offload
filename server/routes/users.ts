@@ -145,6 +145,12 @@ export function registerUserRoutes(app: Express) {
     const pg = getPagination(req);
     const all = await storage.getVendors();
     if (isAdminOrManager(cu) || cu.role === "laundromat" || cu.role === "vendor" || cu.role === "support") {
+      // Vendor-scoped owners only see their own vendor
+      const scopedVendorId = cu.vendorId ? Number(cu.vendorId) : null;
+      if (scopedVendorId) {
+        const scoped = all.filter((v: any) => v.id === scopedVendorId);
+        return res.json(paginatedResponse(scoped, pg));
+      }
       return res.json(paginatedResponse(all, pg));
     }
     // Customer / driver view

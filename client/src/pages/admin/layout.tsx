@@ -10,6 +10,7 @@ import {
   Tooltip, TooltipContent, TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { NotificationBell } from "@/components/notification-bell";
+import { OffloadLogo } from "@/components/offload-logo";
 import { useAuth } from "@/contexts/auth-context";
 
 const baseSidebarItems = [
@@ -124,7 +125,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
         <div className="p-3 border-b border-border">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-              <Package className="w-[18px] h-[18px] text-primary" />
+              <OffloadLogo size={18} />
             </div>
             {!collapsed && (
               <div className="min-w-0 flex-1">

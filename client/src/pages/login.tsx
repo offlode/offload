@@ -7,10 +7,12 @@ import { scrollToFirstError, fieldBorderClass } from "@/lib/inline-validation";
 import { InlineFieldError } from "@/components/field-error";
 import { AppleSignInButton } from "@/components/apple-sign-in-button";
 import { OffloadLogo } from "@/components/offload-logo";
+import { useI18n } from "@/i18n";
 
 export default function LoginPage() {
   const [, navigate] = useLocation();
   const { login, pending2FA, verify2FA } = useAuth();
+  const { t } = useI18n();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -84,9 +86,18 @@ export default function LoginPage() {
     switch (role) {
       case "customer": navigate("/"); break;
       case "driver": navigate("/driver"); break;
-      case "laundromat": navigate("/staff"); break;
+      case "laundromat":
+      case "vendor":
+      case "staff":
+      case "laundromat_owner":
+      case "laundromat_employee":
+      case "operator":
+      case "wash_operator":
+        navigate("/staff"); break;
       case "manager": navigate("/manager"); break;
-      case "admin": navigate("/admin"); break;
+      case "admin":
+      case "super_admin":
+        navigate("/admin"); break;
       default: navigate("/");
     }
   }
@@ -279,6 +290,18 @@ export default function LoginPage() {
             className="text-primary hover:text-primary/80 font-semibold transition-colors"
           >
             Sign Up
+          </button>
+        </p>
+
+        {/* Partner CTA */}
+        <p className="mt-4 text-xs text-muted-foreground">
+          <button
+            data-testid="link-become-partner"
+            type="button"
+            onClick={() => navigate("/become-a-partner")}
+            className="text-primary hover:text-primary/80 transition-colors"
+          >
+            {t("partner.cta")}
           </button>
         </p>
       </div>
