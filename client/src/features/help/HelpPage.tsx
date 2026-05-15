@@ -67,7 +67,7 @@ const FAQ_ITEMS = [
 
 const QUICK_LINKS = [
   { label: "About Offload Certified", icon: Shield, href: "/profile#certified" },
-  { label: "Custom Wash Preferences", icon: Settings, href: "/profile#wash-prefs" },
+  { label: "Wash Preferences", icon: Settings, href: "/profile#wash-prefs" },
   { label: "Manage Addresses", icon: MapPin, href: "/addresses" },
   { label: "Payment Methods", icon: CreditCard, href: "/payments" },
 ];

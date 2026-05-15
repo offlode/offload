@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/contexts/auth-context";
 import { useToast } from "@/hooks/use-toast";
+import { useI18n } from "@/i18n";
 
 interface StepAddressProps {
   address: string;
@@ -128,6 +129,8 @@ export function StepAddress({
   onServiceAreaChange,
 }: StepAddressProps) {
   const { user } = useAuth();
+  const { t } = useI18n();
+  const coverageNotice = t("wizard.coverage_notice");
   const autocompleteRef = useRef<HTMLInputElement>(null);
   const [notifyRequested, setNotifyRequested] = useState(false);
   const [notifyLoading, setNotifyLoading] = useState(false);
@@ -515,10 +518,7 @@ export function StepAddress({
           <div className="mt-2 rounded-xl bg-amber-500/10 border border-amber-500/30 p-3">
             <p className="text-sm text-amber-600 font-medium flex items-center gap-1.5">
               <AlertCircle className="w-4 h-4 flex-shrink-0" />
-              We'll confirm coverage after you place the order. If we can't serve your address, we'll fully refund within 1 business day.
-            </p>
-            <p className="text-xs text-amber-600/80 mt-1 ml-[22px]">
-              Confirmaremos la cobertura después de realizar el pedido. Si no podemos atender su dirección, le reembolsaremos completamente en 1 día hábil.
+              {coverageNotice}
             </p>
           </div>
         )}

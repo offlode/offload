@@ -9,6 +9,8 @@ import { AuthProvider, useAuth } from "@/contexts/auth-context";
 import { BottomNav } from "@/components/bottom-nav";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { NotificationBell } from "@/components/notification-bell";
+import { I18nProvider } from "@/components/i18n-provider";
+import { LanguageSwitcher } from "@/components/language-switcher";
 import { useEffect } from "react";
 import { useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
@@ -173,6 +175,20 @@ function AppRouter() {
         {() => <RequireAuth allowedRoles={["customer"]}><SupportPage /></RequireAuth>}
       </Route>
 
+      {/* Route aliases (BUG-8, 9, 10, 15) */}
+      <Route path="/settings">
+        {() => <RequireAuth><Redirect to="/profile" /></RequireAuth>}
+      </Route>
+      <Route path="/payment-methods">
+        {() => <RequireAuth><Redirect to="/payments" /></RequireAuth>}
+      </Route>
+      <Route path="/saved-addresses">
+        {() => <RequireAuth><Redirect to="/addresses" /></RequireAuth>}
+      </Route>
+      <Route path="/wash-preferences">
+        {() => <RequireAuth><Redirect to="/profile?openWashPrefs=1" /></RequireAuth>}
+      </Route>
+
       {/* Staff routes */}
       <Route path="/staff">
         {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff"]}><StaffLayout><StaffOrdersPage /></StaffLayout></RequireAuth>}
@@ -311,8 +327,17 @@ function AppContent() {
       {user && (
         <div className="sticky top-0 z-40 bg-background/95 backdrop-blur-xl border-b border-border px-4 py-2">
           <div className="flex items-center justify-between max-w-lg mx-auto">
-            <h1 className="text-sm font-semibold text-foreground">Offload</h1>
-            <NotificationBell />
+            <div className="flex items-center gap-2">
+              <svg width="24" height="24" viewBox="0 0 100 100" className="text-primary shrink-0" aria-hidden="true">
+                <path d="M50 10 C25 10 10 30 10 50 C10 70 30 90 50 90 C55 90 60 88 64 85 C50 80 40 68 40 55 C40 38 55 25 72 25 C76 25 80 26 83 28 C78 17 65 10 50 10Z" fill="currentColor" />
+                <path d="M72 30 C58 30 45 42 45 55 C45 68 55 78 68 80 C82 78 90 66 90 52 C90 38 82 30 72 30Z" fill="currentColor" opacity="0.6" />
+              </svg>
+              <span className="text-sm font-bold text-foreground">Offload</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <LanguageSwitcher variant="icon" />
+              <NotificationBell />
+            </div>
           </div>
         </div>
       )}
@@ -329,19 +354,21 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <AuthProvider>
-          <TooltipProvider>
+        <I18nProvider>
+          <AuthProvider>
+            <TooltipProvider>
 
-            <div className="min-h-screen bg-background">
-              <Router hook={useHashLocation}>
-                <ErrorBoundary>
-                  <AppContent />
-                </ErrorBoundary>
-              </Router>
-            </div>
-            <Toaster />
-          </TooltipProvider>
-        </AuthProvider>
+              <div className="min-h-screen bg-background">
+                <Router hook={useHashLocation}>
+                  <ErrorBoundary>
+                    <AppContent />
+                  </ErrorBoundary>
+                </Router>
+              </div>
+              <Toaster />
+            </TooltipProvider>
+          </AuthProvider>
+        </I18nProvider>
       </ThemeProvider>
     </QueryClientProvider>
   );

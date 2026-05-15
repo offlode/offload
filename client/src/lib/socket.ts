@@ -4,18 +4,11 @@ let socket: Socket | null = null;
 
 export function getSocket(userId: number, role: string): Socket {
   if (!socket) {
-    socket = io(window.location.origin, {
+    const baseUrl = import.meta.env.VITE_API_URL || window.location.origin;
+    socket = io(baseUrl, {
       path: "/ws",
       auth: { userId, role },
       transports: ["websocket", "polling"],
-    });
-
-    socket.on("connect", () => {
-      console.log("[Socket.io] Connected:", socket?.id);
-    });
-
-    socket.on("disconnect", (reason) => {
-      console.log("[Socket.io] Disconnected:", reason);
     });
 
     socket.on("connect_error", (err) => {

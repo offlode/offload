@@ -1,12 +1,14 @@
 import { Minus, Plus, Package } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { BAG_OPTIONS, type BagSize } from "@/lib/design-tokens";
+import { Badge } from "@/components/ui/badge";
+import { BAG_OPTIONS, BAG_PRICES, SIGNATURE_PREMIUM, type BagSize } from "@/lib/design-tokens";
 import type { BagSelection } from "./types";
 
 interface StepBagsProps {
   bags: BagSelection[];
   onChange: (bags: BagSelection[]) => void;
+  serviceType?: string;
 }
 
 const BAG_SIZES: { size: BagSize; icon: string }[] = [
@@ -16,7 +18,8 @@ const BAG_SIZES: { size: BagSize; icon: string }[] = [
   { size: "xl", icon: "XL" },
 ];
 
-export function StepBags({ bags, onChange }: StepBagsProps) {
+export function StepBags({ bags, onChange, serviceType }: StepBagsProps) {
+  const isSignature = serviceType === "wash_fold_signature";
   const getQuantity = (size: BagSize) => bags.find(b => b.size === size)?.quantity ?? 0;
 
   const updateQuantity = (size: BagSize, delta: number) => {
@@ -69,7 +72,17 @@ export function StepBags({ bags, onChange }: StepBagsProps) {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between mb-0.5">
-                    <p className="text-sm font-semibold">{tier.label}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-semibold">{tier.label}</p>
+                      {isSignature && (
+                        <Badge variant="secondary" className="text-[10px] bg-primary/15 text-primary px-1.5 py-0">
+                          +${SIGNATURE_PREMIUM}/bag
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="text-sm font-bold text-primary" data-testid={`bag-${size}-price`}>
+                      ${(isSignature ? BAG_PRICES[size].signature : BAG_PRICES[size].standard).toFixed(2)}
+                    </p>
                   </div>
                   <p className="text-xs text-muted-foreground">
                     Up to {tier.maxLbs} lbs
