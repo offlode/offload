@@ -41,6 +41,28 @@ export function registerLaundromatRoutes(app: Express) {
   });
 
   /**
+   * GET /api/laundromats/me
+   * Returns the laundromat profile for the current laundromat_owner or laundromat_employee
+   */
+  app.get("/api/laundromats/me", requireRole("laundromat_owner", "laundromat_employee"), async (req, res) => {
+    try {
+      const user = (req as any).currentUser;
+      const laundromatId = user.laundromatId || user.laundromat_id;
+      if (!laundromatId) {
+        return res.status(404).json({ error: "No laundromat linked to your account" });
+      }
+      const { rows } = await pool.query(`SELECT * FROM laundromats WHERE id = $1`, [laundromatId]);
+      if (rows.length === 0) {
+        return res.status(404).json({ error: "Laundromat not found" });
+      }
+      res.json(rows[0]);
+    } catch (err: any) {
+      console.error("[laundromats] GET /me error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  /**
    * GET /api/laundromats/:id
    */
   app.get("/api/laundromats/:id", requireRole("super_admin", "admin", "manager", "laundromat_owner", "laundromat_employee"), async (req, res) => {
@@ -151,31 +173,40 @@ export function registerLaundromatRoutes(app: Express) {
       const ownerFields = [
         "name", "address_line1", "city", "state", "zip",
         "hours_json", "accepts_standard", "accepts_signature", "accepts_custom",
-        "capacity_bags_per_day",
+        "signature_premium_cents", "capacity_bags_per_day", "service_radius_miles",
       ];
 
       const isAdmin = ["super_admin", "admin"].includes(user.role);
       const allowedFields = isAdmin ? adminFields : ownerFields;
 
-      // Map camelCase body to snake_case
+      // Map body keys (camelCase or snake_case) to snake_case SQL columns
       const fieldMap: Record<string, string> = {
         name: "name",
         ownerUserId: "owner_user_id",
+        owner_user_id: "owner_user_id",
         addressLine1: "address_line1",
+        address_line1: "address_line1",
         city: "city",
         state: "state",
         zip: "zip",
         lat: "lat",
         lng: "lng",
         serviceRadiusMiles: "service_radius_miles",
+        service_radius_miles: "service_radius_miles",
         certified: "certified",
         active: "active",
         acceptsStandard: "accepts_standard",
+        accepts_standard: "accepts_standard",
         acceptsSignature: "accepts_signature",
+        accepts_signature: "accepts_signature",
         acceptsCustom: "accepts_custom",
+        accepts_custom: "accepts_custom",
         signaturePremiumCents: "signature_premium_cents",
+        signature_premium_cents: "signature_premium_cents",
         capacityBagsPerDay: "capacity_bags_per_day",
+        capacity_bags_per_day: "capacity_bags_per_day",
         hoursJson: "hours_json",
+        hours_json: "hours_json",
       };
 
       const setClauses: string[] = [];

@@ -63,7 +63,7 @@ export function registerOrdersCrudRoutes(app: Express) {
     const pg = getPagination(req);
 
     // Admin/manager can see all orders with optional filters
-    if (["admin", "manager", "support"].includes(userRole)) {
+    if (["admin", "super_admin", "manager", "support"].includes(userRole)) {
       const customerId = req.query.customerId ? Number(req.query.customerId) : undefined;
       const vendorId = req.query.vendorId ? Number(req.query.vendorId) : undefined;
       const driverId = req.query.driverId ? Number(req.query.driverId) : undefined;
@@ -79,6 +79,19 @@ export function registerOrdersCrudRoutes(app: Express) {
     if (["laundromat","vendor"].includes(userRole)) {
       const vendorProfile = await storage.getVendorByUserId(user.id);
       if (vendorProfile) return res.json(await storage.getOrdersByVendor(vendorProfile.id));
+      return res.json([]);
+    }
+
+    // Laundromat owner/employee sees orders assigned to their laundromat
+    if (["laundromat_owner", "laundromat_employee"].includes(userRole)) {
+      const userLmId = user.laundromatId || user.laundromat_id;
+      if (userLmId) {
+        const { rows } = await pool.query(
+          `SELECT o.*, u.name AS customer_name FROM orders o LEFT JOIN users u ON o.customer_id = u.id WHERE o.laundromat_id = $1 ORDER BY o.created_at DESC`,
+          [userLmId],
+        );
+        return res.json(rows);
+      }
       return res.json([]);
     }
 
@@ -139,6 +152,22 @@ export function registerOrdersCrudRoutes(app: Express) {
     const customer = await storage.getUser(order.customerId);
     const consents = await storage.getConsentsByOrder(order.id);
     const review = await storage.getReviewByOrder(order.id);
+
+    // Resolve pickup/delivery address coordinates for map rendering
+    let pickupCoords: { lat: number; lng: number } | null = null;
+    let deliveryCoords: { lat: number; lng: number } | null = null;
+    if (order.pickupAddressId) {
+      const pickupAddr = await storage.getAddress(order.pickupAddressId);
+      if (pickupAddr?.lat && pickupAddr?.lng) {
+        pickupCoords = { lat: Number(pickupAddr.lat), lng: Number(pickupAddr.lng) };
+      }
+    }
+    if ((order as any).deliveryAddressId) {
+      const deliveryAddr = await storage.getAddress((order as any).deliveryAddressId);
+      if (deliveryAddr?.lat && deliveryAddr?.lng) {
+        deliveryCoords = { lat: Number(deliveryAddr.lat), lng: Number(deliveryAddr.lng) };
+      }
+    }
 
     // Phase A: fetch winning laundromat info if present
     let laundromatInfo: { id: string; name: string } | null = null;
@@ -201,6 +230,8 @@ export function registerOrdersCrudRoutes(app: Express) {
       review,
       slaStatus: order.slaDeadline ? checkSLAStatus(order) : "on_track",
       laundromat: laundromatInfo,
+      pickupCoords,
+      deliveryCoords,
     });
   });
 

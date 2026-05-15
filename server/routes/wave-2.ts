@@ -6,7 +6,7 @@
 // =====================================================================
 
 import type { Express, Request, Response } from "express";
-import { db } from "../storage";
+import { db, pool } from "../storage";
 import { storage } from "../storage";
 import { requireAuth } from "../session";
 import { now } from "../engines";
@@ -169,70 +169,84 @@ export function registerWave2Routes(app: Express): void {
     }
   });
 
-  // GET /api/vendors/me/kpis — live vendor KPIs
-  app.get("/api/vendors/me/kpis", requireAuth(["manager", "admin", "laundromat"]), async (req: Request, res: Response) => {
+  // GET /api/vendors/me/kpis — live vendor/laundromat KPIs
+  app.get("/api/vendors/me/kpis", requireAuth(["manager", "admin", "laundromat", "laundromat_owner", "laundromat_employee"]), async (req: Request, res: Response) => {
     try {
       const user = (req as any).currentUser;
+      const laundromatId = user.laundromatId || user.laundromat_id;
       const vendorId = await resolveVendorId(user);
-      if (!vendorId) return res.status(404).json({ error: "No vendor associated with your account" });
+      const useLaundromat = !!laundromatId && ["laundromat_owner", "laundromat_employee"].includes(user.role);
+
+      if (!vendorId && !useLaundromat) return res.status(404).json({ error: "No vendor associated with your account" });
 
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
       const todayIso = todayStart.toISOString();
 
-      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      // Build the filter condition depending on whether we filter by laundromatId or vendorId
+      const filterCol = useLaundromat ? "laundromat_id" : "vendor_id";
+      const filterVal = useLaundromat ? laundromatId : vendorId;
 
-      // New orders (pending/confirmed)
-      const [newCount] = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(orders)
-        .where(and(
-          eq(orders.vendorId, vendorId),
-          inArray(orders.status, ["pending", "confirmed"]),
-        ));
+      // Orders today
+      const ordersTodayRes = await pool.query(
+        `SELECT count(*) FROM orders WHERE ${filterCol} = $1 AND created_at >= $2`,
+        [filterVal, todayIso],
+      );
 
-      // Active orders (in-progress statuses)
+      // Active orders
       const activeStatuses = [
-        "scheduled", "driver_assigned", "driver_en_route_pickup",
-        "arrived_pickup", "picked_up", "driver_en_route_facility",
-        "at_facility", "processing", "at_vendor", "weighed", "sorted",
-        "washing", "drying", "folding", "wash_complete",
+        "scheduled", "confirmed", "driver_assigned", "picked_up",
+        "at_facility", "washing", "wash_complete",
         "folded_packaged", "final_weight_verified", "ready_for_delivery",
-        "driver_en_route_delivery", "arrived_delivery",
+        "out_for_delivery",
       ];
-      const [activeCount] = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(orders)
-        .where(and(
-          eq(orders.vendorId, vendorId),
-          inArray(orders.status, activeStatuses),
-        ));
+      const activeRes = await pool.query(
+        `SELECT count(*) FROM orders WHERE ${filterCol} = $1 AND status = ANY($2)`,
+        [filterVal, activeStatuses],
+      );
 
       // Completed today
-      const [completedToday] = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(orders)
-        .where(and(
-          eq(orders.vendorId, vendorId),
-          inArray(orders.status, ["delivered", "completed"]),
-          gte(orders.deliveredAt, todayIso),
-        ));
+      const completedRes = await pool.query(
+        `SELECT count(*) FROM orders WHERE ${filterCol} = $1 AND status IN ('delivered','completed') AND delivered_at >= $2`,
+        [filterVal, todayIso],
+      );
 
-      // Revenue this week (cents)
-      const [revenueWeek] = await db
-        .select({ total: sql<number>`coalesce(sum(${orders.totalCents}), 0)` })
-        .from(orders)
-        .where(and(
-          eq(orders.vendorId, vendorId),
-          inArray(orders.status, ["delivered", "completed"]),
-          gte(orders.createdAt, weekAgo),
-        ));
+      // Revenue today (cents)
+      const revenueRes = await pool.query(
+        `SELECT coalesce(sum(total_cents), 0) AS total FROM orders WHERE ${filterCol} = $1 AND status IN ('delivered','completed') AND delivered_at >= $2`,
+        [filterVal, todayIso],
+      );
+
+      // Pending offers (laundromat owners only)
+      let pendingOffers = 0;
+      if (useLaundromat) {
+        const offersRes = await pool.query(
+          `SELECT count(*) FROM dispatch_offers WHERE laundromat_id = $1 AND status = 'pending'`,
+          [laundromatId],
+        );
+        pendingOffers = Number(offersRes.rows[0]?.count || 0);
+      }
+
+      // Employees active
+      let employeesActive = 0;
+      if (useLaundromat) {
+        const empRes = await pool.query(
+          `SELECT count(*) FROM users WHERE laundromat_id = $1 AND role = 'laundromat_employee'`,
+          [laundromatId],
+        );
+        employeesActive = Number(empRes.rows[0]?.count || 0);
+      }
 
       res.json({
-        new_orders: Number(newCount?.count || 0),
-        active_orders: Number(activeCount?.count || 0),
-        completed_today: Number(completedToday?.count || 0),
-        revenue_this_week_cents: Number(revenueWeek?.total || 0),
+        orders_today: Number(ordersTodayRes.rows[0]?.count || 0),
+        active_orders: Number(activeRes.rows[0]?.count || 0),
+        completed_today: Number(completedRes.rows[0]?.count || 0),
+        revenue_today_cents: Number(revenueRes.rows[0]?.total || 0),
+        pending_offers: pendingOffers,
+        employees_active: employeesActive,
+        // Legacy fields for backward compat
+        new_orders: Number(ordersTodayRes.rows[0]?.count || 0),
+        revenue_this_week_cents: Number(revenueRes.rows[0]?.total || 0),
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
