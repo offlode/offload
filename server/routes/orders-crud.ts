@@ -63,15 +63,36 @@ export function registerOrdersCrudRoutes(app: Express) {
     const pg = getPagination(req);
 
     // Admin/manager can see all orders with optional filters
+    // Vendor-scoped owners (user.vendorId set) only see their own vendor's orders
     if (["admin", "super_admin", "manager", "support"].includes(userRole)) {
+      const scopedVendorId = user.vendorId ? Number(user.vendorId) : null;
       const customerId = req.query.customerId ? Number(req.query.customerId) : undefined;
       const vendorId = req.query.vendorId ? Number(req.query.vendorId) : undefined;
       const driverId = req.query.driverId ? Number(req.query.driverId) : undefined;
       const status = typeof req.query.status === "string" ? req.query.status : undefined;
-      if (customerId) return res.json(paginatedResponse(await Promise.all((await storage.getOrdersByCustomer(customerId)).map(enrichAdminOrder)), pg));
-      if (vendorId) return res.json(paginatedResponse(await Promise.all((await storage.getOrdersByVendor(vendorId)).map(enrichAdminOrder)), pg));
-      if (driverId) return res.json(paginatedResponse(await Promise.all((await storage.getOrdersByDriver(driverId)).map(enrichAdminOrder)), pg));
-      if (status) return res.json(paginatedResponse(await Promise.all((await storage.getOrdersByStatus(status)).map(enrichAdminOrder)), pg));
+
+      // If vendor-scoped, force filter to their vendor
+      const effectiveVendorId = scopedVendorId || vendorId;
+
+      if (customerId) {
+        let orders = await storage.getOrdersByCustomer(customerId);
+        if (scopedVendorId) orders = orders.filter((o: any) => o.vendorId === scopedVendorId);
+        return res.json(paginatedResponse(await Promise.all(orders.map(enrichAdminOrder)), pg));
+      }
+      if (effectiveVendorId) return res.json(paginatedResponse(await Promise.all((await storage.getOrdersByVendor(effectiveVendorId)).map(enrichAdminOrder)), pg));
+      if (driverId) {
+        let orders = await storage.getOrdersByDriver(driverId);
+        if (scopedVendorId) orders = orders.filter((o: any) => o.vendorId === scopedVendorId);
+        return res.json(paginatedResponse(await Promise.all(orders.map(enrichAdminOrder)), pg));
+      }
+      if (status) {
+        let orders = await storage.getOrdersByStatus(status);
+        if (scopedVendorId) orders = orders.filter((o: any) => o.vendorId === scopedVendorId);
+        return res.json(paginatedResponse(await Promise.all(orders.map(enrichAdminOrder)), pg));
+      }
+      if (scopedVendorId) {
+        return res.json(paginatedResponse(await Promise.all((await storage.getOrdersByVendor(scopedVendorId)).map(enrichAdminOrder)), pg));
+      }
       return res.json(paginatedResponse(await Promise.all((await storage.getOrders()).map(enrichAdminOrder)), pg));
     }
 
@@ -118,7 +139,11 @@ export function registerOrdersCrudRoutes(app: Express) {
     const user = (req as any).currentUser;
     const userRole = user?.role || "customer";
     if (["admin", "super_admin", "manager", "support"].includes(userRole)) {
-      // Admin/manager/support can access all orders
+      // Vendor-scoped owners can only access orders for their vendor
+      const scopedVendorId = user.vendorId ? Number(user.vendorId) : null;
+      if (scopedVendorId && order.vendorId !== scopedVendorId) {
+        return res.status(403).json({ error: "Access denied" });
+      }
     } else if (userRole === "customer") {
       if (order.customerId !== user.id) {
         return res.status(403).json({ error: "Access denied" });

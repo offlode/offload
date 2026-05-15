@@ -11,6 +11,7 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { NotificationBell } from "@/components/notification-bell";
 import { I18nProvider } from "@/components/i18n-provider";
 import { LanguageSwitcher } from "@/components/language-switcher";
+import { OffloadLogo } from "@/components/offload-logo";
 import { useEffect } from "react";
 import { useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
@@ -61,6 +62,8 @@ import SupportPage from "@/pages/support";
 import NotFound from "@/pages/not-found";
 import ForgotPasswordPage from "@/pages/forgot-password";
 import ResetPasswordPage from "@/pages/reset-password";
+import WashPreferencesPage from "@/pages/wash-preferences";
+import PartnerSignupPage from "@/pages/partner-signup";
 import OrderNewPage from "@/features/wizard/OrderNewPage";
 import NotificationsPage from "@/features/notifications/NotificationsPage";
 import HelpPage from "@/features/help/HelpPage";
@@ -83,12 +86,19 @@ function RequireAuth({ children, allowedRoles }: { children: React.ReactNode; al
     return <Redirect to="/login" />;
   }
 
-  if (allowedRoles && user && user.role !== "admin" && !allowedRoles.includes(user.role)) {
-    // Redirect to appropriate home (admin bypasses all role checks)
+  if (allowedRoles && user && !["admin", "super_admin"].includes(user.role) && !allowedRoles.includes(user.role)) {
+    // Redirect to appropriate home (admin/super_admin bypass all role checks)
     switch (user.role) {
       case "customer": return <Redirect to="/" />;
       case "driver": return <Redirect to="/driver" />;
-      case "laundromat": return <Redirect to="/staff" />;
+      case "laundromat":
+      case "vendor":
+      case "staff":
+      case "laundromat_owner":
+      case "laundromat_employee":
+      case "operator":
+      case "wash_operator":
+        return <Redirect to="/staff" />;
       case "manager": return <Redirect to="/manager" />;
       default: return <Redirect to="/" />;
     }
@@ -110,6 +120,7 @@ function AppRouter() {
       <Route path="/role-select" component={RoleSelectPage} />
       <Route path="/forgot-password" component={ForgotPasswordPage} />
       <Route path="/reset-password" component={ResetPasswordPage} />
+      <Route path="/become-a-partner" component={PartnerSignupPage} />
 
       {/* Customer routes */}
       <Route path="/">
@@ -186,30 +197,30 @@ function AppRouter() {
         {() => <RequireAuth><Redirect to="/addresses" /></RequireAuth>}
       </Route>
       <Route path="/wash-preferences">
-        {() => <RequireAuth><Redirect to="/profile?openWashPrefs=1" /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["customer"]}><WashPreferencesPage /></RequireAuth>}
       </Route>
 
       {/* Staff routes */}
       <Route path="/staff">
-        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff"]}><StaffLayout><StaffOrdersPage /></StaffLayout></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff", "laundromat_owner", "laundromat_employee", "operator", "wash_operator"]}><StaffLayout><StaffOrdersPage /></StaffLayout></RequireAuth>}
       </Route>
       <Route path="/staff/active">
-        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff"]}><StaffLayout><StaffActivePage /></StaffLayout></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff", "laundromat_owner", "laundromat_employee", "operator", "wash_operator"]}><StaffLayout><StaffActivePage /></StaffLayout></RequireAuth>}
       </Route>
       <Route path="/staff/profile">
-        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff"]}><StaffLayout><StaffProfilePage /></StaffLayout></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff", "laundromat_owner", "laundromat_employee", "operator", "wash_operator"]}><StaffLayout><StaffProfilePage /></StaffLayout></RequireAuth>}
       </Route>
       <Route path="/staff/queue">
-        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff"]}><StaffLayout><StaffQueue /></StaffLayout></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff", "laundromat_owner", "laundromat_employee", "operator", "wash_operator"]}><StaffLayout><StaffQueue /></StaffLayout></RequireAuth>}
       </Route>
       <Route path="/staff/quality">
-        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff"]}><StaffLayout><StaffQuality /></StaffLayout></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff", "laundromat_owner", "laundromat_employee", "operator", "wash_operator"]}><StaffLayout><StaffQuality /></StaffLayout></RequireAuth>}
       </Route>
       <Route path="/staff/weigh/:id">
-        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff"]}><WeighPhotoPage /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff", "laundromat_owner", "laundromat_employee", "operator", "wash_operator"]}><WeighPhotoPage /></RequireAuth>}
       </Route>
       <Route path="/staff/wash/:id">
-        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff"]}><StartWashingPage /></RequireAuth>}
+        {() => <RequireAuth allowedRoles={["laundromat", "vendor", "staff", "laundromat_owner", "laundromat_employee", "operator", "wash_operator"]}><StartWashingPage /></RequireAuth>}
       </Route>
 
       {/* Driver routes */}
@@ -295,7 +306,7 @@ function AppRouter() {
 function AppContent() {
   const [location] = useLocation();
   const { user } = useAuth();
-  const isAuth = location === "/login" || location === "/register" || location === "/role-select" || location === "/forgot-password" || location.startsWith("/reset-password");
+  const isAuth = location === "/login" || location === "/register" || location === "/role-select" || location === "/forgot-password" || location.startsWith("/reset-password") || location === "/become-a-partner";
   const isAdmin = location.startsWith("/admin");
   const isStaff = location.startsWith("/staff");
   const isDriver = location.startsWith("/driver");
@@ -328,10 +339,7 @@ function AppContent() {
         <div className="sticky top-0 z-40 bg-background/95 backdrop-blur-xl border-b border-border px-4 py-2">
           <div className="flex items-center justify-between max-w-lg mx-auto">
             <div className="flex items-center gap-2">
-              <svg width="24" height="24" viewBox="0 0 100 100" className="text-primary shrink-0" aria-hidden="true">
-                <path d="M50 10 C25 10 10 30 10 50 C10 70 30 90 50 90 C55 90 60 88 64 85 C50 80 40 68 40 55 C40 38 55 25 72 25 C76 25 80 26 83 28 C78 17 65 10 50 10Z" fill="currentColor" />
-                <path d="M72 30 C58 30 45 42 45 55 C45 68 55 78 68 80 C82 78 90 66 90 52 C90 38 82 30 72 30Z" fill="currentColor" opacity="0.6" />
-              </svg>
+              <OffloadLogo size={24} />
               <span className="text-sm font-bold text-foreground">Offload</span>
             </div>
             <div className="flex items-center gap-1">
