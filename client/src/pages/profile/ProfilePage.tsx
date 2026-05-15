@@ -1,11 +1,8 @@
-import { useState, useRef, useCallback, useEffect } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
-import { Link, useLocation } from "wouter";
+import { Link } from "wouter";
 import {
   User, Package, DollarSign, Star, Heart, MapPin, CreditCard,
   Bell, Shield, Settings, HelpCircle, LogOut, ChevronRight,
-  Truck, Sun, Moon, LayoutDashboard, X, Check, ChevronDown, ArrowLeft,
-  Trash2, Lock, Smartphone, QrCode, Copy, Loader2, Globe
+  Truck, Sun, Moon, LayoutDashboard, Check, Globe, Trash2, Lock,
 } from "lucide-react";
 import { CertifiedPanel } from "@/components/ui/certified-panel";
 import { useI18n } from "@/i18n";
@@ -26,14 +23,11 @@ import {
   Accordion, AccordionContent, AccordionItem, AccordionTrigger,
 } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useTheme } from "@/components/theme-provider";
-import { useAuth } from "@/contexts/auth-context";
-import type { User as UserType, Address, PaymentMethod, Order, Vendor } from "@shared/schema";
-import type { FieldError } from "@/lib/inline-validation";
-import { scrollToFirstError, fieldBorderClass } from "@/lib/inline-validation";
-import { InlineFieldError } from "@/components/field-error";
+import { useProfileData, CLOTHING_TYPES, DEFAULT_PREFS } from "./useProfileData";
+import type { ClothingPrefs } from "./useProfileData";
+import { ProfileSecurity } from "./ProfileSecurity";
+import { ProfileSettings } from "./ProfileSettings";
 
 function StatCard({ icon, label, value, color }: {
   icon: React.ReactNode; label: string; value: string; color: string;
@@ -72,390 +66,31 @@ function SettingsRow({ icon, label, value, onClick, color, rightElement }: {
 
 export default function ProfilePage() {
   const { theme, toggleTheme } = useTheme();
-  const { toast } = useToast();
-  const [, navigate] = useLocation();
-  const { user: authUser, logout } = useAuth();
   const { language, setLanguage } = useI18n();
-  const userId = authUser?.id;
+  const data = useProfileData();
 
-  const [editProfileOpen, setEditProfileOpen] = useState(false);
-  const [notifOpen, setNotifOpen] = useState(false);
-  const [washPrefsOpen, setWashPrefsOpen] = useState(false);
-  const [helpOpen, setHelpOpen] = useState(false);
-
-  // C4: Handle ?openWashPrefs=1&returnTo=wizard URL params
-  const [returnToWizard, setReturnToWizard] = useState(false);
-  useEffect(() => {
-    const hashSearch = window.location.hash.split("?")[1] || "";
-    const params = new URLSearchParams(hashSearch);
-    if (params.get("openWashPrefs") === "1") {
-      setWashPrefsOpen(true);
-      if (params.get("returnTo") === "wizard") {
-        setReturnToWizard(true);
-      }
-    }
-  }, []);
-  const [signOutOpen, setSignOutOpen] = useState(false);
-  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
-  const [accountDeleted, setAccountDeleted] = useState(false);
-  const [twoFAOpen, setTwoFAOpen] = useState(false);
-  const [twoFASecret, setTwoFASecret] = useState<{ qrUrl: string; secret: string; backupCodes: string[] } | null>(null);
-  const [twoFACode, setTwoFACode] = useState("");
-  const [twoFASetupDone, setTwoFASetupDone] = useState(false);
-  const [disable2FAOpen, setDisable2FAOpen] = useState(false);
-  const [disable2FACode, setDisable2FACode] = useState("");
-  const [editName, setEditName] = useState("");
-  const [editEmail, setEditEmail] = useState("");
-  const [editPhone, setEditPhone] = useState("");
-  const [profileFieldErrors, setProfileFieldErrors] = useState<FieldError[]>([]);
-
-  const clearProfileError = (field: string) => {
-    setProfileFieldErrors((prev) => prev.filter((e) => e.field !== field));
-  };
-
-  const handleSaveProfile = () => {
-    const errors: FieldError[] = [];
-    if (!editName.trim()) errors.push({ field: "editName", message: "Name is required" });
-    if (!editEmail.trim()) errors.push({ field: "editEmail", message: "Email is required" });
-    if (errors.length > 0) {
-      setProfileFieldErrors(errors);
-      scrollToFirstError(errors);
-      return;
-    }
-    setProfileFieldErrors([]);
-    updateUserMutation.mutate();
-  };
-
-  // Notification prefs from backend
-  const notifDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const { data: notifPrefs } = useQuery<{
-    emailEnabled: boolean;
-    smsEnabled: boolean;
-    pushEnabled: boolean;
-    orderUpdates: boolean;
-    promotions: boolean;
-    weeklyDigest: boolean;
-  }>({
-    queryKey: ["/api/notification-preferences"],
-    queryFn: async () => {
-      const res = await apiRequest("/api/notification-preferences");
-      return res.json();
-    },
-    enabled: !!userId,
-  });
-
-  const notifMutation = useMutation({
-    mutationFn: async (prefs: {
-      emailEnabled: boolean;
-      smsEnabled: boolean;
-      pushEnabled: boolean;
-      orderUpdates: boolean;
-      promotions: boolean;
-      weeklyDigest: boolean;
-    }) => {
-      const res = await apiRequest("/api/notification-preferences", {
-        method: "PUT",
-        body: JSON.stringify(prefs),
-      });
-      return res.json();
-    },
-    onError: (err: Error) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/notification-preferences"] });
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    },
-  });
-
-  const handleNotifToggle = useCallback(
-    (key: string, value: boolean) => {
-      if (!notifPrefs) return;
-      const updated = { ...notifPrefs, [key]: value };
-      // Optimistic update
-      queryClient.setQueryData(["/api/notification-preferences"], updated);
-      // Debounce the PUT call
-      if (notifDebounceRef.current) clearTimeout(notifDebounceRef.current);
-      notifDebounceRef.current = setTimeout(() => {
-        notifMutation.mutate(updated);
-      }, 500);
-    },
-    [notifPrefs, notifMutation],
-  );
-
-  // Certified vendor preference (controlled, persisted in localStorage)
-  const [certifiedOnly, setCertifiedOnly] = useState<boolean>(() => {
-    const stored = localStorage.getItem("offload_certified_only");
-    return stored !== null ? stored === "true" : true;
-  });
-
-  // Clothing types for structured per-type wash preferences
-  const CLOTHING_TYPES = [
-    "shirts", "pants", "underwear", "bedding", "towels", "delicates", "baby clothing", "mixed",
-  ] as const;
-
-  type ClothingType = typeof CLOTHING_TYPES[number];
-
-  interface ClothingPrefs {
-    temp: string;
-    dry: string;
-    detergent: string;
-    softener: boolean;
-    bleach: string;
-    starch: string;
-    fold: string;
-    notes: string;
-  }
-
-  const DEFAULT_PREFS: ClothingPrefs = {
-    temp: "cold",
-    dry: "medium heat",
-    detergent: "standard",
-    softener: false,
-    bleach: "never",
-    starch: "none",
-    fold: "standard",
-    notes: "",
-  };
-
-  // Wash prefs: per-clothing-type structured preferences
-  const [washPrefs, setWashPrefs] = useState<Record<string, ClothingPrefs>>(() => {
-    const initial: Record<string, ClothingPrefs> = {};
-    CLOTHING_TYPES.forEach(type => { initial[type] = { ...DEFAULT_PREFS }; });
-    return initial;
-  });
-
-  const { data: user, isLoading: userLoading } = useQuery<UserType>({
-    queryKey: ["/api/users", userId],
-    queryFn: async () => {
-      const res = await apiRequest(`/api/users/${userId}`);
-      return res.json();
-    },
-    enabled: !!userId,
-  });
-
-  // Check if user already has 2FA enabled
-  useEffect(() => {
-    if (user && (user as any).twoFactorEnabled) {
-      setTwoFASetupDone(true);
-    }
-  }, [user]);
-
-  // Initialize wash prefs from saved user preferences
-  useEffect(() => {
-    if (!user) return;
-    const saved = (user as any)?.preferences;
-    if (saved && typeof saved === "object" && !Array.isArray(saved)) {
-      // Check if it's the new per-type format or legacy flat format
-      const hasClothingTypes = CLOTHING_TYPES.some(type => saved[type] && typeof saved[type] === "object");
-      if (hasClothingTypes) {
-        setWashPrefs(prev => {
-          const updated = { ...prev };
-          CLOTHING_TYPES.forEach(type => {
-            if (saved[type] && typeof saved[type] === "object") {
-              updated[type] = { ...DEFAULT_PREFS, ...saved[type] };
-            }
-          });
-          return updated;
-        });
-      }
-    }
-  }, [user]);
-
-  const { data: addresses } = useQuery<Address[]>({
-    queryKey: ["/api/addresses", userId],
-    queryFn: async () => {
-      const res = await apiRequest(`/api/addresses?userId=${userId}`);
-      return res.json();
-    },
-    enabled: !!userId,
-  });
-
-  const { data: paymentMethods } = useQuery<PaymentMethod[]>({
-    queryKey: ["/api/payment-methods", userId],
-    queryFn: async () => {
-      const res = await apiRequest(`/api/payment-methods?userId=${userId}`);
-      return res.json();
-    },
-    enabled: !!userId,
-  });
-
-  const { data: orders } = useQuery<Order[]>({
-    queryKey: ["/api/orders", `customerId=${userId}`],
-    queryFn: async () => {
-      const res = await apiRequest(`/api/orders?customerId=${userId}`);
-      return res.json();
-    },
-    enabled: !!userId,
-  });
-
-  const { data: vendors } = useQuery<Vendor[]>({
-    queryKey: ["/api/vendors"],
-  });
-
-  // Preferred laundromat state — Phase A adds laundromat_id to orders & PATCH /api/me
-  const [preferredLaundromatId, setPreferredLaundromatId] = useState<string>("");
-
-  // Initialize preferred laundromat from user data
-  useEffect(() => {
-    if (user && (user as any).preferredLaundromatId) {
-      setPreferredLaundromatId(String((user as any).preferredLaundromatId));
-    }
-  }, [user]);
-
-  const savePreferredLaundromat = useMutation({
-    mutationFn: async (laundromatId: string) => {
-      const res = await apiRequest("/api/me", {
-        method: "PATCH",
-        body: JSON.stringify({
-          preferred_laundromat_id: laundromatId || null,
-        }),
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
-      toast({ title: "Preferred laundromat saved" });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    },
-  });
-
-  const updateUserMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest(`/api/users/${userId}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          name: editName,
-          email: editEmail,
-          phone: editPhone,
-        }),
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
-      setEditProfileOpen(false);
-      toast({ title: "Profile updated", description: "Your information has been saved." });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    },
-  });
-
-  const saveWashPrefsMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest(`/api/users/${userId}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          preferences: JSON.stringify(washPrefs),
-        }),
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
-      setWashPrefsOpen(false);
-      toast({ title: "Preferences saved", description: "Your wash preferences have been updated." });
-      if (returnToWizard) {
-        setReturnToWizard(false);
-        setTimeout(() => navigate("/order/new"), 600);
-      }
-    },
-    onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    },
-  });
-
-  const deleteAccountMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("/api/users/me", { method: "DELETE" });
-      return res.json();
-    },
-    onSuccess: () => {
-      setDeleteAccountOpen(false);
-      setAccountDeleted(true);
-      setTimeout(async () => {
-        await logout();
-        navigate("/login");
-      }, 3000);
-    },
-    onError: (err: Error) => {
-      toast({ title: "Failed to delete account", description: err.message, variant: "destructive" });
-    },
-  });
-
-  // 2FA setup
-  const twoFASetupMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("/api/2fa/setup", { method: "POST" });
-      return res.json();
-    },
-    onSuccess: (data) => {
-      const uri = data.uri || "";
-      const qrUrl = uri
-        ? `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(uri)}`
-        : "";
-      setTwoFASecret({
-        qrUrl,
-        secret: data.secret || "",
-        backupCodes: data.backupCodes || [],
-      });
-    },
-    onError: (err: Error) => {
-      toast({ title: "2FA setup failed", description: err.message, variant: "destructive" });
-    },
-  });
-
-  const twoFAVerifyMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("/api/2fa/verify", {
-        method: "POST",
-        body: JSON.stringify({ token: twoFACode }),
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      setTwoFASetupDone(true);
-      toast({ title: "2FA enabled", description: "Your account is now protected with two-factor authentication." });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Invalid code", description: err.message, variant: "destructive" });
-    },
-  });
-
-  const disable2FAMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("/api/2fa", {
-        method: "DELETE",
-        body: JSON.stringify({ token: disable2FACode }),
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      setTwoFASetupDone(false);
-      setDisable2FAOpen(false);
-      setDisable2FACode("");
-      toast({ title: "2FA disabled", description: "Two-factor authentication has been removed from your account." });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Failed to disable 2FA", description: err.message, variant: "destructive" });
-    },
-  });
-
-  // Favorite vendor = most-used or highest-rated from order history
-  const favoriteVendor = vendors?.reduce((best: any, v: any) => {
-    if (!best) return v;
-    return (v.rating || 0) > (best.rating || 0) ? v : best;
-  }, null);
-
-  // Use authoritative user account data, fallback to computed from orders
-  const totalOrders = user?.totalOrders || orders?.length || 0;
-  const completedOrders = orders?.filter(o => o.status === "delivered") || [];
-  const totalSpent = user?.totalSpent || completedOrders.reduce((sum, o) => sum + (o.total || 0), 0);
-
-  const memberDate = user?.memberSince
-    ? new Date(user.memberSince).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
-    : "";
+  const {
+    authUser, navigate, toast,
+    user, userLoading, addresses, paymentMethods, vendors,
+    favoriteVendor, totalOrders, totalSpent, memberDate,
+    editProfileOpen, setEditProfileOpen,
+    washPrefsOpen, setWashPrefsOpen,
+    helpOpen, setHelpOpen,
+    signOutOpen, setSignOutOpen,
+    deleteAccountOpen, setDeleteAccountOpen,
+    accountDeleted,
+    twoFAOpen, setTwoFAOpen,
+    disable2FAOpen, setDisable2FAOpen,
+    twoFASetupDone, twoFASetupMutation,
+    editName, setEditName, editEmail, setEditEmail, editPhone, setEditPhone,
+    profileFieldErrors, clearProfileError, handleSaveProfile, updateUserMutation,
+    washPrefs, setWashPrefs, saveWashPrefsMutation,
+    certifiedOnly, setCertifiedOnly,
+    preferredLaundromatId, setPreferredLaundromatId, savePreferredLaundromat,
+    twoFASecret, twoFACode, setTwoFACode, twoFAVerifyMutation,
+    disable2FACode, setDisable2FACode, disable2FAMutation,
+    deleteAccountMutation, logout, notifPrefs, handleNotifToggle,
+  } = data;
 
   return (
     <div className="pb-24 max-w-lg mx-auto">
@@ -750,67 +385,20 @@ export default function ProfilePage() {
       </div>
 
       {/* Edit Profile Sheet */}
-      <Sheet open={editProfileOpen} onOpenChange={setEditProfileOpen}>
-        <SheetContent side="bottom" className="max-h-[80vh] rounded-t-2xl">
-          <SheetHeader className="flex flex-row items-center gap-3 pb-2">
-            <button
-              onClick={() => setEditProfileOpen(false)}
-              data-testid="button-back-personal-info"
-              aria-label="Go back"
-              className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-muted transition-colors active:scale-95 -ml-1"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-            <SheetTitle className="!mt-0">Personal Information</SheetTitle>
-          </SheetHeader>
-          <div className="mt-5 space-y-4">
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1.5 block">Full Name</Label>
-              <Input
-                value={editName}
-                onChange={e => { setEditName(e.target.value); clearProfileError("editName"); }}
-                placeholder="Enter your full name"
-                className={`h-12 rounded-xl bg-card ${fieldBorderClass("editName", profileFieldErrors)}`}
-                data-testid="input-edit-name"
-                data-field="editName"
-              />
-              <InlineFieldError field="editName" errors={profileFieldErrors} />
-            </div>
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1.5 block">Email</Label>
-              <Input
-                type="email"
-                value={editEmail}
-                onChange={e => { setEditEmail(e.target.value); clearProfileError("editEmail"); }}
-                placeholder="Enter your email"
-                className={`h-12 rounded-xl bg-card ${fieldBorderClass("editEmail", profileFieldErrors)}`}
-                data-testid="input-edit-email"
-                data-field="editEmail"
-              />
-              <InlineFieldError field="editEmail" errors={profileFieldErrors} />
-            </div>
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1.5 block">Phone</Label>
-              <Input
-                type="tel"
-                value={editPhone}
-                onChange={e => setEditPhone(e.target.value)}
-                placeholder="Enter your phone number"
-                className="h-12 rounded-xl bg-card"
-                data-testid="input-edit-phone"
-              />
-            </div>
-            <Button
-              className="w-full h-[50px] rounded-full font-semibold text-base mt-2"
-              disabled={updateUserMutation.isPending}
-              onClick={handleSaveProfile}
-              data-testid="button-save-profile"
-            >
-              {updateUserMutation.isPending ? "Saving..." : "Save Changes"}
-            </Button>
-          </div>
-        </SheetContent>
-      </Sheet>
+      <ProfileSettings
+        editProfileOpen={editProfileOpen}
+        setEditProfileOpen={setEditProfileOpen}
+        editName={editName}
+        setEditName={setEditName}
+        editEmail={editEmail}
+        setEditEmail={setEditEmail}
+        editPhone={editPhone}
+        setEditPhone={setEditPhone}
+        profileFieldErrors={profileFieldErrors}
+        clearProfileError={clearProfileError}
+        handleSaveProfile={handleSaveProfile}
+        updateUserMutation={updateUserMutation}
+      />
 
       {/* Wash Prefs Sheet — Per-clothing-type structured editor */}
       <Sheet open={washPrefsOpen} onOpenChange={setWashPrefsOpen}>
@@ -1054,133 +642,22 @@ export default function ProfilePage() {
         </SheetContent>
       </Sheet>
 
-      {/* 2FA Setup Sheet */}
-      <Sheet open={twoFAOpen} onOpenChange={setTwoFAOpen}>
-        <SheetContent side="bottom" className="max-h-[80vh] rounded-t-2xl">
-          <SheetHeader>
-            <SheetTitle>Enable Two-Factor Authentication</SheetTitle>
-          </SheetHeader>
-          <div className="mt-4 space-y-4">
-            {twoFASetupMutation.isPending ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="w-6 h-6 animate-spin text-primary" />
-                <span className="ml-2 text-sm text-muted-foreground">Setting up...</span>
-              </div>
-            ) : twoFASecret ? (
-              <>
-                <div className="text-center">
-                  <p className="text-sm text-muted-foreground mb-3">
-                    Scan this QR code with your authenticator app (Google Authenticator, Authy, etc.)
-                  </p>
-                  {twoFASecret.qrUrl ? (
-                    <div className="flex justify-center mb-3">
-                      <img
-                        src={twoFASecret.qrUrl}
-                        alt="2FA QR Code"
-                        className="w-48 h-48 rounded-lg bg-white p-2"
-                      />
-                    </div>
-                  ) : (
-                    <Card className="p-4 mb-3">
-                      <div className="flex items-center justify-center gap-2">
-                        <QrCode className="w-5 h-5 text-muted-foreground" />
-                        <p className="text-xs text-muted-foreground">QR code unavailable — use manual entry</p>
-                      </div>
-                    </Card>
-                  )}
-                  {twoFASecret.secret && (
-                    <div className="flex items-center justify-center gap-2 mb-4">
-                      <code className="text-xs bg-muted px-2 py-1 rounded font-mono">{twoFASecret.secret}</code>
-                      <button
-                        onClick={() => {
-                          navigator.clipboard.writeText(twoFASecret.secret);
-                          toast({ title: "Copied!", description: "Secret key copied to clipboard." });
-                        }}
-                        className="p-1 rounded hover:bg-muted"
-                      >
-                        <Copy className="w-3.5 h-3.5 text-muted-foreground" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* Backup codes */}
-                {twoFASecret.backupCodes.length > 0 && (
-                  <Card className="p-4">
-                    <p className="text-xs font-semibold mb-2">Backup Codes — save these somewhere safe</p>
-                    <div className="grid grid-cols-2 gap-1">
-                      {twoFASecret.backupCodes.map((code, i) => (
-                        <code key={i} className="text-xs font-mono text-muted-foreground bg-muted px-2 py-1 rounded text-center">{code}</code>
-                      ))}
-                    </div>
-                  </Card>
-                )}
-
-                {/* Verify */}
-                <div>
-                  <Label className="text-xs text-muted-foreground mb-1.5 block">Enter the 6-digit code from your app</Label>
-                  <Input
-                    value={twoFACode}
-                    onChange={e => setTwoFACode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                    placeholder="000000"
-                    className="h-12 text-center text-lg font-mono tracking-widest"
-                    maxLength={6}
-                    data-testid="input-2fa-code"
-                  />
-                </div>
-                <Button
-                  className="w-full"
-                  disabled={twoFACode.length !== 6 || twoFAVerifyMutation.isPending}
-                  onClick={() => twoFAVerifyMutation.mutate()}
-                  data-testid="button-verify-2fa"
-                >
-                  {twoFAVerifyMutation.isPending ? "Verifying..." : "Enable 2FA"}
-                </Button>
-              </>
-            ) : (
-              <p className="text-sm text-destructive text-center">Failed to initialize 2FA setup. Please try again.</p>
-            )}
-          </div>
-        </SheetContent>
-      </Sheet>
-
-      {/* Disable 2FA Confirmation */}
-      <AlertDialog open={disable2FAOpen} onOpenChange={setDisable2FAOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Disable Two-Factor Authentication</AlertDialogTitle>
-            <AlertDialogDescription>
-              Enter your current 6-digit authenticator code to disable 2FA.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="py-2">
-            <Input
-              value={disable2FACode}
-              onChange={e => setDisable2FACode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-              placeholder="000000"
-              className="h-12 text-center text-lg font-mono tracking-widest"
-              maxLength={6}
-              data-testid="input-disable-2fa-code"
-            />
-          </div>
-          <AlertDialogFooter>
-            <AlertDialogCancel
-              onClick={() => setDisable2FACode("")}
-              data-testid="button-disable-2fa-cancel"
-            >
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => disable2FAMutation.mutate()}
-              disabled={disable2FACode.length !== 6 || disable2FAMutation.isPending}
-              className="bg-red-500 text-white hover:bg-red-600 focus:ring-red-500"
-              data-testid="button-disable-2fa-confirm"
-            >
-              {disable2FAMutation.isPending ? "Disabling..." : "Disable 2FA"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* 2FA Sheets */}
+      <ProfileSecurity
+        twoFAOpen={twoFAOpen}
+        setTwoFAOpen={setTwoFAOpen}
+        twoFASetupMutation={twoFASetupMutation}
+        twoFASecret={twoFASecret}
+        twoFACode={twoFACode}
+        setTwoFACode={setTwoFACode}
+        twoFAVerifyMutation={twoFAVerifyMutation}
+        disable2FAOpen={disable2FAOpen}
+        setDisable2FAOpen={setDisable2FAOpen}
+        disable2FACode={disable2FACode}
+        setDisable2FACode={setDisable2FACode}
+        disable2FAMutation={disable2FAMutation}
+        toast={toast}
+      />
 
       {/* Sign Out Confirmation */}
       <AlertDialog open={signOutOpen} onOpenChange={setSignOutOpen}>
