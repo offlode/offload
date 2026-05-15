@@ -49,7 +49,11 @@ function normalizeDeliverySpeed(value: string | null | undefined): DeliverySpeed
 }
 
 function parseQueryParams(): Partial<WizardState> {
-  const params = new URLSearchParams(window.location.hash.split("?")[1] || "");
+  // wouter's hash-location navigate() places query params in window.location.search,
+  // not inside the hash fragment. Check both locations for robustness.
+  const fromHash = window.location.hash.split("?")[1] || "";
+  const fromSearch = window.location.search.replace(/^\?/, "");
+  const params = new URLSearchParams(fromSearch || fromHash);
   const partial: Partial<WizardState> = {};
 
   const service = params.get("service");
