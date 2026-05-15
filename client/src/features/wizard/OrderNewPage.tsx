@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, Check, Loader2, Mic } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -153,15 +153,18 @@ export default function OrderNewPage() {
 
   // Initialize state from sessionStorage > query params > reorder > defaults
   const [initResult] = useState(() => {
+    const qp = parseQueryParams();
     const reorderData = (window as any).__offload_reorder;
     if (reorderData) {
-      const qp = parseQueryParams();
       const base = applyVoicePrefill({ ...INITIAL_WIZARD_STATE, ...qp });
       return applyReorderPrefill(base);
     }
     const saved = loadSavedState();
-    if (saved) return { state: applyVoicePrefill(saved), startStep: 1 };
-    const qp = parseQueryParams();
+    if (saved) {
+      // URL query params (serviceType, deliverySpeed) always override saved state
+      const merged = { ...saved, ...qp };
+      return { state: applyVoicePrefill(merged), startStep: 1 };
+    }
     return { state: applyVoicePrefill({ ...INITIAL_WIZARD_STATE, ...qp }), startStep: 1 };
   });
 
@@ -180,6 +183,30 @@ export default function OrderNewPage() {
   const update = useCallback(<K extends keyof WizardState>(key: K, value: WizardState[K]) => {
     setState(prev => ({ ...prev, [key]: value }));
   }, []);
+
+  // Auto-fill default address if no address is set
+  const { data: savedAddresses } = useQuery<Array<{ id: number; street: string; city: string; state: string; zip: string; isDefault: boolean | null }>>({
+    queryKey: [`/api/addresses?userId=${user?.id}`],
+    queryFn: async () => {
+      const res = await apiRequest(`/api/addresses?userId=${user?.id}`);
+      return res.json();
+    },
+    enabled: !!user?.id,
+  });
+
+  useEffect(() => {
+    if (!savedAddresses || savedAddresses.length === 0) return;
+    if (state.address) return;
+    const defaultAddr = savedAddresses.find(a => a.isDefault) || savedAddresses[0];
+    if (defaultAddr) {
+      const formatted = [defaultAddr.street, defaultAddr.city, defaultAddr.state, defaultAddr.zip].filter(Boolean).join(", ");
+      setState(prev => ({
+        ...prev,
+        address: formatted,
+        pickupAddressId: defaultAddr.id,
+      }));
+    }
+  }, [savedAddresses, state.address]);
 
   // serviceType is prelocked from the dashboard tile query param
   const isSignature = state.serviceType === "wash_fold_signature";
