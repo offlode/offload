@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, Check, Loader2, Mic } from "lucide-react";
@@ -178,6 +178,9 @@ export default function OrderNewPage() {
   const [orderSuccess, setOrderSuccess] = useState(false);
   const [createdOrderId, setCreatedOrderId] = useState<number | null>(null);
   const [quoteValid, setQuoteValid] = useState(false);
+  // Tracks whether the default-address auto-fill has already run, so clearing
+  // the address field doesn't re-fill it from saved addresses.
+  const addressAutoFilled = useRef(false);
 
   // Persist state to sessionStorage on change
   useEffect(() => {
@@ -199,10 +202,16 @@ export default function OrderNewPage() {
   });
 
   useEffect(() => {
+    if (addressAutoFilled.current) return;
     if (!savedAddresses || savedAddresses.length === 0) return;
-    if (state.address) return;
+    if (state.address) {
+      // Address already present (from reorder, saved state, or query params) — skip auto-fill
+      addressAutoFilled.current = true;
+      return;
+    }
     const defaultAddr = savedAddresses.find(a => a.isDefault) || savedAddresses[0];
     if (defaultAddr) {
+      addressAutoFilled.current = true;
       const formatted = [defaultAddr.street, defaultAddr.city, defaultAddr.state, defaultAddr.zip].filter(Boolean).join(", ");
       setState(prev => ({
         ...prev,
