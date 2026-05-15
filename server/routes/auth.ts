@@ -4,7 +4,9 @@ import { randomBytes } from "crypto";
 import rateLimit from "express-rate-limit";
 import { Resend } from "resend";
 import { jwtVerify } from "jose";
-import { storage } from "../storage";
+import { storage, db } from "../storage";
+import { user2fa } from "@shared/schema";
+import { eq } from "drizzle-orm";
 import { hashPassword, verifyPassword, isLegacyPasswordHash, checkLoginRateLimit, recordLoginAttempt } from "../lib/auth";
 import { now, notifyUser } from "../engines";
 import {
@@ -14,6 +16,7 @@ import {
   createSession, destroySession,
   APPLE_ISSUER, APPLE_AUDIENCE, appleJWKS,
 } from "../session";
+import { preAuthTokenStore } from "../lib/pre-auth-tokens";
 
 const makeRouteLimiter = (max: number) => rateLimit({
   windowMs: 60 * 1000,
@@ -126,6 +129,19 @@ export function registerAuthRoutes(app: Express) {
     if (isLegacyPasswordHash(user.password)) {
       loginUpdates.password = hashPassword(password);
     }
+
+    // Check if user has 2FA enabled — if so, issue a pre-auth token instead of a session
+    const [twoFaRecord] = await db.select().from(user2fa).where(eq(user2fa.userId, user.id));
+    if (twoFaRecord?.enabled) {
+      await storage.updateUser(user.id, loginUpdates);
+      const preAuthToken = preAuthTokenStore.issue(user.id);
+      return res.json({
+        requires_2fa: true,
+        pre_auth_token: preAuthToken,
+        user_id: user.id,
+      });
+    }
+
     // Create server-side session and return token
     const token = await createSession(user.id, user.role);
     await storage.updateUser(user.id, loginUpdates);
@@ -286,7 +302,7 @@ export function registerAuthRoutes(app: Express) {
         });
         console.log(`[Email] Password reset sent to user#${user.id}: ${(result as any)?.data?.id || (result as any)?.id || "accepted"}`);
       } catch (err: any) {
-        console.error(`[Email] Failed to send password reset to user#${user.id}:`, err);
+        console.error(`[Email] Failed to send password reset to user#${user.id}:`, err?.message || "unknown error");
         return res.status(500).json({ error: "Failed to send password reset email" });
       }
     } else {

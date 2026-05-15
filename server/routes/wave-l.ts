@@ -5,15 +5,17 @@
 
 import type { Express, Request, Response } from "express";
 import { randomBytes, createCipheriv, createDecipheriv, scryptSync } from "crypto";
+import rateLimit from "express-rate-limit";
 import { db } from "../storage";
 import { storage } from "../storage";
-import { requireAuth } from "../session";
+import { requireAuth, createSession, setSessionCookie } from "../session";
 import { hashPassword, verifyPassword } from "../lib/auth";
 import { now } from "../engines";
 import { buildOrderProgress } from "../order-display-labels";
 import { evaluateFiveStarStreak } from "../bonus-engine";
 import { checkServiceArea } from "../service-area";
 import { validateTransition } from "../order-fsm";
+import { preAuthTokenStore } from "../lib/pre-auth-tokens";
 import {
   orders,
   users,
@@ -105,6 +107,44 @@ async function totpVerify(token: string, secret: string): Promise<boolean> {
 // ══════════════════════════════════════════════════════════════
 
 export function registerWaveLRoutes(app: Express): void {
+  // ── Rate limiters for 2FA endpoints ──
+  const twoFaChallengeLimit = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many 2FA attempts. Please try again later." },
+    keyGenerator: (req) => {
+      const ip = req.ip || req.socket.remoteAddress || "unknown";
+      const userId = req.body?.user_id || "anon";
+      return `${ip}:${userId}`;
+    },
+  });
+
+  const twoFaSetupLimit = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 3,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many 2FA setup attempts. Please try again later." },
+    keyGenerator: (req) => {
+      const user = (req as any).currentUser;
+      return `2fa-setup:${user?.id || req.ip || "unknown"}`;
+    },
+  });
+
+  const twoFaVerifyLimit = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many 2FA verification attempts. Please try again later." },
+    keyGenerator: (req) => {
+      const user = (req as any).currentUser;
+      return `2fa-verify:${user?.id || req.ip || "unknown"}`;
+    },
+  });
+
   // ── GET /api/orders/:id/progress — 13-label timeline ──
   app.get("/api/orders/:id/progress", requireAuth(), async (req: Request, res: Response) => {
     try {
@@ -684,7 +724,7 @@ export function registerWaveLRoutes(app: Express): void {
   //  2FA TOTP
   // ══════════════════════════════════════════════════════════
 
-  app.post("/api/2fa/setup", requireAuth(), async (req: Request, res: Response) => {
+  app.post("/api/2fa/setup", requireAuth(), twoFaSetupLimit, async (req: Request, res: Response) => {
     try {
       const user = (req as any).currentUser;
 
@@ -729,7 +769,7 @@ export function registerWaveLRoutes(app: Express): void {
     }
   });
 
-  app.post("/api/2fa/verify", requireAuth(), async (req: Request, res: Response) => {
+  app.post("/api/2fa/verify", requireAuth(), twoFaVerifyLimit, async (req: Request, res: Response) => {
     try {
       const user = (req as any).currentUser;
       const { token } = req.body;
@@ -777,27 +817,35 @@ export function registerWaveLRoutes(app: Express): void {
     }
   });
 
-  app.post("/api/auth/2fa-challenge", async (req: Request, res: Response) => {
+  app.post("/api/auth/2fa-challenge", twoFaChallengeLimit, async (req: Request, res: Response) => {
     try {
-      const { user_id, token, backup_code } = req.body;
+      const { user_id, token, backup_code, pre_auth_token } = req.body;
 
       if (!user_id) return res.status(400).json({ error: "user_id is required" });
       if (!token && !backup_code) return res.status(400).json({ error: "token or backup_code is required" });
+
+      // Require valid pre-auth token (issued by login endpoint when 2FA is needed)
+      if (!pre_auth_token || !preAuthTokenStore.validate(pre_auth_token, user_id)) {
+        return res.status(403).json({ error: "Invalid or expired pre-auth token. Please log in again." });
+      }
 
       const [record] = await db.select().from(user2fa).where(eq(user2fa.userId, user_id));
       if (!record || !record.enabled) {
         return res.status(400).json({ error: "2FA is not enabled for this user" });
       }
 
+      let verified = false;
+      let message = "";
+      let extra: Record<string, any> = {};
+
       if (token) {
         if (!record.totpSecretEnc) return res.status(400).json({ error: "No TOTP secret configured" });
         const secret = decryptSecret(record.totpSecretEnc);
         const valid = await totpVerify(token, secret);
         if (!valid) return res.status(401).json({ error: "Invalid TOTP token" });
-        return res.json({ success: true, message: "2FA verified" });
-      }
-
-      if (backup_code && record.backupCodesHash) {
+        verified = true;
+        message = "2FA verified";
+      } else if (backup_code && record.backupCodesHash) {
         let hashes: string[];
         try {
           hashes = JSON.parse(record.backupCodesHash);
@@ -821,10 +869,23 @@ export function registerWaveLRoutes(app: Express): void {
           .set({ backupCodesHash: JSON.stringify(hashes) })
           .where(eq(user2fa.userId, user_id));
 
-        return res.json({ success: true, message: "2FA verified via backup code", remainingBackupCodes: hashes.length });
+        verified = true;
+        message = "2FA verified via backup code";
+        extra = { remainingBackupCodes: hashes.length };
       }
 
-      res.status(400).json({ error: "No valid verification provided" });
+      if (!verified) {
+        return res.status(400).json({ error: "No valid verification provided" });
+      }
+
+      // Consume the pre-auth token and issue a real session
+      preAuthTokenStore.consume(pre_auth_token, user_id);
+      const user = await storage.getUser(user_id);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      const sessionToken = await createSession(user.id, user.role);
+      setSessionCookie(res, sessionToken);
+
+      return res.json({ success: true, message, ...extra, user: { ...user, password: undefined }, token: sessionToken });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
