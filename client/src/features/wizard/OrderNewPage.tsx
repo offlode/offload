@@ -8,6 +8,7 @@ import { useAuth } from "@/contexts/auth-context";
 import { apiRequest } from "@/lib/queryClient";
 import { BAG_OPTIONS, type BagSize, type DeliverySpeed } from "@/lib/design-tokens";
 import { VoiceOrderModal } from "@/components/voice-order";
+import { OffloadLogo } from "@/components/offload-logo";
 
 import { WizardProgress } from "./WizardProgress";
 import { StepBags } from "./StepBags";
@@ -385,7 +386,10 @@ export default function OrderNewPage() {
           <button onClick={goBack} className="p-1 -ml-1 rounded-lg hover:bg-muted transition-colors" data-testid="button-wizard-back">
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <h1 className="text-sm font-bold">{wizardTitle}</h1>
+          <div className="flex items-center gap-1.5">
+            <OffloadLogo size={24} />
+            <h1 className="text-sm font-bold">{wizardTitle}</h1>
+          </div>
           <button
             onClick={() => setVoiceModalOpen(true)}
             className="p-2 rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
