@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Package, Shirt, MapPin, CreditCard, Truck, DollarSign, Loader2, AlertCircle } from "lucide-react";
+import { Package, MapPin, CreditCard, Truck, DollarSign, Loader2, AlertCircle } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { BAG_OPTIONS, DELIVERY_SPEEDS } from "@/lib/design-tokens";
@@ -32,7 +32,6 @@ function formatDollars(dollars: number) {
   }).format(dollars);
 }
 
-// Pick the primary tier from bags (highest count)
 function inferPrimaryTier(bags: WizardState["bags"]): string {
   const active = bags.filter(b => b.quantity > 0);
   if (active.length === 0) return "small";
@@ -48,8 +47,8 @@ export function StepReview({ state, onEdit, onQuoteStatus }: StepReviewProps) {
     pickupAddress: state.address,
     deliverySpeed: state.deliverySpeed,
     serviceType: state.serviceType,
-    separated: state.separateByType ?? false,
-    clothing_types: state.clothingTypes,
+    separated: false,
+    clothing_types: [],
     wash_preferences: state.specialInstructions ? { notes: state.specialInstructions } : {},
   };
 
@@ -63,12 +62,12 @@ export function StepReview({ state, onEdit, onQuoteStatus }: StepReviewProps) {
     staleTime: 60_000,
   });
 
-  // Bubble quote validity up to parent
   if (onQuoteStatus) {
     onQuoteStatus(!quoteLoading && !quoteError && !!quote);
   }
 
   const totalBags = state.bags.reduce((sum, b) => sum + b.quantity, 0);
+  const isSignature = state.serviceType === "wash_fold_signature";
 
   return (
     <div className="px-5 space-y-4">
@@ -79,6 +78,13 @@ export function StepReview({ state, onEdit, onQuoteStatus }: StepReviewProps) {
         </p>
       </div>
 
+      {/* Signature badge */}
+      {isSignature && (
+        <div className="bg-primary/5 border border-primary/20 rounded-xl px-3 py-2">
+          <p className="text-xs text-primary font-medium">Signature Wash — premium label, +$5/bag</p>
+        </div>
+      )}
+
       {/* Order items */}
       <Card className="p-4 space-y-3 divide-y divide-border rounded-2xl">
         {/* Bags */}
@@ -87,7 +93,7 @@ export function StepReview({ state, onEdit, onQuoteStatus }: StepReviewProps) {
           <div className="flex-1">
             <div className="flex items-center justify-between">
               <p className="text-sm font-semibold">Bags ({totalBags})</p>
-              <button className="text-xs text-primary font-medium" onClick={() => onEdit(1)}>Edit</button>
+              <button className="text-xs text-primary font-medium" onClick={() => onEdit(1)}>Change</button>
             </div>
             <div className="mt-1 space-y-0.5">
               {state.bags.filter(b => b.quantity > 0).map(b => (
@@ -99,35 +105,13 @@ export function StepReview({ state, onEdit, onQuoteStatus }: StepReviewProps) {
           </div>
         </div>
 
-        {/* Separation */}
-        {state.separateByType && (
-          <div className="flex items-start gap-3 pt-3">
-            <Shirt className="w-5 h-5 text-primary shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold">Separation</p>
-                <button className="text-xs text-primary font-medium" onClick={() => onEdit(2)}>Edit</button>
-              </div>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                {state.clothingTypes.length} type{state.clothingTypes.length !== 1 ? "s" : ""} selected
-              </p>
-              {state.clothingTypes.length > 0 && (
-                <p className="text-xs text-muted-foreground">
-                  {state.clothingTypes.slice(0, 5).join(", ")}
-                  {state.clothingTypes.length > 5 ? ` +${state.clothingTypes.length - 5} more` : ""}
-                </p>
-              )}
-            </div>
-          </div>
-        )}
-
         {/* Address */}
         <div className="flex items-start gap-3 pt-3">
           <MapPin className="w-5 h-5 text-primary shrink-0 mt-0.5" />
           <div className="flex-1">
             <div className="flex items-center justify-between">
               <p className="text-sm font-semibold">Pickup</p>
-              <button className="text-xs text-primary font-medium" onClick={() => onEdit(4)}>Edit</button>
+              <button className="text-xs text-primary font-medium" onClick={() => onEdit(2)}>Change</button>
             </div>
             <p className="text-xs text-muted-foreground mt-0.5">{state.address || "No address set"}</p>
             <p className="text-xs text-muted-foreground">
@@ -143,20 +127,6 @@ export function StepReview({ state, onEdit, onQuoteStatus }: StepReviewProps) {
             <p className="text-sm font-semibold">Delivery</p>
             <p className="text-xs text-muted-foreground mt-0.5">
               {DELIVERY_SPEEDS[state.deliverySpeed]?.label ?? "Standard"}
-            </p>
-          </div>
-        </div>
-
-        {/* Payment */}
-        <div className="flex items-start gap-3 pt-3">
-          <CreditCard className="w-5 h-5 text-primary shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold">Payment</p>
-              <button className="text-xs text-primary font-medium" onClick={() => onEdit(5)}>Edit</button>
-            </div>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              {state.paymentMethodId ? `Card ending ••••` : "No payment method selected"}
             </p>
           </div>
         </div>

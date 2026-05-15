@@ -10,10 +10,7 @@ import { BAG_OPTIONS, type BagSize, type DeliverySpeed } from "@/lib/design-toke
 import { VoiceOrderModal } from "@/components/voice-order";
 
 import { WizardProgress } from "./WizardProgress";
-import { StepWashStyle } from "./StepWashStyle";
 import { StepBags } from "./StepBags";
-import { StepSeparation } from "./StepSeparation";
-import { StepClothingTypes } from "./StepClothingTypes";
 import { StepAddress } from "./StepAddress";
 import { StepPayment } from "./StepPayment";
 import { StepReview } from "./StepReview";
@@ -93,8 +90,6 @@ function applyVoicePrefill(base: WizardState): WizardState {
     ...(bagSize ? { bags: [{ size: bagSize, quantity: base.bags.find(b => b.size === bagSize)?.quantity ?? 1 }] } : {}),
     ...(voice.serviceType ? { serviceType: voice.serviceType } : {}),
     ...(deliverySpeed ? { deliverySpeed } : {}),
-    ...(typeof voice.separated === "boolean" ? { separateByType: voice.separated } : {}),
-    ...(Array.isArray(voice.clothingTypes) ? { clothingTypes: voice.clothingTypes } : {}),
     ...(voice.pickupAddress || voice.address ? { address: voice.pickupAddress || voice.address || "" } : {}),
     ...(scheduledPickupDate || voice.pickupDate ? { pickupDate: scheduledPickupDate || voice.pickupDate || "" } : {}),
     ...(voice.pickupTimeWindow ? { pickupTimeWindow: voice.pickupTimeWindow } : {}),
@@ -124,7 +119,6 @@ function applyReorderPrefill(base: WizardState): { state: WizardState; startStep
       }))
     : base.bags;
 
-  // Default to today's date and first available time window for reorders
   const today = new Date().toISOString().split("T")[0];
 
   return {
@@ -137,10 +131,10 @@ function applyReorderPrefill(base: WizardState): { state: WizardState; startStep
       pickupAddressId: reorder.pickupAddressId ?? base.pickupAddressId,
       paymentMethodId: reorder.paymentMethodId || base.paymentMethodId,
       pickupDate: base.pickupDate || today,
-      pickupTimeWindow: base.pickupTimeWindow || "8 AM – 10 AM",
+      pickupTimeWindow: base.pickupTimeWindow || "8 AM \u2013 10 AM",
     },
-    // Jump to review step (7) so user can confirm and place
-    startStep: 7,
+    // Jump to review step (3) so user can confirm and place
+    startStep: 3,
   };
 }
 
@@ -159,7 +153,6 @@ export default function OrderNewPage() {
 
   // Initialize state from sessionStorage > query params > reorder > defaults
   const [initResult] = useState(() => {
-    // Check reorder first (takes priority over saved state)
     const reorderData = (window as any).__offload_reorder;
     if (reorderData) {
       const qp = parseQueryParams();
@@ -173,7 +166,6 @@ export default function OrderNewPage() {
   });
 
   const [state, setState] = useState<WizardState>(initResult.state);
-
   const [step, setStep] = useState(initResult.startStep);
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
   const [orderSuccess, setOrderSuccess] = useState(false);
@@ -189,127 +181,20 @@ export default function OrderNewPage() {
     setState(prev => ({ ...prev, [key]: value }));
   }, []);
 
-  // ── Branching helpers ──
-  // Standard (wash_fold):     step 2 → step 5 (skip separation+clothing)
-  // Signature (wash_fold_signature): step 2 → step 4 (clothing, skip separation prompt, force separateByType=true)
-  // Custom (wash_fold_custom): step 2 → step 5 (skip separation+clothing, prefs copied in)
-
-  const isStandard = state.serviceType === "wash_fold";
+  // serviceType is prelocked from the dashboard tile query param
   const isSignature = state.serviceType === "wash_fold_signature";
-  const isCustom = state.serviceType === "wash_fold_custom";
 
-  // Compute which steps to skip for WizardProgress
-  const skippedSteps: number[] = (() => {
-    if (isStandard) return [3, 4];       // skip Separate + Clothing
-    if (isSignature) return [3];          // skip Separate (force=true), show Clothing
-    if (isCustom) return [3, 4];          // skip Separate + Clothing
-    return [];
-  })();
+  // Wizard title based on service type
+  const wizardTitle = isSignature ? "Signature Wash" : "Standard Wash";
 
+  // 4-screen flow: Bags -> Pickup -> Review -> Place
   const goNext = () => {
-    if (step === 1) {
-      // Custom Wash: check for saved preferences before going to step 2
-      if (isCustom) {
-        const rawPrefs = (user as any)?.preferences;
-        const prefs = typeof rawPrefs === "string" ? (() => { try { return JSON.parse(rawPrefs); } catch { return null; } })() : rawPrefs;
-        const hasPrefs = prefs && typeof prefs === "object" && !Array.isArray(prefs) && Object.keys(prefs).length > 0;
-        if (!hasPrefs) {
-          // Redirect to profile to set up preferences
-          navigate("/profile?openWashPrefs=1&returnTo=wizard");
-          return;
-        }
-        // Copy saved prefs into state
-        const specialInstructions = typeof prefs === "object" && prefs.notes
-          ? String(prefs.notes)
-          : "";
-        const clothingTypes = Array.isArray(prefs.clothingTypes) ? prefs.clothingTypes : [];
-        setState(prev => ({
-          ...prev,
-          specialInstructions,
-          clothingTypes,
-        }));
-      }
-      setStep(2);
-      return;
-    }
-
-    if (step === 2) {
-      if (isStandard) {
-        // Standard: skip separation + clothing, go to address
-        update("separateByType", false);
-        setStep(5);
-        return;
-      }
-      if (isSignature) {
-        // Signature: force separation, go directly to clothing
-        update("separateByType", true);
-        setStep(4);
-        return;
-      }
-      if (isCustom) {
-        // Custom: skip separation + clothing, go to address
-        update("separateByType", false);
-        setStep(5);
-        return;
-      }
-      // Fallback: go to separation step
-      setStep(3);
-      return;
-    }
-
-    if (step === 3) {
-      // After separation choice:
-      if (state.separateByType === true) {
-        setStep(4);
-      } else {
-        setStep(5);
-      }
-      return;
-    }
-
-    if (step === 4) {
-      setStep(5);
-      return;
-    }
-
-    if (step < 7) {
+    if (step < 4) {
       setStep(step + 1);
     }
   };
 
   const goBack = () => {
-    if (step === 5) {
-      if (isStandard || isCustom) {
-        setStep(2);
-        return;
-      }
-      if (isSignature) {
-        setStep(4);
-        return;
-      }
-      // came from step 4 normally
-      if (state.separateByType === true) {
-        setStep(4);
-      } else {
-        setStep(3);
-      }
-      return;
-    }
-
-    if (step === 4) {
-      if (isSignature) {
-        setStep(2);
-        return;
-      }
-      setStep(3);
-      return;
-    }
-
-    if (step === 3) {
-      setStep(2);
-      return;
-    }
-
     if (step > 1) {
       setStep(step - 1);
     } else {
@@ -324,37 +209,30 @@ export default function OrderNewPage() {
   // Validate current step
   const canProceed = (): boolean => {
     switch (step) {
-      case 1: return !!state.serviceType;
-      case 2: return state.bags.length > 0 && state.bags.some(b => b.quantity > 0);
-      case 3: return state.separateByType !== null;
-      case 4: return state.clothingTypes.length > 0;
-      case 5: {
+      case 1: return state.bags.length > 0 && state.bags.some(b => b.quantity > 0);
+      case 2: {
         if (!state.address || !state.pickupDate || !state.pickupTimeWindow) return false;
-        // If service area is confirmed, allow proceeding
         if (state.serviceAreaAvailable === true) return true;
-        // Allow free-text address (min 8 chars, at least 1 digit, 2+ words) even without Places API
         const addr = state.address.trim();
         const isValidFreeText = addr.length >= 8 && /\d/.test(addr) && addr.split(/\s+/).length >= 2;
         return isValidFreeText;
       }
-      case 6: return !!state.paymentMethodId;
-      case 7: return true;
+      case 3: return !!state.paymentMethodId;
+      case 4: return true;
       default: return false;
     }
   };
 
-  // P0-4: Ensure address is persisted before submitting order
+  // Ensure address is persisted before submitting order
   async function ensureAddressId(): Promise<number> {
     if (state.pickupAddressId) return state.pickupAddressId;
 
-    // Parse city/state/zip from the full address string
     const addr = state.address;
     const zipMatch = addr.match(/\b\d{5}(?:-\d{4})?\b/);
     const zip = zipMatch?.[0].slice(0, 5) ?? "";
     const csMatch = addr.match(/,\s*([^,]+),\s*([A-Z]{2})\s+\d{5}/i);
     const city = csMatch?.[1]?.trim() ?? "";
     const addrState = csMatch?.[2]?.toUpperCase() ?? "";
-    // Street is everything before the first city/state/zip portion
     const street = csMatch ? addr.slice(0, csMatch.index).replace(/,\s*$/, "").trim() : addr.trim();
 
     const res = await apiRequest("/api/addresses", {
@@ -394,15 +272,21 @@ export default function OrderNewPage() {
         .filter(b => b.quantity > 0)
         .map(b => ({ size: b.size, quantity: b.quantity }));
 
+      // Load user's saved wash preferences for the order
+      const rawPrefs = (user as any)?.preferences;
+      const savedPrefs = typeof rawPrefs === "string"
+        ? (() => { try { return JSON.parse(rawPrefs); } catch { return {}; } })()
+        : (rawPrefs || {});
+
       const body = {
         pickupAddressId: addressId,
         pickupAddress: state.address,
         tierName: inferTierName(),
         serviceType: state.serviceType || "wash_fold",
         deliverySpeed: state.deliverySpeed,
-        separated: state.separateByType ?? false,
-        clothing_types: state.separateByType ? state.clothingTypes : [],
-        wash_preferences: state.specialInstructions ? { notes: state.specialInstructions } : {},
+        separated: false,
+        clothing_types: [],
+        wash_preferences: savedPrefs,
         scheduledPickup,
         pickupTimeWindow: state.pickupTimeWindow,
         paymentMethodId: state.paymentMethodId ? Number(state.paymentMethodId) : undefined,
@@ -426,7 +310,7 @@ export default function OrderNewPage() {
     },
   });
 
-  // Success screen
+  // Success screen (step 4 completion)
   if (orderSuccess) {
     return (
       <div className="min-h-screen flex items-center justify-center px-5">
@@ -461,7 +345,7 @@ export default function OrderNewPage() {
           <button onClick={goBack} className="p-1 -ml-1 rounded-lg hover:bg-muted transition-colors" data-testid="button-wizard-back">
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <h1 className="text-sm font-bold">Customize Your Wash</h1>
+          <h1 className="text-sm font-bold">{wizardTitle}</h1>
           <button
             onClick={() => setVoiceModalOpen(true)}
             className="p-2 rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
@@ -474,45 +358,36 @@ export default function OrderNewPage() {
 
       <div className="max-w-lg mx-auto">
         {/* Progress */}
-        <WizardProgress currentStep={step} skippedSteps={skippedSteps} />
+        <WizardProgress currentStep={step} />
+
+        {/* Wash prefs chip on bags step */}
+        {step === 1 && (
+          <div className="px-5 mt-2">
+            <div className="flex items-center gap-2 bg-primary/5 border border-primary/15 rounded-xl px-3 py-2">
+              <span className="text-xs text-muted-foreground">Using your saved Wash Preferences</span>
+              <a
+                href="#/profile/wash-preferences"
+                className="text-xs text-primary font-medium hover:underline ml-auto"
+                onClick={(e) => {
+                  e.preventDefault();
+                  navigate("/profile?openWashPrefs=1&returnTo=wizard");
+                }}
+              >
+                Edit
+              </a>
+            </div>
+          </div>
+        )}
 
         {/* Step content */}
         <div className="mt-4">
           {step === 1 && (
-            <StepWashStyle
-              value={state.serviceType}
-              onChange={v => update("serviceType", v)}
-            />
-          )}
-          {step === 2 && (
             <StepBags
               bags={state.bags}
               onChange={bags => update("bags", bags)}
             />
           )}
-          {step === 3 && (
-            <StepSeparation
-              value={state.separateByType}
-              separationFee={state.separationFee}
-              bags={state.bags}
-              onChange={v => {
-                update("separateByType", v);
-                if (!v) {
-                  update("clothingTypes", []);
-                  update("customTypes", []);
-                }
-              }}
-            />
-          )}
-          {step === 4 && (
-            <StepClothingTypes
-              selected={state.clothingTypes}
-              customTypes={state.customTypes}
-              onSelectedChange={types => update("clothingTypes", types)}
-              onCustomTypesChange={types => update("customTypes", types)}
-            />
-          )}
-          {step === 5 && (
+          {step === 2 && (
             <StepAddress
               address={state.address}
               addressPlaceId={state.addressPlaceId}
@@ -532,32 +407,34 @@ export default function OrderNewPage() {
               onServiceAreaChange={available => update("serviceAreaAvailable", available)}
             />
           )}
-          {step === 6 && (
-            <StepPayment
-              selectedMethodId={state.paymentMethodId}
-              onSelect={id => update("paymentMethodId", id)}
-            />
-          )}
-          {step === 7 && (
-            <StepReview
-              state={state}
-              onEdit={goToStep}
-              onQuoteStatus={setQuoteValid}
-            />
+          {step === 3 && (
+            <>
+              <StepReview
+                state={state}
+                onEdit={goToStep}
+                onQuoteStatus={setQuoteValid}
+              />
+              <div className="px-5 mt-4">
+                <StepPayment
+                  selectedMethodId={state.paymentMethodId}
+                  onSelect={id => update("paymentMethodId", id)}
+                />
+              </div>
+            </>
           )}
         </div>
       </div>
 
-      {/* Estimated total footer — steps 2–7 */}
+      {/* Estimated total footer */}
       <EstimatedTotalFooter state={state} currentStep={step} />
 
       {/* Bottom action bar */}
       <div className="fixed bottom-0 left-0 right-0 z-40 bg-background/95 backdrop-blur-xl border-t border-border px-5 py-4">
         <div className="max-w-lg mx-auto">
-          {step === 7 ? (
+          {step === 3 ? (
             <Button
               className="w-full h-12 text-base font-semibold rounded-full"
-              disabled={submitMutation.isPending || !quoteValid}
+              disabled={submitMutation.isPending || !quoteValid || !state.paymentMethodId}
               onClick={() => submitMutation.mutate()}
               data-testid="button-place-order"
             >
@@ -596,7 +473,7 @@ export default function OrderNewPage() {
         </div>
       </div>
 
-      {/* Voice order modal — uses existing component */}
+      {/* Voice order modal */}
       <VoiceOrderModal
         open={voiceModalOpen}
         onClose={() => setVoiceModalOpen(false)}

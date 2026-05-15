@@ -409,7 +409,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
       const svc = extractedData.serviceType as string | null;
       const serviceLabel = svc === "wash_fold" ? "standard wash"
         : svc === "wash_fold_signature" ? "signature wash"
-        : svc === "wash_fold_custom" ? "custom wash" : "wash";
+        : "wash";
       const confirmMsg = lang === "es"
         ? `Entendido. Una bolsa ${bagLabel}, ${serviceLabel}. Por favor confirma los detalles.`
         : `Got it. One ${bagLabel} bag, ${serviceLabel}. Please confirm the details.`;

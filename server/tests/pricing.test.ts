@@ -84,11 +84,11 @@ describe("Signature Wash per-bag premium", () => {
     expect(premiumItem).toBeUndefined();
   });
 
-  it("does not add a premium for wash_fold_custom", async () => {
+  it("does not add a premium for standard wash_fold", async () => {
     const result = await calculateQuotePrice({
       tierName: "medium",
       deliverySpeed: "48h",
-      serviceType: "wash_fold_custom",
+      serviceType: "wash_fold",
       bags: [{ size: "medium", quantity: 1 }],
     });
 
