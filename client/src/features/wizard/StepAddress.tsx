@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { MapPin, Calendar, Clock, AlertCircle, Bell, RefreshCw } from "lucide-react";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -24,14 +23,27 @@ interface StepAddressProps {
   onServiceAreaChange: (available: boolean | null) => void;
 }
 
-const TIME_WINDOWS = [
-  "8:00 AM - 10:00 AM",
-  "10:00 AM - 12:00 PM",
-  "12:00 PM - 2:00 PM",
-  "2:00 PM - 4:00 PM",
-  "4:00 PM - 6:00 PM",
-  "6:00 PM - 8:00 PM",
+const ALL_TIME_WINDOWS = [
+  { label: "8:00 AM - 10:00 AM", startHour: 8 },
+  { label: "10:00 AM - 12:00 PM", startHour: 10 },
+  { label: "12:00 PM - 2:00 PM", startHour: 12 },
+  { label: "2:00 PM - 4:00 PM", startHour: 14 },
+  { label: "4:00 PM - 6:00 PM", startHour: 16 },
+  { label: "6:00 PM - 8:00 PM", startHour: 18 },
 ];
+
+/** Return only time windows that haven't started yet (with 30-min lead buffer). */
+function getAvailableWindows(forDate: string): string[] {
+  const now = new Date();
+  const todayStr = now.toISOString().split("T")[0];
+  if (forDate !== todayStr) {
+    return ALL_TIME_WINDOWS.map((w) => w.label);
+  }
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  return ALL_TIME_WINDOWS
+    .filter((w) => w.startHour * 60 > currentMinutes + 30)
+    .map((w) => w.label);
+}
 
 interface AddressMeta {
   zip: string;
@@ -66,80 +78,38 @@ interface PlaceSuggestion {
   placeId: string;
 }
 
+// ── Google Maps JS SDK loader ──
+// Loads Maps JS with places+marker libraries. If the tracking map already
+// inserted a script tag (without places), we append a second tag that
+// only adds the places library. Google's loader deduplicates correctly.
+let mapsPlacesPromise: Promise<any | null> | null = null;
+
+function loadMapsWithPlaces(apiKey: string): Promise<any | null> {
+  if (typeof window === "undefined") return Promise.resolve(null);
+  if ((window as any).google?.maps?.places) return Promise.resolve((window as any).google);
+  if (mapsPlacesPromise) return mapsPlacesPromise;
+
+  mapsPlacesPromise = new Promise((resolve) => {
+    // If Maps core is loaded but Places isn't, load only the places library
+    const alreadyHasCore = !!(window as any).google?.maps;
+    const libs = alreadyHasCore ? "places" : "places,marker";
+    const script = document.createElement("script");
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(
+      apiKey,
+    )}&libraries=${libs}&v=weekly`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve((window as any).google || null);
+    script.onerror = () => {
+      mapsPlacesPromise = null;
+      resolve(null);
+    };
+    document.head.appendChild(script);
+  });
+  return mapsPlacesPromise;
+}
+
 const GOOGLE_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || "";
-
-async function fetchPlaceSuggestions(input: string): Promise<PlaceSuggestion[]> {
-  if (!GOOGLE_API_KEY || input.length < 3) return [];
-  try {
-    const res = await fetch("https://places.googleapis.com/v1/places:autocomplete", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": GOOGLE_API_KEY,
-      },
-      body: JSON.stringify({
-        input,
-        includedPrimaryTypes: ["street_address", "subpremise", "premise", "route"],
-        includedRegionCodes: ["us"],
-        languageCode: "en",
-      }),
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    const suggestions: PlaceSuggestion[] = (data.suggestions || [])
-      .filter((s: any) => s.placePrediction)
-      .map((s: any) => ({
-        text: s.placePrediction.text?.text || s.placePrediction.structuredFormat?.mainText?.text || "",
-        placeId: s.placePrediction.placeId || "",
-      }));
-    return suggestions;
-  } catch {
-    return [];
-  }
-}
-
-async function fetchPlaceDetails(placeId: string): Promise<{
-  formattedAddress: string;
-  lat: number | null;
-  lng: number | null;
-  zip: string;
-  city: string;
-  state: string;
-} | null> {
-  if (!GOOGLE_API_KEY || !placeId) return null;
-  try {
-    const res = await fetch(
-      `https://places.googleapis.com/v1/places/${placeId}?languageCode=en`,
-      {
-        headers: {
-          "X-Goog-Api-Key": GOOGLE_API_KEY,
-          "X-Goog-FieldMask": "formattedAddress,location,addressComponents",
-        },
-      },
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    const lat = data.location?.latitude ?? null;
-    const lng = data.location?.longitude ?? null;
-    const components: Array<{ types: string[]; longText?: string; shortText?: string }> =
-      data.addressComponents || [];
-    const findComp = (type: string, short = false) => {
-      const c = components.find((comp) => comp.types?.includes(type));
-      if (!c) return "";
-      return short ? c.shortText || c.longText || "" : c.longText || c.shortText || "";
-    };
-    return {
-      formattedAddress: data.formattedAddress || "",
-      lat,
-      lng,
-      zip: findComp("postal_code"),
-      city: findComp("locality") || findComp("sublocality") || findComp("administrative_area_level_2"),
-      state: findComp("administrative_area_level_1", true),
-    };
-  } catch {
-    return null;
-  }
-}
 
 export function StepAddress({
   address,
@@ -167,8 +137,11 @@ export function StepAddress({
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [autocompleteError, setAutocompleteError] = useState("");
   const [fetchingSuggestions, setFetchingSuggestions] = useState(false);
+  const [mapsReady, setMapsReady] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
   const suggestionsRef = useRef<HTMLDivElement>(null);
+  const autocompleteServiceRef = useRef<any>(null);
+  const placesServiceRef = useRef<any>(null);
 
   // Store latest refs for callbacks
   const serviceTypeRef = useRef(serviceType);
@@ -177,6 +150,21 @@ export function StepAddress({
   useEffect(() => { serviceTypeRef.current = serviceType; }, [serviceType]);
   useEffect(() => { onServiceAreaChangeRef.current = onServiceAreaChange; }, [onServiceAreaChange]);
   useEffect(() => { onAddressChangeRef.current = onAddressChange; }, [onAddressChange]);
+
+  // Load Google Maps JS SDK with Places library
+  useEffect(() => {
+    if (!GOOGLE_API_KEY) return;
+    let cancelled = false;
+    loadMapsWithPlaces(GOOGLE_API_KEY).then((g) => {
+      if (cancelled || !g?.maps?.places) return;
+      autocompleteServiceRef.current = new g.maps.places.AutocompleteService();
+      // PlacesService needs a DOM element or map; use a hidden div
+      const div = document.createElement("div");
+      placesServiceRef.current = new g.maps.places.PlacesService(div);
+      setMapsReady(true);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   async function checkServiceArea(meta: AddressMeta) {
     setCheckingArea(true);
@@ -239,9 +227,9 @@ export function StepAddress({
     }
   }
 
-  // Fetch autocomplete suggestions from Places API (New)
-  const fetchSuggestions = useCallback(async (input: string) => {
-    if (input.length < 3) {
+  // Fetch autocomplete suggestions via Google Maps JS SDK
+  const fetchSuggestions = useCallback((input: string) => {
+    if (input.length < 3 || !autocompleteServiceRef.current) {
       setSuggestions([]);
       setShowSuggestions(false);
       setAutocompleteError("");
@@ -249,39 +237,65 @@ export function StepAddress({
     }
     setFetchingSuggestions(true);
     setAutocompleteError("");
-    const results = await fetchPlaceSuggestions(input);
-    setFetchingSuggestions(false);
-    setSuggestions(results);
-    setShowSuggestions(true);
-    if (results.length === 0 && input.length >= 5) {
-      setAutocompleteError("No address suggestions found. Type your full address (with street number) to continue manually.");
-    }
-  }, []);
+    autocompleteServiceRef.current.getPlacePredictions(
+      {
+        input,
+        componentRestrictions: { country: "us" },
+        types: ["address"],
+      },
+      (predictions: any[] | null, status: string) => {
+        setFetchingSuggestions(false);
+        if (status !== "OK" || !predictions) {
+          setSuggestions([]);
+          setShowSuggestions(false);
+          if (input.length >= 5) {
+            setAutocompleteError("No address suggestions found. Type your full address (with street number) to continue manually.");
+          }
+          return;
+        }
+        const results: PlaceSuggestion[] = predictions.map((p) => ({
+          text: p.description || "",
+          placeId: p.place_id || "",
+        }));
+        setSuggestions(results);
+        setShowSuggestions(true);
+      },
+    );
+  }, [mapsReady]);
 
-  // Handle selecting a suggestion
-  const handleSelectSuggestion = useCallback(async (suggestion: PlaceSuggestion) => {
+  // Handle selecting a suggestion — fetch details via PlacesService
+  const handleSelectSuggestion = useCallback((suggestion: PlaceSuggestion) => {
     setShowSuggestions(false);
     setSuggestions([]);
     setAutocompleteError("");
     onAddressChangeRef.current(suggestion.text, suggestion.placeId);
 
-    // Fetch place details for lat/lng and address components
-    const details = await fetchPlaceDetails(suggestion.placeId);
-    if (details) {
-      if (details.formattedAddress) {
-        onAddressChangeRef.current(details.formattedAddress, suggestion.placeId);
-      }
-      if (details.zip || (details.lat != null && details.lng != null)) {
-        checkServiceArea({
-          zip: details.zip,
-          city: details.city,
-          state: details.state,
-          lat: details.lat,
-          lng: details.lng,
-        });
-      }
-    }
-  }, []);
+    if (!placesServiceRef.current || !suggestion.placeId) return;
+    placesServiceRef.current.getDetails(
+      { placeId: suggestion.placeId, fields: ["formatted_address", "geometry", "address_components"] },
+      (place: any, status: string) => {
+        if (status !== "OK" || !place) return;
+        const formatted = place.formatted_address || suggestion.text;
+        const lat = place.geometry?.location?.lat() ?? null;
+        const lng = place.geometry?.location?.lng() ?? null;
+        const comps: Array<{ types: string[]; long_name: string; short_name: string }> =
+          place.address_components || [];
+        const findComp = (type: string, short = false) => {
+          const c = comps.find((comp) => comp.types.includes(type));
+          if (!c) return "";
+          return short ? c.short_name : c.long_name;
+        };
+        const zip = findComp("postal_code");
+        const city = findComp("locality") || findComp("sublocality") || findComp("administrative_area_level_2");
+        const state = findComp("administrative_area_level_1", true);
+
+        onAddressChangeRef.current(formatted, suggestion.placeId);
+        if (zip || (lat != null && lng != null)) {
+          checkServiceArea({ zip, city, state, lat, lng });
+        }
+      },
+    );
+  }, [mapsReady]);
 
   // Close suggestions on outside click
   useEffect(() => {
@@ -317,7 +331,6 @@ export function StepAddress({
 
   // Time-window preset chips (C6)
   const now = new Date();
-  const currentHour = now.getHours();
   const todayStr = now.toISOString().split("T")[0];
   const tomorrowStr = (() => {
     const d = new Date(now);
@@ -325,10 +338,26 @@ export function StepAddress({
     return d.toISOString().split("T")[0];
   })();
 
+  // Compute available windows for the selected date (filters past windows for today)
+  const selectedDate = pickupDate || todayStr;
+  const availableWindows = getAvailableWindows(selectedDate);
+  const todayWindows = getAvailableWindows(todayStr);
+
+  // Clear selected time window if it's no longer available for the selected date
+  useEffect(() => {
+    if (pickupTimeWindow && availableWindows.length > 0 && !availableWindows.includes(pickupTimeWindow)) {
+      onTimeChange(availableWindows[0]);
+    } else if (pickupTimeWindow && availableWindows.length === 0) {
+      onTimeChange("");
+    }
+  }, [pickupDate, pickupTimeWindow, availableWindows.length]);
+
   type PresetChip = { label: string; date: string; window: string };
   const presetChips: PresetChip[] = [
-    // "Today 4–6 PM" — only if current time is before 2 PM
-    ...(currentHour < 14 ? [{ label: "Today 4–6 PM", date: todayStr, window: "16:00-18:00" }] : []),
+    // Show "Today 4–6 PM" only if it's still available
+    ...(todayWindows.includes("4:00 PM - 6:00 PM")
+      ? [{ label: "Today 4–6 PM", date: todayStr, window: "4:00 PM - 6:00 PM" }]
+      : []),
     { label: "Tomorrow 8–10 AM", date: tomorrowStr, window: "8:00 AM - 10:00 AM" },
     { label: "Tomorrow 4–6 PM", date: tomorrowStr, window: "4:00 PM - 6:00 PM" },
   ];
@@ -546,22 +575,28 @@ export function StepAddress({
         <Label className="text-xs text-muted-foreground mb-1.5 flex items-center gap-1.5">
           <Clock className="w-3.5 h-3.5" /> Pickup Window
         </Label>
-        <div className="grid grid-cols-2 gap-2">
-          {TIME_WINDOWS.map(w => (
-            <button
-              key={w}
-              onClick={() => onTimeChange(w)}
-              className={`p-2.5 rounded-xl text-xs font-medium text-center min-h-[44px] flex items-center justify-center transition-all ${
-                pickupTimeWindow === w
-                  ? "bg-primary text-primary-foreground ring-1 ring-primary/30"
-                  : "bg-card border border-border hover:border-primary/30"
-              }`}
-              data-testid={`time-${w.replace(/\s/g, "-")}`}
-            >
-              {w}
-            </button>
-          ))}
-        </div>
+        {availableWindows.length === 0 ? (
+          <p className="text-xs text-muted-foreground py-2">
+            No pickup windows left for today. Please select tomorrow or a later date.
+          </p>
+        ) : (
+          <div className="grid grid-cols-2 gap-2">
+            {availableWindows.map(w => (
+              <button
+                key={w}
+                onClick={() => onTimeChange(w)}
+                className={`p-2.5 rounded-xl text-xs font-medium text-center min-h-[44px] flex items-center justify-center transition-all ${
+                  pickupTimeWindow === w
+                    ? "bg-primary text-primary-foreground ring-1 ring-primary/30"
+                    : "bg-card border border-border hover:border-primary/30"
+                }`}
+                data-testid={`time-${w.replace(/\s/g, "-")}`}
+              >
+                {w}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Special instructions */}
