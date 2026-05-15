@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { fieldBorderClass } from "@/lib/inline-validation";
 import { InlineFieldError } from "@/components/field-error";
+import { useI18n } from "@/i18n";
 import type { useProfileData } from "./useProfileData";
 
 type ProfileDataReturn = ReturnType<typeof useProfileData>;
@@ -29,6 +30,8 @@ export function ProfileSettings({
   editName, setEditName, editEmail, setEditEmail, editPhone, setEditPhone,
   profileFieldErrors, clearProfileError, handleSaveProfile, updateUserMutation,
 }: ProfileSettingsProps) {
+  const { t } = useI18n();
+
   return (
     <Sheet open={editProfileOpen} onOpenChange={setEditProfileOpen}>
       <SheetContent side="bottom" className="max-h-[80vh] rounded-t-2xl">
@@ -41,15 +44,15 @@ export function ProfileSettings({
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <SheetTitle className="!mt-0">Personal Information</SheetTitle>
+          <SheetTitle className="!mt-0">{t("profile_settings.title")}</SheetTitle>
         </SheetHeader>
         <div className="mt-5 space-y-4">
           <div>
-            <Label className="text-xs text-muted-foreground mb-1.5 block">Full Name</Label>
+            <Label className="text-xs text-muted-foreground mb-1.5 block">{t("profile_settings.full_name")}</Label>
             <Input
               value={editName}
               onChange={e => { setEditName(e.target.value); clearProfileError("editName"); }}
-              placeholder="Enter your full name"
+              placeholder={t("profile_settings.full_name_placeholder")}
               className={`h-12 rounded-xl bg-card ${fieldBorderClass("editName", profileFieldErrors)}`}
               data-testid="input-edit-name"
               data-field="editName"
@@ -57,12 +60,12 @@ export function ProfileSettings({
             <InlineFieldError field="editName" errors={profileFieldErrors} />
           </div>
           <div>
-            <Label className="text-xs text-muted-foreground mb-1.5 block">Email</Label>
+            <Label className="text-xs text-muted-foreground mb-1.5 block">{t("profile_settings.email")}</Label>
             <Input
               type="email"
               value={editEmail}
               onChange={e => { setEditEmail(e.target.value); clearProfileError("editEmail"); }}
-              placeholder="Enter your email"
+              placeholder={t("profile_settings.email_placeholder")}
               className={`h-12 rounded-xl bg-card ${fieldBorderClass("editEmail", profileFieldErrors)}`}
               data-testid="input-edit-email"
               data-field="editEmail"
@@ -70,12 +73,12 @@ export function ProfileSettings({
             <InlineFieldError field="editEmail" errors={profileFieldErrors} />
           </div>
           <div>
-            <Label className="text-xs text-muted-foreground mb-1.5 block">Phone</Label>
+            <Label className="text-xs text-muted-foreground mb-1.5 block">{t("profile_settings.phone")}</Label>
             <Input
               type="tel"
               value={editPhone}
               onChange={e => setEditPhone(e.target.value)}
-              placeholder="Enter your phone number"
+              placeholder={t("profile_settings.phone_placeholder")}
               className="h-12 rounded-xl bg-card"
               data-testid="input-edit-phone"
             />
@@ -86,7 +89,7 @@ export function ProfileSettings({
             onClick={handleSaveProfile}
             data-testid="button-save-profile"
           >
-            {updateUserMutation.isPending ? "Saving..." : "Save Changes"}
+            {updateUserMutation.isPending ? t("profile_settings.saving") : t("profile_settings.save")}
           </Button>
         </div>
       </SheetContent>

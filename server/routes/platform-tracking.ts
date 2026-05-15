@@ -344,6 +344,10 @@ export function registerTrackingRoutes(app: Express) {
     if (!VALID_PHOTO_TYPES.includes(type)) {
       return res.status(400).json({ error: `Invalid photo type. Must be one of: ${VALID_PHOTO_TYPES.join(", ")}` });
     }
+    const ALLOWED_CONTENT_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "application/pdf"];
+    if (!contentType || !ALLOWED_CONTENT_TYPES.includes(contentType)) {
+      return res.status(400).json({ error: `Invalid contentType. Must be one of: ${ALLOWED_CONTENT_TYPES.join(", ")}` });
+    }
     const order = await storage.getOrder(Number(orderId));
     if (!order) return res.status(404).json({ error: "Order not found" });
 

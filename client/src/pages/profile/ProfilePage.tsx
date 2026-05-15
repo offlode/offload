@@ -66,7 +66,7 @@ function SettingsRow({ icon, label, value, onClick, color, rightElement }: {
 
 export default function ProfilePage() {
   const { theme, toggleTheme } = useTheme();
-  const { language, setLanguage } = useI18n();
+  const { t, language, setLanguage } = useI18n();
   const data = useProfileData();
 
   const {
@@ -98,8 +98,8 @@ export default function ProfilePage() {
       <div className="px-5 pt-6 pb-2">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold" data-testid="text-profile-title">Profile</h1>
-            <p className="text-sm text-muted-foreground">Your account & preferences</p>
+            <h1 className="text-xl font-bold" data-testid="text-profile-title">{t("profile.title")}</h1>
+            <p className="text-sm text-muted-foreground">{t("profile.subtitle")}</p>
           </div>
           <Button
             variant="secondary"
@@ -149,20 +149,20 @@ export default function ProfilePage() {
           <div className="grid grid-cols-3 gap-4">
             <StatCard
               icon={<Package className="w-5 h-5" />}
-              label="Orders"
+              label={t("profile.orders_label")}
               value={userLoading ? "--" : String(totalOrders)}
               color="bg-emerald-500/15 text-emerald-400"
             />
             <StatCard
               icon={<DollarSign className="w-5 h-5" />}
-              label="Total Spent"
+              label={t("profile.total_spent")}
               value={userLoading ? "--" : `$${totalSpent.toFixed(2)}`}
               color="bg-emerald-500/15 text-emerald-400"
             />
             <div aria-label={user?.rating != null ? `Rating: ${Number(user.rating).toFixed(1)} out of 5` : "Rating not available"}>
               <StatCard
                 icon={<Star className="w-5 h-5" />}
-                label="Rating"
+                label={t("profile.rating_label")}
                 value={user?.rating != null ? Number(user.rating).toFixed(1) : "--"}
                 color="bg-amber-500/15 text-amber-400"
               />
@@ -180,7 +180,7 @@ export default function ProfilePage() {
                 <Star className="w-5 h-5 text-amber-500" />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-xs text-amber-500 font-semibold">Top-rated vendor</p>
+                <p className="text-xs text-amber-500 font-semibold">{t("profile.top_rated_vendor")}</p>
                 <p className="text-sm font-bold">{favoriteVendor.name}</p>
                 <p className="text-xs text-muted-foreground">{favoriteVendor.rating?.toFixed(1)}★ · {favoriteVendor.reviewCount || 0} reviews</p>
               </div>
@@ -195,18 +195,18 @@ export default function ProfilePage() {
           <Link href="/orders">
             <Card className="p-3 text-center cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-95" data-testid="card-quick-track">
               <Truck className="w-5 h-5 text-cyan-400 mx-auto mb-1.5" />
-              <p className="text-[11px] font-medium">Track Order</p>
+              <p className="text-[11px] font-medium">{t("profile.track_order")}</p>
             </Card>
           </Link>
           <Card
             className="p-3 text-center cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-95"
             onClick={() => {
-              toast({ title: "Favorite Vendors", description: `You have ${vendors?.length || 0} vendors available. Your preferred providers will appear here as you complete more orders.` });
+              toast({ title: t("profile.favorite_vendors"), description: t("profile.favorite_vendors_desc") });
             }}
             data-testid="card-quick-favorites"
           >
             <Heart className="w-5 h-5 text-pink-400 mx-auto mb-1.5" />
-            <p className="text-[11px] font-medium">Favorites</p>
+            <p className="text-[11px] font-medium">{t("profile.favorites")}</p>
           </Card>
           <Card
             className="p-3 text-center cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-95"
@@ -215,18 +215,18 @@ export default function ProfilePage() {
             data-testid="card-quick-wash"
           >
             <Settings className="w-5 h-5 text-primary mx-auto mb-1.5" />
-            <p className="text-[11px] font-medium">Wash Settings</p>
+            <p className="text-[11px] font-medium">{t("profile.wash_settings")}</p>
           </Card>
         </div>
       </div>
 
       {/* Account Settings */}
       <div className="px-5 mb-4">
-        <h3 className="text-sm font-semibold mb-2">Account Settings</h3>
+        <h3 className="text-sm font-semibold mb-2">{t("profile.account_settings")}</h3>
         <Card className="px-4 divide-y divide-border">
           <SettingsRow
             icon={<User className="w-4 h-4" />}
-            label="Personal Information"
+            label={t("profile.personal_info")}
             value={user?.name || ""}
             color="bg-blue-500/15 text-blue-400"
             onClick={() => {
@@ -238,26 +238,26 @@ export default function ProfilePage() {
           />
           <SettingsRow
             icon={<MapPin className="w-4 h-4" />}
-            label="Saved Addresses"
-            value={`${addresses?.length || 0} addresses`}
+            label={t("profile.saved_addresses")}
+            value={t("profile.addresses_count", { count: addresses?.length || 0 })}
             color="bg-cyan-500/15 text-cyan-400"
             onClick={() => navigate("/addresses")}
           />
           <SettingsRow
             icon={<CreditCard className="w-4 h-4" />}
-            label="Payment Methods"
-            value={`${paymentMethods?.length || 0} on file`}
+            label={t("profile.payment_methods")}
+            value={t("profile.payment_on_file", { count: paymentMethods?.length || 0 })}
             color="bg-amber-500/15 text-amber-400"
             onClick={() => navigate("/payments")}
           />
           <SettingsRow
             icon={<Globe className="w-4 h-4" />}
-            label="Language"
+            label={t("profile.language")}
             value={language === "en" ? "English" : "Español"}
             color="bg-sky-500/15 text-sky-400"
             onClick={() => {
               setLanguage(language === "en" ? "es" : "en");
-              toast({ title: language === "en" ? "Idioma cambiado a Español" : "Language changed to English" });
+              toast({ title: language === "en" ? t("profile.language_changed_es") : t("profile.language_changed_en") });
             }}
           />
         </Card>
@@ -265,19 +265,19 @@ export default function ProfilePage() {
 
       {/* Preferences */}
       <div className="px-5 mb-4">
-        <h3 className="text-sm font-semibold mb-2">Preferences</h3>
+        <h3 className="text-sm font-semibold mb-2">{t("profile.preferences")}</h3>
         <Card className="px-4 divide-y divide-border">
           <SettingsRow
             icon={<Bell className="w-4 h-4" />}
-            label="Notifications"
-            value="Manage alerts"
+            label={t("profile.notifications")}
+            value={t("profile.manage_alerts")}
             color="bg-primary/15 text-primary"
             onClick={() => navigate("/notifications")}
           />
           <SettingsRow
             icon={<Shield className="w-4 h-4" />}
-            label="Offload Certified"
-            value="Prefer certified vendors"
+            label={t("profile.offload_certified")}
+            value={t("profile.prefer_certified")}
             color="bg-amber-500/15 text-amber-400"
             rightElement={
               <Switch
@@ -286,7 +286,7 @@ export default function ProfilePage() {
                 onCheckedChange={(v) => {
                   setCertifiedOnly(v);
                   localStorage.setItem("offload_certified_only", String(v));
-                  toast({ title: v ? "Certified mode on" : "Certified mode off", description: v ? "Only certified vendors will be shown." : "All vendors will be shown." });
+                  toast({ title: v ? t("profile.certified_on") : t("profile.certified_off"), description: v ? t("profile.certified_on_desc") : t("profile.certified_off_desc") });
                 }}
                 data-testid="toggle-certified-pref"
               />
@@ -295,17 +295,17 @@ export default function ProfilePage() {
           />
           <SettingsRow
             icon={<Heart className="w-4 h-4" />}
-            label="Favorite Vendors"
-            value={`${vendors?.length || 0} available`}
+            label={t("profile.favorite_vendors")}
+            value={t("profile.favorite_vendors_count", { count: vendors?.length || 0 })}
             color="bg-red-500/15 text-red-400"
             onClick={() => {
-              toast({ title: "Favorite Vendors", description: "Browse and favorite vendors from the schedule page." });
+              toast({ title: t("profile.favorite_vendors"), description: t("profile.favorite_vendors_desc") });
             }}
           />
           <SettingsRow
             icon={<Settings className="w-4 h-4" />}
-            label="Wash Preferences"
-            value="Per-clothing-type wash settings"
+            label={t("profile.wash_preferences")}
+            value={t("profile.wash_prefs_value")}
             color="bg-orange-500/15 text-orange-400"
             onClick={() => setWashPrefsOpen(true)}
           />
@@ -314,12 +314,12 @@ export default function ProfilePage() {
 
       {/* Two-Factor Authentication */}
       <div className="px-5 mb-4">
-        <h3 className="text-sm font-semibold mb-2">Security</h3>
+        <h3 className="text-sm font-semibold mb-2">{t("profile.security")}</h3>
         <Card className="px-4 divide-y divide-border">
           <SettingsRow
             icon={<Lock className="w-4 h-4" />}
-            label="Two-Factor Authentication"
-            value={twoFASetupDone ? "Enabled" : "Protect your account"}
+            label={t("profile.two_fa")}
+            value={twoFASetupDone ? t("profile.two_fa_enabled") : t("profile.two_fa_protect")}
             color={twoFASetupDone ? "bg-emerald-500/15 text-emerald-400" : "bg-primary/15 text-primary"}
             onClick={() => {
               if (!twoFASetupDone) {
@@ -348,22 +348,22 @@ export default function ProfilePage() {
           {(authUser?.role === "admin" || authUser?.role === "manager") && (
             <SettingsRow
               icon={<LayoutDashboard className="w-4 h-4" />}
-              label="Admin Dashboard"
-              value="Manage operations"
+              label={t("profile.admin_dashboard")}
+              value={t("profile.admin_manage")}
               color="bg-primary/15 text-primary"
               onClick={() => navigate("/admin")}
             />
           )}
           <SettingsRow
             icon={<HelpCircle className="w-4 h-4" />}
-            label="Help Center"
-            value="FAQs and support"
+            label={t("profile.help_center")}
+            value={t("profile.help_faq")}
             color="bg-muted text-muted-foreground"
             onClick={() => navigate("/help")}
           />
           <SettingsRow
             icon={<LogOut className="w-4 h-4" />}
-            label="Sign Out"
+            label={t("profile.sign_out")}
             color="bg-red-500/15 text-red-400"
             onClick={() => setSignOutOpen(true)}
           />
@@ -372,12 +372,12 @@ export default function ProfilePage() {
 
       {/* Danger Zone — Account Deletion */}
       <div className="px-5 mb-4">
-        <h3 className="text-sm font-semibold mb-2 text-red-500">Danger Zone</h3>
+        <h3 className="text-sm font-semibold mb-2 text-red-500">{t("profile.danger_zone")}</h3>
         <Card className="px-4 border-red-500/20">
           <SettingsRow
             icon={<Trash2 className="w-4 h-4" />}
-            label="Delete My Account"
-            value="Permanently delete all data"
+            label={t("profile.delete_account")}
+            value={t("profile.delete_account_desc")}
             color="bg-red-500/15 text-red-500"
             onClick={() => setDeleteAccountOpen(true)}
           />
@@ -404,8 +404,8 @@ export default function ProfilePage() {
       <Sheet open={washPrefsOpen} onOpenChange={setWashPrefsOpen}>
         <SheetContent side="bottom" className="max-h-[85vh] rounded-t-2xl overflow-y-auto">
           <SheetHeader>
-            <SheetTitle>Wash Preferences</SheetTitle>
-            <p className="text-xs text-muted-foreground">Set preferences per clothing type. These apply automatically to all future orders.</p>
+            <SheetTitle>{t("profile.wash_prefs_title")}</SheetTitle>
+            <p className="text-xs text-muted-foreground">{t("profile.wash_prefs_subtitle")}</p>
           </SheetHeader>
           <div className="mt-4 space-y-2">
             <Accordion type="single" collapsible className="space-y-1">
@@ -425,7 +425,7 @@ export default function ProfilePage() {
                     <AccordionContent className="space-y-3 pb-3">
                       {/* Water Temperature */}
                       <div>
-                        <Label className="text-xs text-muted-foreground mb-1 block">Water Temperature</Label>
+                        <Label className="text-xs text-muted-foreground mb-1 block">{t("profile.water_temp")}</Label>
                         <div className="grid grid-cols-3 gap-1.5">
                           {["cold", "warm", "hot"].map(v => (
                             <button
@@ -444,7 +444,7 @@ export default function ProfilePage() {
                       </div>
                       {/* Dry Method */}
                       <div>
-                        <Label className="text-xs text-muted-foreground mb-1 block">Dry Method</Label>
+                        <Label className="text-xs text-muted-foreground mb-1 block">{t("profile.dry_method")}</Label>
                         <div className="grid grid-cols-3 gap-1.5">
                           {["low heat", "medium heat", "high heat", "hang dry", "no dry"].map(v => (
                             <button
@@ -463,7 +463,7 @@ export default function ProfilePage() {
                       </div>
                       {/* Detergent */}
                       <div>
-                        <Label className="text-xs text-muted-foreground mb-1 block">Detergent</Label>
+                        <Label className="text-xs text-muted-foreground mb-1 block">{t("profile.detergent")}</Label>
                         <div className="grid grid-cols-2 gap-1.5">
                           {["standard", "hypoallergenic", "scented", "unscented"].map(v => (
                             <button
@@ -482,7 +482,7 @@ export default function ProfilePage() {
                       </div>
                       {/* Softener */}
                       <div className="flex items-center justify-between">
-                        <Label className="text-xs text-muted-foreground">Softener</Label>
+                        <Label className="text-xs text-muted-foreground">{t("profile.softener")}</Label>
                         <Switch
                           checked={prefs.softener}
                           onCheckedChange={(v) => updateType("softener", v)}
@@ -490,7 +490,7 @@ export default function ProfilePage() {
                       </div>
                       {/* Bleach */}
                       <div>
-                        <Label className="text-xs text-muted-foreground mb-1 block">Bleach</Label>
+                        <Label className="text-xs text-muted-foreground mb-1 block">{t("profile.bleach")}</Label>
                         <div className="grid grid-cols-3 gap-1.5">
                           {["never", "standard", "chlorine-free"].map(v => (
                             <button
@@ -509,7 +509,7 @@ export default function ProfilePage() {
                       </div>
                       {/* Starch */}
                       <div>
-                        <Label className="text-xs text-muted-foreground mb-1 block">Starch</Label>
+                        <Label className="text-xs text-muted-foreground mb-1 block">{t("profile.starch")}</Label>
                         <div className="grid grid-cols-4 gap-1.5">
                           {["none", "light", "medium", "heavy"].map(v => (
                             <button
@@ -528,7 +528,7 @@ export default function ProfilePage() {
                       </div>
                       {/* Fold Style */}
                       <div>
-                        <Label className="text-xs text-muted-foreground mb-1 block">Fold Style</Label>
+                        <Label className="text-xs text-muted-foreground mb-1 block">{t("profile.fold_style")}</Label>
                         <div className="grid grid-cols-3 gap-1.5">
                           {["standard", "hung", "rolled"].map(v => (
                             <button
@@ -547,11 +547,11 @@ export default function ProfilePage() {
                       </div>
                       {/* Notes */}
                       <div>
-                        <Label className="text-xs text-muted-foreground mb-1 block">Notes</Label>
+                        <Label className="text-xs text-muted-foreground mb-1 block">{t("profile.notes")}</Label>
                         <Input
                           value={prefs.notes}
                           onChange={e => updateType("notes", e.target.value)}
-                          placeholder={`Special instructions for ${type}...`}
+                          placeholder={t("profile.notes_placeholder", { type })}
                           className="h-9 text-xs"
                         />
                       </div>
@@ -564,7 +564,7 @@ export default function ProfilePage() {
             {/* Preferred Laundromat */}
             {vendors && vendors.length > 0 && (
               <div className="pt-2">
-                <Label className="text-xs text-muted-foreground mb-1 block">Preferred Laundromat</Label>
+                <Label className="text-xs text-muted-foreground mb-1 block">{t("profile.preferred_laundromat")}</Label>
                 <Select
                   value={preferredLaundromatId}
                   onValueChange={(v) => {
@@ -573,10 +573,10 @@ export default function ProfilePage() {
                   }}
                 >
                   <SelectTrigger className="h-11 text-sm" data-testid="select-preferred-laundromat">
-                    <SelectValue placeholder="No preference" />
+                    <SelectValue placeholder={t("profile.no_preference")} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none">No preference</SelectItem>
+                    <SelectItem value="none">{t("profile.no_preference")}</SelectItem>
                     {vendors.map((v) => (
                       <SelectItem key={v.id} value={String(v.id)}>
                         {v.name}{v.certified ? " (Certified)" : ""}
@@ -593,7 +593,7 @@ export default function ProfilePage() {
               onClick={() => saveWashPrefsMutation.mutate()}
               data-testid="button-save-wash-prefs"
             >
-              {saveWashPrefsMutation.isPending ? "Saving..." : "Save All Preferences"}
+              {saveWashPrefsMutation.isPending ? t("profile.saving_prefs") : t("profile.save_all_prefs")}
             </Button>
           </div>
         </SheetContent>
@@ -603,38 +603,38 @@ export default function ProfilePage() {
       <Sheet open={helpOpen} onOpenChange={setHelpOpen}>
         <SheetContent side="bottom" className="max-h-[70vh] rounded-t-2xl">
           <SheetHeader>
-            <SheetTitle>Help Center</SheetTitle>
+            <SheetTitle>{t("profile.help_title")}</SheetTitle>
           </SheetHeader>
           <div className="mt-4">
             <Accordion type="single" collapsible>
               <AccordionItem value="1">
-                <AccordionTrigger className="text-sm" data-testid="faq-1">How does Offload work?</AccordionTrigger>
+                <AccordionTrigger className="text-sm" data-testid="faq-1">{t("profile.faq1_q")}</AccordionTrigger>
                 <AccordionContent className="text-sm text-muted-foreground">
-                  Schedule a pickup, and our driver collects your laundry. It's washed by a certified vendor and delivered back fresh and folded — usually within 48 hours.
+                  {t("profile.faq1_a")}
                 </AccordionContent>
               </AccordionItem>
               <AccordionItem value="2">
-                <AccordionTrigger className="text-sm" data-testid="faq-2">What's "Offload Certified"?</AccordionTrigger>
+                <AccordionTrigger className="text-sm" data-testid="faq-2">{t("profile.faq2_q")}</AccordionTrigger>
                 <AccordionContent className="text-sm text-muted-foreground">
-                  Certified vendors meet our quality standards for care, speed, and reliability. We regularly audit them to ensure your clothes are treated with the best care.
+                  {t("profile.faq2_a")}
                 </AccordionContent>
               </AccordionItem>
               <AccordionItem value="3">
-                <AccordionTrigger className="text-sm" data-testid="faq-3">Can I cancel an order?</AccordionTrigger>
+                <AccordionTrigger className="text-sm" data-testid="faq-3">{t("profile.faq3_q")}</AccordionTrigger>
                 <AccordionContent className="text-sm text-muted-foreground">
-                  Yes! You can cancel orders that are pending, confirmed, or have a driver assigned. Once pickup starts, cancellation is no longer available.
+                  {t("profile.faq3_a")}
                 </AccordionContent>
               </AccordionItem>
               <AccordionItem value="4">
-                <AccordionTrigger className="text-sm" data-testid="faq-4">How do I file a dispute?</AccordionTrigger>
+                <AccordionTrigger className="text-sm" data-testid="faq-4">{t("profile.faq4_q")}</AccordionTrigger>
                 <AccordionContent className="text-sm text-muted-foreground">
-                  After delivery, open the order details and tap "File a Dispute". Describe the issue and our team will review it within 24 hours.
+                  {t("profile.faq4_a")}
                 </AccordionContent>
               </AccordionItem>
               <AccordionItem value="5">
-                <AccordionTrigger className="text-sm" data-testid="faq-5">What bag sizes are available?</AccordionTrigger>
+                <AccordionTrigger className="text-sm" data-testid="faq-5">{t("profile.faq5_q")}</AccordionTrigger>
                 <AccordionContent className="text-sm text-muted-foreground">
-                  We offer Small (up to 10 lbs, $24.99), Medium (up to 20 lbs, $44.99), Large (up to 30 lbs, $59.99), and XL (up to 50 lbs, $89.99) bags. If your laundry goes slightly over, it's just $2.50 per additional pound.
+                  {t("profile.faq5_a")}
                 </AccordionContent>
               </AccordionItem>
             </Accordion>
@@ -663,23 +663,23 @@ export default function ProfilePage() {
       <AlertDialog open={signOutOpen} onOpenChange={setSignOutOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Sign out?</AlertDialogTitle>
+            <AlertDialogTitle>{t("profile.signout_title")}</AlertDialogTitle>
             <AlertDialogDescription>
-              You'll need to log back in to access your account.
+              {t("profile.signout_description")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-signout-cancel">Stay</AlertDialogCancel>
+            <AlertDialogCancel data-testid="button-signout-cancel">{t("profile.signout_stay")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={async () => {
                 setSignOutOpen(false);
                 await logout();
                 navigate("/login");
-                toast({ title: "Signed out", description: "See you next time!" });
+                toast({ title: t("profile.signed_out"), description: t("profile.signed_out_desc") });
               }}
               data-testid="button-signout-confirm"
             >
-              Sign Out
+              {t("profile.signout_confirm")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -689,20 +689,20 @@ export default function ProfilePage() {
       <AlertDialog open={deleteAccountOpen} onOpenChange={setDeleteAccountOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-red-500">Delete your account?</AlertDialogTitle>
+            <AlertDialogTitle className="text-red-500">{t("profile.delete_title")}</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to permanently delete your account? This cannot be undone. All your orders, payment methods, saved addresses, and personal data will be deleted.
+              {t("profile.delete_description")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-delete-cancel">Cancel</AlertDialogCancel>
+            <AlertDialogCancel data-testid="button-delete-cancel">{t("profile.delete_cancel")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => deleteAccountMutation.mutate()}
               disabled={deleteAccountMutation.isPending}
               className="bg-red-500 text-white hover:bg-red-600 focus:ring-red-500"
               data-testid="button-delete-confirm"
             >
-              {deleteAccountMutation.isPending ? "Deleting..." : "Yes, Delete My Account"}
+              {deleteAccountMutation.isPending ? t("profile.deleting") : t("profile.delete_confirm")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -715,8 +715,8 @@ export default function ProfilePage() {
             <div className="w-16 h-16 rounded-full bg-red-500/10 flex items-center justify-center mx-auto mb-4">
               <Check className="w-8 h-8 text-red-500" />
             </div>
-            <h2 className="text-xl font-bold mb-2">Your account has been deleted.</h2>
-            <p className="text-sm text-muted-foreground">Goodbye. Redirecting...</p>
+            <h2 className="text-xl font-bold mb-2">{t("profile.deleted_title")}</h2>
+            <p className="text-sm text-muted-foreground">{t("profile.deleted_subtitle")}</p>
           </div>
         </div>
       )}

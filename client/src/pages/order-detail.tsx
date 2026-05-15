@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/auth-context";
+import { useI18n } from "@/i18n";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   EVENT_ICONS, EVENT_COLORS, CANCELLABLE,
@@ -47,6 +48,7 @@ export default function OrderDetailPage() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const { user } = useAuth();
+  const { t } = useI18n();
   const orderId = params?.id;
 
   const [expandedEvent, setExpandedEvent] = useState<number | null>(null);
@@ -151,7 +153,7 @@ export default function OrderDetailPage() {
       setMessageText("");
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({ title: t("common.error"), description: err.message, variant: "destructive" });
     },
   });
 
@@ -168,11 +170,11 @@ export default function OrderDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "events"] });
       queryClient.invalidateQueries({ queryKey: [`/api/orders?customerId=${userId}`] });
       setCancelDialogOpen(false);
-      toast({ title: "Order cancelled", description: "Your order has been cancelled successfully." });
+      toast({ title: t("order_detail.cancelled_toast"), description: t("order_detail.cancelled_desc") });
     },
     onError: (err: Error) => {
       setCancelDialogOpen(false);
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({ title: t("common.error"), description: err.message, variant: "destructive" });
     },
   });
 
@@ -194,10 +196,10 @@ export default function OrderDetailPage() {
       setDisputeSheetOpen(false);
       setDisputeReason("");
       setDisputeDescription("");
-      toast({ title: "Dispute filed", description: "Our team will review your case within 24 hours." });
+      toast({ title: t("order_detail.dispute_filed"), description: t("order_detail.dispute_filed_desc") });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({ title: t("common.error"), description: err.message, variant: "destructive" });
     },
   });
 
@@ -212,7 +214,7 @@ export default function OrderDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "consents"] });
       queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
-      toast({ title: "Response recorded" });
+      toast({ title: t("order_detail.response_recorded") });
     },
   });
 
@@ -235,10 +237,10 @@ export default function OrderDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
       setReviewSheetOpen(false);
-      toast({ title: "Review submitted!", description: "Thank you for your feedback." });
+      toast({ title: t("order_detail.review_submitted"), description: t("order_detail.review_thanks") });
     },
     onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({ title: t("common.error"), description: err.message, variant: "destructive" });
     },
   });
 
@@ -257,9 +259,9 @@ export default function OrderDetailPage() {
     return (
       <div className="max-w-lg mx-auto p-5 text-center pt-20">
         <AlertCircle className="w-10 h-10 text-muted-foreground mx-auto mb-4" />
-        <p className="text-lg font-semibold">Order not found</p>
+        <p className="text-lg font-semibold">{t("order_detail.not_found")}</p>
         <Button variant="secondary" className="mt-4" onClick={() => navigate("/orders")} data-testid="button-back-orders">
-          Back to Orders
+          {t("order_detail.back_to_orders")}
         </Button>
       </div>
     );
@@ -300,7 +302,7 @@ export default function OrderDetailPage() {
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="flex-1">
-          <h1 className="text-lg font-bold">Order Details</h1>
+          <h1 className="text-lg font-bold">{t("order_detail.title")}</h1>
           <p className="text-xs text-muted-foreground">{order.orderNumber}</p>
         </div>
         <Badge
@@ -324,13 +326,13 @@ export default function OrderDetailPage() {
               <div className="flex items-start gap-3">
                 <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
                 <div className="flex-1">
-                  <p className="text-sm font-semibold text-amber-300 mb-1">Approval Needed</p>
+                  <p className="text-sm font-semibold text-amber-300 mb-1">{t("order_detail.approval_needed")}</p>
                   <p className="text-xs text-muted-foreground leading-relaxed mb-3">
                     {consent.description}
                   </p>
                   {consent.additionalCharge && consent.additionalCharge > 0 && (
                     <p className="text-xs text-amber-400 mb-2 font-medium">
-                      Additional charge: ${consent.additionalCharge.toFixed(2)}
+                      {t("order_detail.additional_charge")} ${consent.additionalCharge.toFixed(2)}
                     </p>
                   )}
                   <div className="flex gap-2">
@@ -341,7 +343,7 @@ export default function OrderDetailPage() {
                       disabled={consentMutation.isPending}
                       data-testid={`button-approve-${consent.id}`}
                     >
-                      Approve
+                      {t("order_detail.approve")}
                     </Button>
                     <Button
                       variant="secondary"
@@ -351,7 +353,7 @@ export default function OrderDetailPage() {
                       disabled={consentMutation.isPending}
                       data-testid={`button-deny-${consent.id}`}
                     >
-                      Deny
+                      {t("order_detail.deny")}
                     </Button>
                   </div>
                 </div>
@@ -372,17 +374,14 @@ export default function OrderDetailPage() {
               <p className="text-sm font-semibold">{driver.name}</p>
               <p className="text-xs text-muted-foreground">{driver.vehicleType} — {driver.licensePlate}</p>
             </div>
-            {/* OD-4 honesty fix: driver-side does not yet read in-order messages.
-                These threads route to admin/support, so the button is relabeled as
-                'Message support about this order' until driver inbox UI ships. */}
             <Button
               variant="secondary"
               size="icon"
               className="shrink-0 hover:text-emerald-400 transition-colors"
               onClick={() => setMessageSheetOpen(true)}
               data-testid="button-message-support"
-              aria-label={`Message support about this order`}
-              title="Message support about this order"
+              aria-label={t("order_detail.message_support")}
+              title={t("order_detail.message_support")}
             >
               <MessageSquare className="w-4 h-4 text-emerald-400" />
             </Button>
@@ -400,7 +399,7 @@ export default function OrderDetailPage() {
                 <div className="flex items-center gap-2">
                   <p className="text-sm font-semibold">{vendor.name}</p>
                   {vendor.certified ? (
-                    <Badge variant="secondary" className="text-[10px] bg-emerald-500/15 text-emerald-400">Certified</Badge>
+                    <Badge variant="secondary" className="text-[10px] bg-emerald-500/15 text-emerald-400">{t("order_detail.certified")}</Badge>
                   ) : null}
                 </div>
                 <p className="text-xs text-muted-foreground">{vendor.address}, {vendor.city}</p>
@@ -413,7 +412,7 @@ export default function OrderDetailPage() {
       {/* Order Summary */}
       <div className="px-5 mb-4">
         <Card className="p-4" data-testid="card-order-summary">
-          <h3 className="text-sm font-semibold mb-3">Order Summary</h3>
+          <h3 className="text-sm font-semibold mb-3">{t("order_detail.order_summary")}</h3>
           <div className="space-y-2 text-sm">
             {order.tierName ? (
               <div className="flex justify-between">
@@ -434,30 +433,30 @@ export default function OrderDetailPage() {
             )}
             {order.overageCharge != null && order.overageCharge > 0 && (
               <div className="flex justify-between text-amber-400">
-                <span>Overage ({order.overageWeight} lbs x $2.50)</span>
+                <span>{t("order_detail.overage", { weight: String(order.overageWeight) })}</span>
                 <span>+${order.overageCharge.toFixed(2)}</span>
               </div>
             )}
             {order.deliveryFee != null && order.deliveryFee > 0 && (
               <div className="flex justify-between">
-                <span className="text-muted-foreground">Delivery Fee</span>
+                <span className="text-muted-foreground">{t("order_detail.delivery_fee")}</span>
                 <span>${order.deliveryFee.toFixed(2)}</span>
               </div>
             )}
             {order.tax != null && order.tax > 0 && (
               <div className="flex justify-between">
-                <span className="text-muted-foreground">Tax</span>
+                <span className="text-muted-foreground">{t("order_detail.tax")}</span>
                 <span>${order.tax.toFixed(2)}</span>
               </div>
             )}
             {order.discount != null && order.discount > 0 && (
               <div className="flex justify-between text-emerald-400">
-                <span>Discount</span>
+                <span>{t("order_detail.discount")}</span>
                 <span>-${order.discount.toFixed(2)}</span>
               </div>
             )}
             <div className="border-t border-border pt-2 flex justify-between font-bold">
-              <span>{order.finalPrice != null ? "Final Price" : "Total"}</span>
+              <span>{order.finalPrice != null ? t("order_detail.final_price") : t("order_detail.total")}</span>
               <span className="text-primary" data-testid="text-total">
                 ${(order.finalPrice ?? order.total ?? 0).toFixed(2)}
               </span>
@@ -466,7 +465,7 @@ export default function OrderDetailPage() {
           {order.scheduledPickup && (
             <div className="mt-3 pt-3 border-t border-border flex items-center gap-2 text-xs text-muted-foreground">
               <Clock className="w-3.5 h-3.5" />
-              Scheduled: {formatDate(order.scheduledPickup)}
+              {t("order_detail.scheduled")} {formatDate(order.scheduledPickup)}
             </div>
           )}
           {order.pickupAddress && (
@@ -485,10 +484,10 @@ export default function OrderDetailPage() {
           <Card className="p-3" data-testid="card-payment-status">
             <div className="flex items-center gap-2 mb-1">
               <CreditCard className="w-4 h-4 text-primary" />
-              <p className="text-xs text-muted-foreground">Payment</p>
+              <p className="text-xs text-muted-foreground">{t("order_detail.payment")}</p>
             </div>
             <Badge variant="secondary" className={`text-[10px] ${paymentColor}`}>
-              {order.paymentStatus?.replace(/_/g, " ") || "Pending"}
+              {order.paymentStatus?.replace(/_/g, " ") || t("order_detail.payment_pending")}
             </Badge>
           </Card>
           {/* SLA */}
@@ -496,14 +495,14 @@ export default function OrderDetailPage() {
             <Card className="p-3" data-testid="card-sla-status">
               <div className="flex items-center gap-2 mb-1">
                 <Gauge className="w-4 h-4 text-primary" />
-                <p className="text-xs text-muted-foreground">SLA</p>
+                <p className="text-xs text-muted-foreground">{t("order_detail.sla")}</p>
               </div>
               <p className={`text-xs font-semibold ${slaColor}`}>
-                {order.slaStatus === "on_track" ? "On Track" : order.slaStatus === "at_risk" ? "At Risk" : "Breached"}
+                {order.slaStatus === "on_track" ? t("order_detail.sla_on_track") : order.slaStatus === "at_risk" ? t("order_detail.sla_at_risk") : t("order_detail.sla_breached")}
               </p>
               {order.slaDeadline && (
                 <p className="text-[10px] text-muted-foreground mt-0.5">
-                  Due: {formatDate(order.slaDeadline)}
+                  {t("order_detail.sla_due")} {formatDate(order.slaDeadline)}
                 </p>
               )}
             </Card>
@@ -520,7 +519,7 @@ export default function OrderDetailPage() {
           <Card className="p-4" data-testid="card-status-stepper">
             <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
               <Gauge className="w-4 h-4 text-primary" />
-              Order Status
+              {t("order_detail.order_status")}
             </h3>
             <StatusStepper currentStatus={order.status} />
           </Card>
@@ -529,7 +528,7 @@ export default function OrderDetailPage() {
 
       {/* Order Progress Timeline */}
       <div className="px-5 mb-4">
-        <h3 className="text-sm font-semibold mb-3">Order Progress</h3>
+        <h3 className="text-sm font-semibold mb-3">{t("order_detail.order_progress")}</h3>
         <div className="relative">
           {events.length > 0 ? (
             <div className="space-y-0">
@@ -602,7 +601,7 @@ export default function OrderDetailPage() {
           ) : (
             <Card className="p-6 text-center">
               <Clock className="w-6 h-6 text-muted-foreground mx-auto mb-2" />
-              <p className="text-sm text-muted-foreground">No events yet</p>
+              <p className="text-sm text-muted-foreground">{t("order_detail.no_events")}</p>
             </Card>
           )}
         </div>
@@ -615,15 +614,15 @@ export default function OrderDetailPage() {
             <div className="flex items-start gap-3">
               <Star className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
               <div className="flex-1">
-                <p className="text-sm font-semibold mb-1">How was your experience?</p>
-                <p className="text-xs text-muted-foreground mb-3">Rate your laundry service to help us improve.</p>
+                <p className="text-sm font-semibold mb-1">{t("order_detail.how_was_experience")}</p>
+                <p className="text-xs text-muted-foreground mb-3">{t("order_detail.review_subtitle")}</p>
                 <Button
                   size="sm"
                   className="h-8 text-xs"
                   onClick={() => setReviewSheetOpen(true)}
                   data-testid="button-leave-review"
                 >
-                  Leave a Review
+                  {t("order_detail.leave_review")}
                 </Button>
               </div>
             </div>
@@ -637,7 +636,7 @@ export default function OrderDetailPage() {
           <Card className="p-4" data-testid="card-existing-review">
             <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
               <Star className="w-4 h-4 text-amber-400" />
-              Your Review
+              {t("order_detail.your_review")}
             </h3>
             <div className="flex items-center gap-1 mb-2">
               {Array.from({ length: 5 }).map((_, i) => (
@@ -662,7 +661,7 @@ export default function OrderDetailPage() {
             data-testid="button-cancel-order"
           >
             <X className="w-4 h-4" />
-            Cancel Order
+            {t("order_detail.cancel_order")}
           </Button>
         )}
         {isDelivered && (
@@ -673,7 +672,7 @@ export default function OrderDetailPage() {
             data-testid="button-file-dispute"
           >
             <FileWarning className="w-4 h-4" />
-            File a Dispute
+            {t("order_detail.file_dispute")}
           </Button>
         )}
       </div>
@@ -688,9 +687,9 @@ export default function OrderDetailPage() {
           <div className="flex items-start gap-3">
             <HelpCircle className="w-5 h-5 text-primary shrink-0 mt-0.5" />
             <div>
-              <p className="text-sm font-semibold mb-1">Need Help?</p>
+              <p className="text-sm font-semibold mb-1">{t("order_detail.need_help")}</p>
               <p className="text-xs text-muted-foreground leading-relaxed">
-                Our support team is here for you — tap to reach out.
+                {t("order_detail.support_help_text")}
               </p>
             </div>
           </div>
@@ -730,14 +729,14 @@ export default function OrderDetailPage() {
       <Dialog open={supportDialogOpen} onOpenChange={setSupportDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Contact Support</DialogTitle>
+            <DialogTitle>{t("order_detail.contact_support")}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">
-              Tell us what's going on and we'll get back to you as soon as possible.
+              {t("order_detail.support_description")}
             </p>
             <Textarea
-              placeholder="Describe your issue..."
+              placeholder={t("order_detail.support_placeholder")}
               value={supportMessage}
               onChange={e => setSupportMessage(e.target.value)}
               className="min-h-[100px]"
@@ -757,16 +756,16 @@ export default function OrderDetailPage() {
                   queryClient.invalidateQueries({ queryKey: [`/api/orders/${orderId}/messages`] });
                   setSupportDialogOpen(false);
                   setSupportMessage("");
-                  toast({ title: "Message sent", description: "Our support team will respond shortly." });
+                  toast({ title: t("order_detail.support_sent"), description: t("order_detail.support_sent_desc") });
                 } catch (err: any) {
-                  toast({ title: "Error", description: err.message || "Failed to send message", variant: "destructive" });
+                  toast({ title: t("common.error"), description: err.message || "Failed to send message", variant: "destructive" });
                 } finally {
                   setSupportSending(false);
                 }
               }}
               data-testid="button-submit-support"
             >
-              {supportSending ? "Sending..." : "Send Message"}
+              {supportSending ? t("order_detail.support_sending") : t("order_detail.support_send")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -776,20 +775,20 @@ export default function OrderDetailPage() {
       <AlertDialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Cancel this order?</AlertDialogTitle>
+            <AlertDialogTitle>{t("order_detail.cancel_title")}</AlertDialogTitle>
             <AlertDialogDescription>
-              This will cancel your laundry pickup. This action cannot be undone.
+              {t("order_detail.cancel_description")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-cancel-dismiss">Keep Order</AlertDialogCancel>
+            <AlertDialogCancel data-testid="button-cancel-dismiss">{t("order_detail.cancel_keep")}</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => cancelMutation.mutate()}
               disabled={cancelMutation.isPending}
               data-testid="button-cancel-confirm"
             >
-              {cancelMutation.isPending ? "Cancelling..." : "Yes, Cancel"}
+              {cancelMutation.isPending ? t("order_detail.cancelling") : t("order_detail.cancel_confirm")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
