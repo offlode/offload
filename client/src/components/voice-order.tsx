@@ -1,14 +1,17 @@
 /**
- * Voice Order component — real Whisper STT + GPT-4o-mini extraction.
+ * Voice Order component — dual-mode speech input.
  *
- * Flow:
- *  1. User picks language (English / Spanish-beta) and taps record.
- *  2. Audio recorded via MediaRecorder API → POST /api/voice/transcribe.
- *  3. Transcript → POST /api/voice/extract.
- *  4. Confirmation screen with every extracted field as editable input.
- *     Missing fields shown in amber with "needs your input" badge.
- *  5. "Continue to Schedule" prefills the schedule page via window globals
- *     (same pattern as __offload_wash_type) and navigates.
+ * Mode 1 (preferred): Web Speech API (SpeechRecognition) for browser-native
+ *   real-time transcription with live interim results. Transcript is then sent
+ *   to POST /api/voice/parse for GPT-4o-mini extraction.
+ *
+ * Mode 2 (fallback): MediaRecorder → POST /api/voice/transcribe (Whisper STT)
+ *   → POST /api/voice/extract. Used when Web Speech API is unavailable.
+ *
+ * Both modes end at the same confirmation screen where every extracted field
+ * is editable. "Continue to Order" prefills the wizard via window globals.
+ *
+ * SpeechSynthesis is used to verbally confirm intent before placing.
  *
  * Language rules:
  *  - English: fully supported.
@@ -131,6 +134,37 @@ function normalizeVoiceParseResponse(data: any, fallbackLanguage: "en" | "es"): 
   };
 }
 
+// ─── Web Speech API helpers ──────────────────────────────────
+
+// Web Speech API types (not always in lib.dom)
+type SpeechRecognitionAny = any;
+
+/** Check if Web Speech API (SpeechRecognition) is available */
+function hasSpeechRecognition(): boolean {
+  return !!(
+    (window as any).SpeechRecognition ||
+    (window as any).webkitSpeechRecognition
+  );
+}
+
+function getSpeechRecognition(): (new () => SpeechRecognitionAny) | null {
+  return (
+    (window as any).SpeechRecognition ||
+    (window as any).webkitSpeechRecognition ||
+    null
+  );
+}
+
+/** Speak a text string via SpeechSynthesis (verbal confirmation) */
+function speak(text: string, lang: "en" | "es") {
+  if (!window.speechSynthesis) return;
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = lang === "es" ? "es-ES" : "en-US";
+  utterance.rate = 1.0;
+  utterance.volume = 0.8;
+  window.speechSynthesis.speak(utterance);
+}
+
 // ─── Main Component ───────────────────────────────────────────
 
 type Step = "record" | "processing" | "confirm";
@@ -143,6 +177,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
   const [lang, setLang] = useState<"en" | "es">("en");
   const [isRecording, setIsRecording] = useState(false);
   const [transcript, setTranscript] = useState("");
+  const [interimTranscript, setInterimTranscript] = useState("");
   const [extracted, setExtracted] = useState<ExtractedOrder | null>(null);
   const [processingLabel, setProcessingLabel] = useState("");
 
@@ -161,9 +196,13 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
   // Voice endpoint health state
   const [voiceAvailable, setVoiceAvailable] = useState<boolean | null>(null); // null = checking
 
+  // Web Speech API mode detection
+  const useWebSpeech = hasSpeechRecognition();
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const speechRecognitionRef = useRef<SpeechRecognitionAny | null>(null);
 
   // Reset on open and check voice endpoint health
   useEffect(() => {
@@ -171,6 +210,7 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
       setStep("record");
       setIsRecording(false);
       setTranscript("");
+      setInterimTranscript("");
       setExtracted(null);
       setShowSpanishBeta(false);
       chunksRef.current = [];
@@ -184,6 +224,13 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
           setVoiceAvailable(true);
         });
     }
+    return () => {
+      // Cleanup speech recognition on close
+      if (speechRecognitionRef.current) {
+        speechRecognitionRef.current.abort();
+        speechRecognitionRef.current = null;
+      }
+    };
   }, [open]);
 
   const stopRecording = useCallback(() => {
@@ -191,13 +238,79 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
       clearTimeout(recordingTimerRef.current);
       recordingTimerRef.current = null;
     }
+    // Stop Web Speech API recognition
+    if (speechRecognitionRef.current) {
+      speechRecognitionRef.current.stop();
+      speechRecognitionRef.current = null;
+    }
+    // Stop MediaRecorder fallback
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
     }
     setIsRecording(false);
   }, []);
 
-  const startRecording = useCallback(async () => {
+  // ─── Web Speech API recording (preferred) ───
+  const startWebSpeechRecording = useCallback(() => {
+    const SpeechRec = getSpeechRecognition();
+    if (!SpeechRec) return;
+
+    const recognition = new SpeechRec();
+    recognition.lang = lang === "es" ? "es-ES" : "en-US";
+    recognition.interimResults = true;
+    recognition.continuous = true;
+    recognition.maxAlternatives = 1;
+
+    let finalText = "";
+
+    recognition.onresult = (event: any) => {
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal) {
+          finalText += result[0].transcript + " ";
+          setTranscript(finalText.trim());
+        } else {
+          interim += result[0].transcript;
+        }
+      }
+      setInterimTranscript(interim);
+    };
+
+    recognition.onerror = (event: any) => {
+      if (event.error === "no-speech") {
+        toast({ title: "No speech detected", description: "Please try speaking again.", variant: "destructive" });
+      } else if (event.error !== "aborted") {
+        toast({ title: "Speech error", description: event.error, variant: "destructive" });
+      }
+      setIsRecording(false);
+    };
+
+    recognition.onend = () => {
+      // If we have text, process it
+      if (finalText.trim()) {
+        processTranscript(finalText.trim());
+      } else {
+        setIsRecording(false);
+      }
+    };
+
+    speechRecognitionRef.current = recognition;
+    recognition.start();
+    setIsRecording(true);
+    setTranscript("");
+    setInterimTranscript("");
+
+    // Auto-stop after 30 seconds
+    recordingTimerRef.current = setTimeout(() => {
+      if (speechRecognitionRef.current) {
+        speechRecognitionRef.current.stop();
+      }
+    }, 30_000);
+  }, [lang, toast]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─── MediaRecorder fallback recording ───
+  const startMediaRecording = useCallback(async () => {
     chunksRef.current = [];
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -220,7 +333,6 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
 
       recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
-        // Use the actual MIME type from the recorder (more reliable than our preference)
         const actualMime = recorder.mimeType || mimeType || "audio/webm";
         const blob = new Blob(chunksRef.current, { type: actualMime });
         await processAudio(blob);
@@ -245,6 +357,72 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
       });
     }
   }, [lang, stopRecording]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const startRecording = useCallback(() => {
+    if (useWebSpeech) {
+      startWebSpeechRecording();
+    } else {
+      startMediaRecording();
+    }
+  }, [useWebSpeech, startWebSpeechRecording, startMediaRecording]);
+
+  /** Process a completed transcript (from Web Speech API) via server-side extraction */
+  async function processTranscript(text: string) {
+    setStep("processing");
+    setProcessingLabel("Extracting order details…");
+    setInterimTranscript("");
+
+    try {
+      const parseRes = await apiRequest("POST", "/api/voice/parse", {
+        transcription: text,
+        language: lang,
+      });
+
+      const parseData = await parseRes.json();
+      const detectedLang = parseData.language === "es" ? "es" : lang;
+      const extractedData = normalizeVoiceParseResponse(parseData, detectedLang as "en" | "es");
+
+      if (lang === "es" && isSpanishLowConfidence(extractedData, detectedLang as "en" | "es")) {
+        setShowSpanishBeta(true);
+      }
+
+      // Pre-populate editable fields
+      setEditBagSize(extractedData.bagSize || "");
+      setEditServiceType(extractedData.serviceType || "");
+      setEditDeliverySpeed(extractedData.deliverySpeed || "");
+      setEditPickupAddress(extractedData.pickupAddress || "");
+      setEditPickupDate(extractedData.pickupWindow?.date || "");
+      setEditPickupWindow(
+        extractedData.pickupWindow
+          ? [extractedData.pickupWindow.timeStart, extractedData.pickupWindow.timeEnd]
+              .filter(Boolean)
+              .join(" – ")
+          : "",
+      );
+      setEditNotes(extractedData.special_instructions || extractedData.preferences?.notes || "");
+      setExtracted(extractedData);
+      setStep("confirm");
+
+      // Verbal confirmation via SpeechSynthesis
+      const bagLabel = extractedData.bagSize || "a";
+      const svc = extractedData.serviceType as string | null;
+      const serviceLabel = svc === "wash_fold" ? "standard wash"
+        : svc === "wash_fold_signature" ? "signature wash"
+        : svc === "wash_fold_custom" ? "custom wash" : "wash";
+      const confirmMsg = lang === "es"
+        ? `Entendido. Una bolsa ${bagLabel}, ${serviceLabel}. Por favor confirma los detalles.`
+        : `Got it. One ${bagLabel} bag, ${serviceLabel}. Please confirm the details.`;
+      speak(confirmMsg, lang);
+    } catch (err: any) {
+      console.error("[VoiceOrder] processTranscript", err);
+      toast({
+        title: "Voice processing failed",
+        description: err?.message || "Try again or enter your order manually.",
+        variant: "destructive",
+      });
+      setStep("record");
+    }
+  }
 
   async function processAudio(blob: Blob) {
     setStep("processing");
@@ -488,29 +666,43 @@ export function VoiceOrderModal({ open, onClose }: VoiceOrderProps) {
               </button>
             </div>
 
-            {/* Listening waveform */}
+            {/* Listening waveform + live transcription */}
             {isRecording && (
-              <div className="flex items-center justify-center gap-1.5 mb-4">
-                {[0, 1, 2, 3, 4].map((i) => (
-                  <div
-                    key={i}
-                    className="w-1 bg-red-500 rounded-full animate-pulse"
-                    style={{
-                      height: `${14 + (i % 3) * 8}px`,
-                      animationDelay: `${i * 120}ms`,
-                    }}
-                  />
-                ))}
-                <span className="text-xs text-muted-foreground ml-2">
-                  Recording… tap to stop
-                </span>
+              <div className="mb-4">
+                <div className="flex items-center justify-center gap-1.5 mb-3">
+                  {[0, 1, 2, 3, 4].map((i) => (
+                    <div
+                      key={i}
+                      className="w-1 bg-red-500 rounded-full animate-pulse"
+                      style={{
+                        height: `${14 + (i % 3) * 8}px`,
+                        animationDelay: `${i * 120}ms`,
+                      }}
+                    />
+                  ))}
+                  <span className="text-xs text-muted-foreground ml-2">
+                    Listening… tap to stop
+                  </span>
+                </div>
+                {/* Live transcription display */}
+                {(transcript || interimTranscript) && (
+                  <div className="bg-muted/50 rounded-xl p-3 text-center">
+                    <p className="text-xs text-muted-foreground mb-1">We hear:</p>
+                    <p className="text-sm">
+                      {transcript && <span>{transcript} </span>}
+                      {interimTranscript && <span className="text-muted-foreground italic">{interimTranscript}</span>}
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 
             {!isRecording && voiceAvailable !== false && (
               <>
                 <p className="text-center text-xs text-muted-foreground">
-                  Example: "I need a medium bag, wash and fold, standard delivery"
+                  {lang === "es"
+                    ? 'Ejemplo: "Necesito una bolsa mediana, lavado estándar"'
+                    : 'Example: "I need a medium bag, wash and fold, standard delivery"'}
                 </p>
                 <p className="text-center text-xs text-muted-foreground mt-1 italic">
                   We won't show a price until you review

@@ -192,7 +192,7 @@ export default function LoyaltyPage() {
           <ChevronLeft className="w-5 h-5" />
         </button>
         <div>
-          <h1 className="text-xl font-bold">Offload Rewards</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Offload Rewards</h1>
           <p className="text-xs text-muted-foreground">Earn points on every wash</p>
         </div>
       </div>

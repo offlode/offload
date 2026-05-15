@@ -42,7 +42,7 @@ export function StepClothingTypes({
   return (
     <div className="px-5 space-y-4">
       <div>
-        <h2 className="text-lg font-bold mb-1">Select Clothing Types</h2>
+        <h2 className="text-xl font-bold tracking-tight mb-1">Select Clothing Types</h2>
         <p className="text-sm text-muted-foreground">
           Choose which types of clothing to separate. Tap to select.
         </p>
@@ -71,7 +71,7 @@ export function StepClothingTypes({
       </div>
 
       {/* Add custom type */}
-      <Card className="p-4">
+      <Card className="p-4 rounded-2xl">
         <p className="text-xs font-semibold mb-2 text-muted-foreground">Add Custom Type</p>
         <div className="flex gap-2">
           <Input

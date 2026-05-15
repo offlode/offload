@@ -73,14 +73,14 @@ export function StepReview({ state, onEdit, onQuoteStatus }: StepReviewProps) {
   return (
     <div className="px-5 space-y-4">
       <div>
-        <h2 className="text-lg font-bold mb-1">Review Your Order</h2>
+        <h2 className="text-xl font-bold tracking-tight mb-1">Review Your Order</h2>
         <p className="text-sm text-muted-foreground">
           Confirm the details before placing your order.
         </p>
       </div>
 
       {/* Order items */}
-      <Card className="p-4 space-y-3 divide-y divide-border">
+      <Card className="p-4 space-y-3 divide-y divide-border rounded-2xl">
         {/* Bags */}
         <div className="flex items-start gap-3">
           <Package className="w-5 h-5 text-primary shrink-0 mt-0.5" />
@@ -163,7 +163,7 @@ export function StepReview({ state, onEdit, onQuoteStatus }: StepReviewProps) {
       </Card>
 
       {/* Price breakdown */}
-      <Card className="p-4">
+      <Card className="p-4 rounded-2xl">
         <div className="flex items-center gap-2 mb-3">
           <DollarSign className="w-5 h-5 text-primary" />
           <p className="text-sm font-bold">Order Total</p>
@@ -206,7 +206,7 @@ export function StepReview({ state, onEdit, onQuoteStatus }: StepReviewProps) {
       </Card>
 
       {state.specialInstructions && (
-        <Card className="p-3 bg-muted/30">
+        <Card className="p-3 bg-muted/30 rounded-2xl">
           <p className="text-xs text-muted-foreground">
             <span className="font-semibold">Note:</span> {state.specialInstructions}
           </p>

@@ -351,7 +351,7 @@ export function StepAddress({
   return (
     <div className="px-5 space-y-4">
       <div>
-        <h2 className="text-lg font-bold mb-1">Pickup Details</h2>
+        <h2 className="text-xl font-bold tracking-tight mb-1">Pickup Details</h2>
         <p className="text-sm text-muted-foreground">
           Where and when should we pick up your laundry?
         </p>

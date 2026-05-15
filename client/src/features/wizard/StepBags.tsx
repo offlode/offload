@@ -36,9 +36,9 @@ export function StepBags({ bags, onChange }: StepBagsProps) {
   return (
     <div className="px-5 space-y-4">
       <div>
-        <h2 className="text-lg font-bold mb-1">Select Your Bags</h2>
+        <h2 className="text-xl font-bold mb-1 tracking-tight">Choose Your Bag Size</h2>
         <p className="text-sm text-muted-foreground">
-          Choose bag sizes and quantities for your laundry.
+          Flat-rate pricing — know your price before you order.
         </p>
       </div>
 
@@ -51,7 +51,7 @@ export function StepBags({ bags, onChange }: StepBagsProps) {
           return (
             <Card
               key={size}
-              className={`p-4 transition-all duration-200 cursor-pointer ${
+              className={`p-4 rounded-2xl transition-all duration-200 cursor-pointer ${
                 isSelected
                   ? "border-primary ring-1 ring-primary/20"
                   : "hover:border-primary/30"
@@ -109,7 +109,7 @@ export function StepBags({ bags, onChange }: StepBagsProps) {
 
       {/* Summary bar */}
       {totalBags > 0 && (
-        <Card className="p-4 bg-primary/5 border-primary/20">
+        <Card className="p-4 bg-primary/5 border-primary/20 rounded-2xl">
           <div className="flex items-center gap-3">
             <Package className="w-5 h-5 text-primary" />
             <div className="flex-1">
