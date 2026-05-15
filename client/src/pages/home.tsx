@@ -264,7 +264,7 @@ export default function HomePage() {
         <div className="px-5 mb-5">
           <Card
             className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30"
-            onClick={() => navigate(`/vendors/${topVendor.id}`)}
+            onClick={() => navigate("/orders")}
             data-testid="card-top-vendor"
           >
             <div className="flex items-center gap-3">
@@ -341,23 +341,23 @@ export default function HomePage() {
           <WashTile
             icon={<Shirt className="w-5 h-5" />}
             title="Standard Wash"
-            description="Quick, reliable wash with Offload Certified quality."
-            priceHint="From $24.99/bag"
+            description="Quick wash, your saved prefs"
+            priceHint="From $24.99"
             href="/order/new?service=wash_fold"
           />
           <WashTile
             icon={<Sparkles className="w-5 h-5" />}
             title="Signature Wash"
-            description="Extra love — premium detergent, type-by-type separation & packaging."
-            priceHint="+$5/bag"
+            description="Premium label, +$5/bag"
+            priceHint="From $29.99"
             href="/order/new?service=wash_fold_signature"
           />
           <WashTile
             icon={<Settings2 className="w-5 h-5" />}
-            title="Custom Wash"
-            description="Your saved preferences applied automatically."
-            priceHint="Your prefs"
-            href="/order/new?service=wash_fold_custom"
+            title="Wash Preferences"
+            description="Customize your wash by clothing type"
+            priceHint="Edit prefs"
+            href="/profile?openWashPrefs=1"
           />
         </div>
       </div>
@@ -366,7 +366,7 @@ export default function HomePage() {
       <div className="px-5 mb-5">
         <div className="grid grid-cols-2 gap-3">
           {/* Wash Preferences */}
-          <Link href="/profile#wash-prefs">
+          <Link href="/profile?openWashPrefs=1">
             <Card className="p-4 h-[120px] flex flex-col cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.98]" data-testid="card-wash-preferences">
               <Settings2 className="w-6 h-6 text-primary mb-2" />
               <p className="text-sm font-semibold">Wash Preferences</p>
@@ -398,20 +398,20 @@ export default function HomePage() {
         <Card
           role="button"
           tabIndex={0}
-          className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.99] bg-gradient-to-r from-[#7C3AED]/15 to-[#7C3AED]/5 border-[#7C3AED]/25"
+          className="p-4 cursor-pointer transition-all duration-200 hover:border-primary/30 active:scale-[0.99] bg-gradient-to-r from-[#5B4BC4]/15 to-[#5B4BC4]/5 border-[#5B4BC4]/25"
           onClick={openVoiceModal}
           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openVoiceModal(); } }}
           data-testid="card-talk-to-offload"
         >
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-full bg-[#7C3AED]/20 flex items-center justify-center shrink-0">
-              <Mic className="w-6 h-6 text-[#7C3AED]" />
+            <div className="w-12 h-12 rounded-full bg-[#5B4BC4]/20 flex items-center justify-center shrink-0">
+              <Mic className="w-6 h-6 text-[#5B4BC4]" />
             </div>
             <div className="flex-1">
-              <p className="text-sm font-semibold text-[#7C3AED]">Talk to Offload</p>
+              <p className="text-sm font-semibold text-[#5B4BC4]">Talk to Offload</p>
               <p className="text-xs text-muted-foreground mt-0.5">Order by voice — just tell us what you need</p>
             </div>
-            <ChevronRight className="w-4 h-4 text-[#7C3AED]/60 shrink-0" />
+            <ChevronRight className="w-4 h-4 text-[#5B4BC4]/60 shrink-0" />
           </div>
         </Card>
       </div>

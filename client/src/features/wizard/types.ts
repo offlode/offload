@@ -8,13 +8,7 @@ export interface BagSelection {
 export interface WizardState {
   // Step 1: Bags
   bags: BagSelection[];
-  // Step 2: Separation
-  separateByType: boolean | null;
-  separationFee: number;
-  // Step 3: Clothing types (only if separate=true)
-  clothingTypes: string[];
-  customTypes: string[];
-  // Step 4: Address & pickup
+  // Step 2: Pickup scheduling
   address: string;
   addressPlaceId: string;
   pickupAddressId: number | null;
@@ -22,19 +16,20 @@ export interface WizardState {
   pickupTimeWindow: string;
   specialInstructions: string;
   serviceAreaAvailable: boolean | null;
-  // Step 5: Payment
+  // Step 3: Review (includes payment inline)
   paymentMethodId: string;
-  // Step 6: Review (computed)
+  // Metadata
   deliverySpeed: DeliverySpeed;
   serviceType: string;
+  // Legacy fields kept for compatibility with StepReview quote API
+  separateByType: boolean | null;
+  separationFee: number;
+  clothingTypes: string[];
+  customTypes: string[];
 }
 
 export const INITIAL_WIZARD_STATE: WizardState = {
   bags: [],
-  separateByType: null,
-  separationFee: 0,
-  clothingTypes: [],
-  customTypes: [],
   address: "",
   addressPlaceId: "",
   pickupAddressId: null,
@@ -45,14 +40,15 @@ export const INITIAL_WIZARD_STATE: WizardState = {
   paymentMethodId: "",
   deliverySpeed: "standard",
   serviceType: "",
+  separateByType: null,
+  separationFee: 0,
+  clothingTypes: [],
+  customTypes: [],
 };
 
 export const WIZARD_STEPS = [
-  { id: 1, title: "Choose Wash Style", shortTitle: "Style" },
-  { id: 2, title: "Select Bags", shortTitle: "Bags" },
-  { id: 3, title: "Separate by Type?", shortTitle: "Separate" },
-  { id: 4, title: "Clothing Types", shortTitle: "Types" },
-  { id: 5, title: "Address & Pickup", shortTitle: "Address" },
-  { id: 6, title: "Payment Method", shortTitle: "Payment" },
-  { id: 7, title: "Review & Confirm", shortTitle: "Review" },
+  { id: 1, title: "Select Bags", shortTitle: "Bags" },
+  { id: 2, title: "Pickup Time", shortTitle: "Pickup" },
+  { id: 3, title: "Review & Pay", shortTitle: "Review" },
+  { id: 4, title: "Place Order", shortTitle: "Place" },
 ] as const;

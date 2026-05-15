@@ -3,8 +3,8 @@
 
 export const colors = {
   // Brand
-  primary: "#7C3AED",
-  primaryHsl: "262 83% 58%",
+  primary: "#5B4BC4",
+  primaryHsl: "248 51% 53%",
 
   // Surfaces (dark theme)
   surfaceBase: "#1C1C1C",

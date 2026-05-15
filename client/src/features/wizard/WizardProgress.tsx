@@ -3,20 +3,11 @@ import { Check } from "lucide-react";
 
 interface WizardProgressProps {
   currentStep: number;
-  /** Step IDs to skip (hide) from the progress bar */
   skippedSteps?: number[];
-  /** @deprecated Use skippedSteps instead */
-  skipStep3?: boolean;
 }
 
-export function WizardProgress({ currentStep, skippedSteps, skipStep3 }: WizardProgressProps) {
-  // Build the effective skipped set, supporting legacy skipStep3 prop
+export function WizardProgress({ currentStep, skippedSteps }: WizardProgressProps) {
   const skippedSet = new Set<number>(skippedSteps ?? []);
-  if (skipStep3 && !skippedSet.size) {
-    skippedSet.add(3);
-    skippedSet.add(4);
-  }
-
   const steps = WIZARD_STEPS.filter(s => !skippedSet.has(s.id));
 
   const totalSteps = steps.length;

@@ -185,14 +185,40 @@ export default function ProfilePage() {
     return stored !== null ? stored === "true" : true;
   });
 
-  // Wash prefs (in React state)
-  const [washPrefs, setWashPrefs] = useState({
+  // Clothing types for structured per-type wash preferences
+  const CLOTHING_TYPES = [
+    "shirts", "pants", "underwear", "bedding", "towels", "delicates", "baby clothing", "mixed",
+  ] as const;
+
+  type ClothingType = typeof CLOTHING_TYPES[number];
+
+  interface ClothingPrefs {
+    temp: string;
+    dry: string;
+    detergent: string;
+    softener: boolean;
+    bleach: string;
+    starch: string;
+    fold: string;
+    notes: string;
+  }
+
+  const DEFAULT_PREFS: ClothingPrefs = {
+    temp: "cold",
+    dry: "medium heat",
     detergent: "standard",
-    foldingStyle: "standard",
-    hangers: false,
-    fragrance: true,
-    waterTemp: "cold",
-    dryTemp: "medium",
+    softener: false,
+    bleach: "never",
+    starch: "none",
+    fold: "standard",
+    notes: "",
+  };
+
+  // Wash prefs: per-clothing-type structured preferences
+  const [washPrefs, setWashPrefs] = useState<Record<string, ClothingPrefs>>(() => {
+    const initial: Record<string, ClothingPrefs> = {};
+    CLOTHING_TYPES.forEach(type => { initial[type] = { ...DEFAULT_PREFS }; });
+    return initial;
   });
 
   const { data: user, isLoading: userLoading } = useQuery<UserType>({
@@ -215,16 +241,20 @@ export default function ProfilePage() {
   useEffect(() => {
     if (!user) return;
     const saved = (user as any)?.preferences;
-    if (saved && typeof saved === "object" && Object.keys(saved).length > 0) {
-      setWashPrefs(prev => ({
-        ...prev,
-        detergent: saved.detergent || prev.detergent,
-        foldingStyle: saved.foldingStyle || prev.foldingStyle,
-        hangers: typeof saved.hangers === "boolean" ? saved.hangers : prev.hangers,
-        fragrance: typeof saved.fragrance === "boolean" ? saved.fragrance : prev.fragrance,
-        waterTemp: saved.waterTemp || prev.waterTemp,
-        dryTemp: saved.dryTemp || prev.dryTemp,
-      }));
+    if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+      // Check if it's the new per-type format or legacy flat format
+      const hasClothingTypes = CLOTHING_TYPES.some(type => saved[type] && typeof saved[type] === "object");
+      if (hasClothingTypes) {
+        setWashPrefs(prev => {
+          const updated = { ...prev };
+          CLOTHING_TYPES.forEach(type => {
+            if (saved[type] && typeof saved[type] === "object") {
+              updated[type] = { ...DEFAULT_PREFS, ...saved[type] };
+            }
+          });
+          return updated;
+        });
+      }
     }
   }, [user]);
 
@@ -315,7 +345,6 @@ export default function ProfilePage() {
       const res = await apiRequest(`/api/users/${userId}`, {
         method: "PATCH",
         body: JSON.stringify({
-          preferredDetergent: washPrefs.detergent,
           preferences: JSON.stringify(washPrefs),
         }),
       });
@@ -325,10 +354,8 @@ export default function ProfilePage() {
       queryClient.invalidateQueries({ queryKey: ["/api/users", userId] });
       setWashPrefsOpen(false);
       toast({ title: "Preferences saved", description: "Your wash preferences have been updated." });
-      // C4: if we were redirected here from the wizard, go back
       if (returnToWizard) {
         setReturnToWizard(false);
-        // Delay navigation so user sees the toast and the sheet close animation finishes
         setTimeout(() => navigate("/order/new"), 600);
       }
     },
@@ -630,8 +657,8 @@ export default function ProfilePage() {
           />
           <SettingsRow
             icon={<Settings className="w-4 h-4" />}
-            label="Custom Wash Preferences"
-            value="Set your defaults"
+            label="Wash Preferences"
+            value="Per-clothing-type wash settings"
             color="bg-orange-500/15 text-orange-400"
             onClick={() => setWashPrefsOpen(true)}
           />
@@ -773,116 +800,171 @@ export default function ProfilePage() {
         </SheetContent>
       </Sheet>
 
-      {/* Wash Prefs Sheet */}
+      {/* Wash Prefs Sheet — Per-clothing-type structured editor */}
       <Sheet open={washPrefsOpen} onOpenChange={setWashPrefsOpen}>
-        <SheetContent side="bottom" className="max-h-[60vh] rounded-t-2xl">
+        <SheetContent side="bottom" className="max-h-[85vh] rounded-t-2xl overflow-y-auto">
           <SheetHeader>
             <SheetTitle>Wash Preferences</SheetTitle>
+            <p className="text-xs text-muted-foreground">Set preferences per clothing type. These apply automatically to all future orders.</p>
           </SheetHeader>
-          <div className="mt-4 space-y-4">
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1 block">Detergent</Label>
-              <div className="grid grid-cols-3 gap-2">
-                {["standard", "hypoallergenic", "eco"].map(d => (
-                  <button
-                    key={d}
-                    className={`p-2 rounded-lg text-xs font-medium text-center transition-all ${
-                      washPrefs.detergent === d
-                        ? "bg-primary/10 border-2 border-primary"
-                        : "bg-card border border-border hover:border-primary/20"
-                    }`}
-                    onClick={() => setWashPrefs(p => ({ ...p, detergent: d }))}
-                    data-testid={`wash-detergent-${d}`}
-                  >
-                    {d.charAt(0).toUpperCase() + d.slice(1)}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1 block">Folding Style</Label>
-              <div className="grid grid-cols-2 gap-2">
-                {["standard", "konmari"].map(f => (
-                  <button
-                    key={f}
-                    className={`p-2 rounded-lg text-xs font-medium text-center transition-all ${
-                      washPrefs.foldingStyle === f
-                        ? "bg-primary/10 border-2 border-primary"
-                        : "bg-card border border-border hover:border-primary/20"
-                    }`}
-                    onClick={() => setWashPrefs(p => ({ ...p, foldingStyle: f }))}
-                    data-testid={`wash-folding-${f}`}
-                  >
-                    {f === "konmari" ? "KonMari" : "Standard"}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium">Use Hangers</p>
-                <p className="text-xs text-muted-foreground">Hang dress shirts and blouses</p>
-              </div>
-              <Switch
-                checked={washPrefs.hangers}
-                onCheckedChange={(v) => setWashPrefs(p => ({ ...p, hangers: v }))}
-                data-testid="toggle-wash-hangers"
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium">Add Fragrance</p>
-                <p className="text-xs text-muted-foreground">Light lavender scent</p>
-              </div>
-              <Switch
-                checked={washPrefs.fragrance}
-                onCheckedChange={(v) => setWashPrefs(p => ({ ...p, fragrance: v }))}
-                data-testid="toggle-wash-fragrance"
-              />
-            </div>
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1 block">Water Temperature</Label>
-              <div className="grid grid-cols-3 gap-2">
-                {(["cold", "warm", "hot"] as const).map(t => (
-                  <button
-                    key={t}
-                    className={`p-2 rounded-lg text-xs font-medium text-center transition-all ${
-                      washPrefs.waterTemp === t
-                        ? "bg-[#7C3AED]/10 border-2 border-[#7C3AED]"
-                        : "bg-card border border-border hover:border-[#7C3AED]/20"
-                    }`}
-                    onClick={() => setWashPrefs(p => ({ ...p, waterTemp: t }))}
-                    data-testid={`wash-water-temp-${t}`}
-                  >
-                    {t.charAt(0).toUpperCase() + t.slice(1)}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1 block">Dry Temperature</Label>
-              <div className="grid grid-cols-3 gap-2">
-                {(["low", "medium", "high"] as const).map(t => (
-                  <button
-                    key={t}
-                    className={`p-2 rounded-lg text-xs font-medium text-center transition-all ${
-                      washPrefs.dryTemp === t
-                        ? "bg-[#7C3AED]/10 border-2 border-[#7C3AED]"
-                        : "bg-card border border-border hover:border-[#7C3AED]/20"
-                    }`}
-                    onClick={() => setWashPrefs(p => ({ ...p, dryTemp: t }))}
-                    data-testid={`wash-dry-temp-${t}`}
-                  >
-                    {t.charAt(0).toUpperCase() + t.slice(1)}
-                  </button>
-                ))}
-              </div>
-            </div>
+          <div className="mt-4 space-y-2">
+            <Accordion type="single" collapsible className="space-y-1">
+              {CLOTHING_TYPES.map(type => {
+                const prefs = washPrefs[type] || DEFAULT_PREFS;
+                const updateType = (key: keyof ClothingPrefs, value: string | boolean) => {
+                  setWashPrefs(prev => ({
+                    ...prev,
+                    [type]: { ...(prev[type] || DEFAULT_PREFS), [key]: value },
+                  }));
+                };
+                return (
+                  <AccordionItem key={type} value={type} className="border rounded-xl px-3">
+                    <AccordionTrigger className="text-sm font-medium py-3 hover:no-underline" data-testid={`wash-prefs-${type}`}>
+                      {type.charAt(0).toUpperCase() + type.slice(1)}
+                    </AccordionTrigger>
+                    <AccordionContent className="space-y-3 pb-3">
+                      {/* Water Temperature */}
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1 block">Water Temperature</Label>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {["cold", "warm", "hot"].map(v => (
+                            <button
+                              key={v}
+                              className={`p-1.5 rounded-lg text-xs font-medium text-center transition-all ${
+                                prefs.temp === v
+                                  ? "bg-primary/10 border-2 border-primary"
+                                  : "bg-card border border-border hover:border-primary/20"
+                              }`}
+                              onClick={() => updateType("temp", v)}
+                            >
+                              {v.charAt(0).toUpperCase() + v.slice(1)}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {/* Dry Method */}
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1 block">Dry Method</Label>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {["low heat", "medium heat", "high heat", "hang dry", "no dry"].map(v => (
+                            <button
+                              key={v}
+                              className={`p-1.5 rounded-lg text-[10px] font-medium text-center transition-all ${
+                                prefs.dry === v
+                                  ? "bg-primary/10 border-2 border-primary"
+                                  : "bg-card border border-border hover:border-primary/20"
+                              }`}
+                              onClick={() => updateType("dry", v)}
+                            >
+                              {v.charAt(0).toUpperCase() + v.slice(1)}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {/* Detergent */}
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1 block">Detergent</Label>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          {["standard", "hypoallergenic", "scented", "unscented"].map(v => (
+                            <button
+                              key={v}
+                              className={`p-1.5 rounded-lg text-xs font-medium text-center transition-all ${
+                                prefs.detergent === v
+                                  ? "bg-primary/10 border-2 border-primary"
+                                  : "bg-card border border-border hover:border-primary/20"
+                              }`}
+                              onClick={() => updateType("detergent", v)}
+                            >
+                              {v.charAt(0).toUpperCase() + v.slice(1)}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {/* Softener */}
+                      <div className="flex items-center justify-between">
+                        <Label className="text-xs text-muted-foreground">Softener</Label>
+                        <Switch
+                          checked={prefs.softener}
+                          onCheckedChange={(v) => updateType("softener", v)}
+                        />
+                      </div>
+                      {/* Bleach */}
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1 block">Bleach</Label>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {["never", "standard", "chlorine-free"].map(v => (
+                            <button
+                              key={v}
+                              className={`p-1.5 rounded-lg text-[10px] font-medium text-center transition-all ${
+                                prefs.bleach === v
+                                  ? "bg-primary/10 border-2 border-primary"
+                                  : "bg-card border border-border hover:border-primary/20"
+                              }`}
+                              onClick={() => updateType("bleach", v)}
+                            >
+                              {v.charAt(0).toUpperCase() + v.slice(1)}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {/* Starch */}
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1 block">Starch</Label>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {["none", "light", "medium", "heavy"].map(v => (
+                            <button
+                              key={v}
+                              className={`p-1.5 rounded-lg text-[10px] font-medium text-center transition-all ${
+                                prefs.starch === v
+                                  ? "bg-primary/10 border-2 border-primary"
+                                  : "bg-card border border-border hover:border-primary/20"
+                              }`}
+                              onClick={() => updateType("starch", v)}
+                            >
+                              {v.charAt(0).toUpperCase() + v.slice(1)}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {/* Fold Style */}
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1 block">Fold Style</Label>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {["standard", "hung", "rolled"].map(v => (
+                            <button
+                              key={v}
+                              className={`p-1.5 rounded-lg text-xs font-medium text-center transition-all ${
+                                prefs.fold === v
+                                  ? "bg-primary/10 border-2 border-primary"
+                                  : "bg-card border border-border hover:border-primary/20"
+                              }`}
+                              onClick={() => updateType("fold", v)}
+                            >
+                              {v.charAt(0).toUpperCase() + v.slice(1)}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {/* Notes */}
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1 block">Notes</Label>
+                        <Input
+                          value={prefs.notes}
+                          onChange={e => updateType("notes", e.target.value)}
+                          placeholder={`Special instructions for ${type}...`}
+                          className="h-9 text-xs"
+                        />
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                );
+              })}
+            </Accordion>
+
             {/* Preferred Laundromat */}
             {vendors && vendors.length > 0 && (
-              <div>
+              <div className="pt-2">
                 <Label className="text-xs text-muted-foreground mb-1 block">Preferred Laundromat</Label>
-                <p className="text-[11px] text-muted-foreground mb-2">Optionally pick a default from laundromats you've used</p>
                 <Select
                   value={preferredLaundromatId}
                   onValueChange={(v) => {
@@ -906,12 +988,12 @@ export default function ProfilePage() {
             )}
 
             <Button
-              className="w-full"
+              className="w-full mt-4"
               disabled={saveWashPrefsMutation.isPending}
               onClick={() => saveWashPrefsMutation.mutate()}
               data-testid="button-save-wash-prefs"
             >
-              {saveWashPrefsMutation.isPending ? "Saving..." : "Save Preferences"}
+              {saveWashPrefsMutation.isPending ? "Saving..." : "Save All Preferences"}
             </Button>
           </div>
         </SheetContent>

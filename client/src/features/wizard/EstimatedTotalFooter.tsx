@@ -22,7 +22,7 @@ export function EstimatedTotalFooter({ state, currentStep }: EstimatedTotalFoote
   const hasBags = state.bags.some(b => b.quantity > 0);
 
   useEffect(() => {
-    if (currentStep < 2 || !hasBags || !state.serviceType) {
+    if (currentStep < 1 || !hasBags || !state.serviceType) {
       setTotal(null);
       return;
     }
@@ -76,7 +76,7 @@ export function EstimatedTotalFooter({ state, currentStep }: EstimatedTotalFoote
   ]);
 
   // Only render on steps 2–7 (not step 1)
-  if (currentStep < 2) return null;
+  if (currentStep < 1) return null;
 
   const displayTotal =
     loading

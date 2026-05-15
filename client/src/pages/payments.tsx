@@ -131,7 +131,7 @@ function StripeCardForm({ onSuccess, onCancel }: { onSuccess: () => void; onCanc
                   fontSize: "16px",
                   color: "#e2e8f0",
                   "::placeholder": { color: "#64748b" },
-                  iconColor: "#7C3AED",
+                  iconColor: "#5B4BC4",
                 },
                 invalid: { color: "#ef4444", iconColor: "#ef4444" },
               },
